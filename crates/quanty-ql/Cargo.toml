@@ -1,0 +1,11 @@
+[package]
+name = "quanty-ql"
+description = "QQL front end for QuantyDB: lexer, parser, AST"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+quanty-core = { path = "../quanty-core" }

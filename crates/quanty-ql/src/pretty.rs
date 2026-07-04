@@ -1,0 +1,130 @@
+//! Render an AST back to canonical QQL text.
+//!
+//! This is the second half of the parser's safety net: for every statement,
+//! `parse(pretty(parse(x)))` must equal `parse(x)`. The fuzzer leans on
+//! that invariant hard. It is also what `show tables` prints.
+
+use quanty_core::Value;
+
+use crate::ast::*;
+
+pub fn pretty(stmt: &Statement) -> String {
+    match stmt {
+        Statement::TableDef(def) => {
+            let cols: Vec<String> = def.columns.iter().map(column).collect();
+            format!("table {} {{ {} }}", def.name, cols.join(", "))
+        }
+        Statement::DropTable { name } => format!("drop table {name}"),
+        Statement::Put { table, rows } => {
+            let rows: Vec<String> = rows
+                .iter()
+                .map(|fields| {
+                    let fs: Vec<String> = fields
+                        .iter()
+                        .map(|(c, e)| format!("{c}: {}", expr(e)))
+                        .collect();
+                    format!("{{ {} }}", fs.join(", "))
+                })
+                .collect();
+            format!("put {table} {}", rows.join(", "))
+        }
+        Statement::Get(g) => {
+            let mut out = format!("get {}", g.table);
+            if let Some(cols) = &g.projection {
+                out.push_str(&format!(" {{ {} }}", cols.join(", ")));
+            }
+            if let Some(f) = &g.filter {
+                out.push_str(&format!(" where {}", expr(f)));
+            }
+            if let Some((col, dir)) = &g.order {
+                let dir = match dir {
+                    Direction::Asc => "asc",
+                    Direction::Desc => "desc",
+                };
+                out.push_str(&format!(" order by {col} {dir}"));
+            }
+            if let Some(n) = g.limit {
+                out.push_str(&format!(" limit {n}"));
+            }
+            out
+        }
+        Statement::Set {
+            table,
+            filter,
+            assigns,
+        } => {
+            let mut out = format!("set {table}");
+            if let Some(f) = filter {
+                out.push_str(&format!(" where {}", expr(f)));
+            }
+            let asns: Vec<String> = assigns
+                .iter()
+                .map(|a| format!("{} = {}", a.column, expr(&a.expr)))
+                .collect();
+            out.push_str(&format!(" {{ {} }}", asns.join(", ")));
+            out
+        }
+        Statement::Del { table, filter } => {
+            let mut out = format!("del {table}");
+            if let Some(f) = filter {
+                out.push_str(&format!(" where {}", expr(f)));
+            }
+            out
+        }
+        Statement::IndexDef { table, column } => format!("index {table}.{column}"),
+        Statement::ShowTables => "show tables".to_string(),
+        Statement::Explain(inner) => format!("explain {}", pretty(inner)),
+    }
+}
+
+fn column(c: &ColumnDef) -> String {
+    let mut out = format!("{}: {}", c.name, c.ty.as_str());
+    if let Some(d) = &c.default {
+        out.push_str(&format!(" = {}", literal(d)));
+    }
+    if c.key {
+        out.push_str(" @key");
+    }
+    if c.index {
+        out.push_str(" @index");
+    }
+    if c.nullable {
+        out.push_str(" @null");
+    }
+    out
+}
+
+pub fn expr(e: &Expr) -> String {
+    match e {
+        Expr::Literal(v) => literal(v),
+        Expr::Column(c) => c.clone(),
+        Expr::Unary(UnaryOp::Neg, inner) => format!("(-{})", expr(inner)),
+        Expr::Unary(UnaryOp::Not, inner) => format!("(not {})", expr(inner)),
+        Expr::Binary(l, op, r) => format!("({} {} {})", expr(l), op.as_str(), expr(r)),
+    }
+}
+
+pub fn literal(v: &Value) -> String {
+    match v {
+        Value::Null => "null".to_string(),
+        Value::Bool(true) => "true".to_string(),
+        Value::Bool(false) => "false".to_string(),
+        Value::Int(i) => i.to_string(),
+        // {:?} keeps a trailing .0 on whole floats, so the literal stays a
+        // float literal when it is parsed again
+        Value::Float(f) => format!("{f:?}"),
+        Value::Text(s) => {
+            let escaped = s
+                .replace('\\', "\\\\")
+                .replace('"', "\\\"")
+                .replace('\n', "\\n")
+                .replace('\t', "\\t")
+                .replace('\0', "\\0");
+            format!("\"{escaped}\"")
+        }
+        Value::Bytes(b) => {
+            let hex: String = b.iter().map(|byte| format!("{byte:02x}")).collect();
+            format!("x\"{hex}\"")
+        }
+    }
+}
