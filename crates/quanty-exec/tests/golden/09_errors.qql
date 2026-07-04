@@ -1,0 +1,64 @@
+# parse errors point at the problem; plan errors name the missing thing
+
+> bogus stuff
+error: parse error at byte 0: 'bogus' is not a statement...
+
+> get
+error: parse error at byte...
+
+> get users
+error: no table named 'users'
+
+> table t { id: int @key }
+ok
+
+> get t where nope = 1
+error: table 't' has no column 'nope'
+
+> get t { nope }
+error: table 't' has no column 'nope'
+
+> get t order by nope
+error: cannot order by unknown column 'nope'
+
+> set t where id = 1 { nope = 2 }
+error: table 't' has no column 'nope'
+
+> del t where nope = 1
+error: table 't' has no column 'nope'
+
+> get t where
+error: parse error at byte...
+
+> get t where id =
+error: parse error at byte...
+
+> table t2 { id: intt @key }
+error: parse error at byte...
+
+> table t3 { id: int @nope }
+error: parse error at byte...
+
+> get t limit -1
+error: parse error at byte...
+
+> put t { }
+error: parse error at byte...
+
+> put t { id: 1 } trailing
+error: parse error at byte...
+
+> get t where id = 99999999999999999999
+error: parse error at byte...
+
+> get t where id = 1e999
+error: parse error at byte...
+
+> put t { id: 1 }
+put 1
+
+> get t where id
+error: the condition is a int, not a bool
+
+> set t { }
+error: parse error at byte...

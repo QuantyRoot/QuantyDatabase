@@ -1,0 +1,55 @@
+# sorting and limiting; nulls sort first ascending
+
+> table s { id: int @key, score: int @null, name: text }
+ok
+
+> put s { id: 1, score: 50, name: "c" }, { id: 2, score: 10, name: "a" }, { id: 3, score: null, name: "b" }, { id: 4, score: 50, name: "d" }
+put 4
+
+> get s order by score
+3|null|b
+2|10|a
+1|50|c
+4|50|d
+
+> get s order by score desc
+1|50|c
+4|50|d
+2|10|a
+3|null|b
+
+> get s order by score asc
+3|null|b
+2|10|a
+1|50|c
+4|50|d
+
+> get s order by name desc
+4|50|d
+1|50|c
+3|null|b
+2|10|a
+
+> get s order by score limit 2
+3|null|b
+2|10|a
+
+> get s limit 0
+
+> get s limit 2
+1|50|c
+2|10|a
+
+> get s limit 100
+1|50|c
+2|10|a
+3|null|b
+4|50|d
+
+> get s { name } order by score desc limit 3
+c
+d
+a
+
+> get s order by zzz
+error: cannot order by unknown column 'zzz'

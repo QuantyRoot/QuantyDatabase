@@ -1,0 +1,77 @@
+# the planner must pick key lookups and index scans, and explain must say so
+
+> table users { id: int @key, name: text @index, score: int = 0 }
+ok
+
+> explain get users
+SeqScan users
+
+> explain get users where score > 100 order by score desc limit 10
+Limit 10
+  Sort score desc
+    Filter (score > 100)
+      SeqScan users
+
+> explain get users where id = 7
+KeyLookup users (id = 7)
+
+> explain get users where id = 7 and score > 1
+Filter (score > 1)
+  KeyLookup users (id = 7)
+
+> explain get users where name = "elchi"
+IndexScan users via name = "elchi"
+
+> explain get users where name = "elchi" and score > 3
+Filter (score > 3)
+  IndexScan users via name = "elchi"
+
+> explain get users where score > 3
+Filter (score > 3)
+  SeqScan users
+
+> explain get users where name = "x" and score > 1 and id > 0
+Filter ((score > 1) and (id > 0))
+  IndexScan users via name = "x"
+
+> explain get users where id = 1 and id = 2
+Filter (id = 2)
+  KeyLookup users (id = 1)
+
+> explain set users where id = 1 { score += 5 }
+Update users
+  KeyLookup users (id = 1)
+
+> explain del users where name = "x"
+Delete users
+  IndexScan users via name = "x"
+
+> explain del users
+Delete users
+  SeqScan users
+
+> explain put users { id: 1, name: "a" }, { id: 2, name: "b" }
+Insert users (2 rows)
+
+> explain show tables
+error: explain wants get, put, set or del
+
+> explain explain get users
+error: explain wants get, put, set or del
+
+> table pairs { a: int @key, b: int @key, v: int = 0 }
+ok
+
+> explain get pairs where a = 1 and b = 2
+KeyLookup pairs (a = 1, b = 2)
+
+> explain get pairs where a = 1
+Filter (a = 1)
+  SeqScan pairs
+
+> explain get pairs where b = 2 and a = 1 and v > 0
+Filter (v > 0)
+  KeyLookup pairs (a = 1, b = 2)
+
+> explain get users where name = null
+IndexScan users via name = null

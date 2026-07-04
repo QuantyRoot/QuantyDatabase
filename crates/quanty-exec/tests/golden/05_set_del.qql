@@ -1,0 +1,77 @@
+# updates and deletes
+
+> table u { id: int @key, score: int = 0, name: text @null }
+ok
+
+> put u { id: 1, name: "a" }, { id: 2, name: "b", score: 5 }, { id: 3, score: 9 }
+put 3
+
+> set u where id = 2 { score += 10 }
+set 1
+
+> get u where id = 2
+2|15|b
+
+> set u { score = score * 2 }
+set 3
+
+> get u
+1|0|a
+2|30|b
+3|18|null
+
+> set u where score > 100 { score = 0 }
+set 0
+
+> set u where id = 1 { id = 99 }
+error: cannot set key column 'id' (comes with row moves in phase 3)
+
+> set u where id = 1 { score = "x" }
+error: column 'score': a text value does not fit into a column of type int
+
+> set u where id = 1 { name = null }
+set 1
+
+> get u where id = 1
+1|0|null
+
+> set u where id = 3 { score = score / 0 }
+error: division by zero
+
+> set u where id = 2 { score -= 5, score -= 5 }
+set 1
+
+# both assignments read the old row: 30-5 twice lands on 25, not 20
+> get u where id = 2
+2|25|b
+
+> del u where id = 2
+del 1
+
+> get u
+1|0|null
+3|18|null
+
+> del u where score > 5
+del 1
+
+> del u
+del 1
+
+> get u
+
+> del u
+del 0
+
+> table sw { id: int @key, a: int = 0, b: int = 0 }
+ok
+
+> put sw { id: 1, a: 1, b: 2 }
+put 1
+
+# assignments see the row as it was before the set, so this swaps
+> set sw { a = b, b = a }
+set 1
+
+> get sw
+1|2|1

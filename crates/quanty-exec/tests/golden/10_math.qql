@@ -1,0 +1,63 @@
+# expression arithmetic, checked and documented
+
+> table m { id: int @key, v: int = 0 }
+ok
+
+> put m { id: 1, v: 10 }, { id: 2, v: -3 }
+put 2
+
+> get m where v * 2 = 20
+1|10
+
+> get m where v + v = -6
+2|-3
+
+> get m where -v = 3
+2|-3
+
+> get m where v - 1 < 0
+2|-3
+
+> get m where v / 3 = 3
+1|10
+
+> get m where v % 3 = 1
+1|10
+
+> get m where (v + 2) * 3 = 36
+1|10
+
+> set m where id = 1 { v = 9223372036854775807 }
+set 1
+
+> set m where id = 1 { v += 1 }
+error: integer overflow
+
+> get m where id = 1
+1|9223372036854775807
+
+> set m where id = 1 { v = -v - 1 }
+set 1
+
+> get m where id = 1
+1|-9223372036854775808
+
+> set m where id = 1 { v = -v }
+error: integer overflow
+
+> get m where v / 0 = 1
+error: division by zero
+
+> get m where v % 0 = 1
+error: division by zero
+
+> get m where not (id = 1) and not not (id = 2)
+2|-3
+
+> get m where true
+1|-9223372036854775808
+2|-3
+
+> get m where false
+
+> get m where null

@@ -1,0 +1,60 @@
+# filter semantics, including the null rules from docs/QQL.md
+
+> table n { id: int @key, v: int @null, t: text = "x" }
+ok
+
+> put n { id: 1, v: 10 }, { id: 2, v: 20 }, { id: 3, v: null }, { id: 4, v: 30, t: "y" }
+put 4
+
+> get n where v > 15
+2|20|x
+4|30|y
+
+> get n where v >= 20 and t = "x"
+2|20|x
+
+> get n where v < 15 or v > 25
+1|10|x
+4|30|y
+
+# null = 10 is false, so not(...) is true: null rows pass a negated equality
+> get n where not v = 10
+2|20|x
+3|null|x
+4|30|y
+
+> get n where v = null
+3|null|x
+
+> get n where v != null
+1|10|x
+2|20|x
+4|30|y
+
+# null arithmetic yields null, a null condition is false
+> get n where v + 5 > 20
+2|20|x
+4|30|y
+
+> get n where id % 2 = 0
+2|20|x
+4|30|y
+
+> get n where (v < 15 or v > 25) and t = "y"
+4|30|y
+
+> get n where t = "y" or t = "x" and v = 10
+1|10|x
+4|30|y
+
+> get n where v > "a"
+error: cannot compare a int to a text
+
+> get n where t
+error: the condition is a text, not a bool
+
+> get n where v + 1
+error: the condition is a int, not a bool
+
+> get n where zzz = 1
+error: table 'n' has no column 'zzz'

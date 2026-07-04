@@ -1,0 +1,115 @@
+# type behavior across the whole surface
+
+> table t { id: int @key, f: float @null, b: bool @null, x: bytes @null, s: text @null }
+ok
+
+> put t { id: 1, f: 1.5, b: true, x: x"c0ffee", s: "grüezi" }
+put 1
+
+> get t where id = 1
+1|1.5|true|x"c0ffee"|grüezi
+
+> put t { id: 2, f: 3 }
+put 1
+
+# int literals widen into float columns and stay floats
+> get t where id = 2
+2|3.0|null|null|null
+
+> put t { id: 3, f: 2.5e2 }
+put 1
+
+> get t { f } where id = 3
+250.0
+
+> put t { id: 4, b: false }
+put 1
+
+> put t { id: 5, s: "quote\"d" }
+put 1
+
+> get t { s } where id = 5
+quote"d
+
+> put t { id: 6, f: -0.5 }
+put 1
+
+> get t where f < 0
+6|-0.5|null|null|null
+
+> put t { id: -9223372036854775807, s: "min" }
+put 1
+
+> get t { id } where s = "min"
+-9223372036854775807
+
+> get t where b = true
+1|1.5|true|x"c0ffee"|grüezi
+
+> get t where b = false
+4|null|false|null|null
+
+> get t where f = 250
+3|250.0|null|null|null
+
+> put t { id: 7, f: 1 / 2 }
+put 1
+
+# 1 / 2 is int division before the widening, docs call this out
+> get t { f } where id = 7
+0.0
+
+> put t { id: 8, f: 1.0 / 2 }
+put 1
+
+> get t { f } where id = 8
+0.5
+
+> put t { id: 9, b: 1 }
+error: column 'b': a int value does not fit into a column of type bool
+
+> put t { id: 10, x: "nope" }
+error: column 'x': a text value does not fit into a column of type bytes
+
+> put t { id: 1.5 }
+error: column 'id': a float value does not fit into a column of type int
+
+> table fo { id: int @key, f: float }
+ok
+
+> put fo { id: 1, f: 0.5 }, { id: 2, f: -1.5 }, { id: 3, f: 10.0 }
+put 3
+
+> get fo order by f
+2|-1.5
+1|0.5
+3|10.0
+
+> get fo where f = 10
+3|10.0
+
+> table bo { id: int @key, x: bytes @index }
+ok
+
+> put bo { id: 1, x: x"00" }, { id: 2, x: x"ff" }, { id: 3, x: x"00ff" }
+put 3
+
+> get bo where x = x"00ff"
+3|x"00ff"
+
+> get bo order by x
+1|x"00"
+3|x"00ff"
+2|x"ff"
+
+> table tc { id: int @key, s: text }
+ok
+
+> put tc { id: 1, s: "ab" }
+put 1
+
+> set tc { s = s + "cd" }
+set 1
+
+> get tc
+1|abcd

@@ -1,0 +1,77 @@
+# secondary indexes: declared, created late, kept in sync
+
+> table users { id: int @key, name: text @index, score: int = 0 }
+ok
+
+> put users { id: 1, name: "elchi" }, { id: 2, name: "mira" }, { id: 3, name: "elchi", score: 5 }
+put 3
+
+> get users where name = "elchi"
+1|elchi|0
+3|elchi|5
+
+> get users where name = "elchi" and score > 0
+3|elchi|5
+
+> get users where name = "nobody"
+
+> set users where id = 1 { name = "renamed" }
+set 1
+
+> get users where name = "elchi"
+3|elchi|5
+
+> get users where name = "renamed"
+1|renamed|0
+
+> del users where name = "elchi"
+del 1
+
+> get users
+1|renamed|0
+2|mira|0
+
+> table late { id: int @key, tag: text }
+ok
+
+> put late { id: 1, tag: "x" }, { id: 2, tag: "y" }, { id: 3, tag: "x" }
+put 3
+
+> index late.tag
+ok
+
+> get late where tag = "x"
+1|x
+3|x
+
+> index late.tag
+error: 'late.tag' is already indexed
+
+> index late.nope
+error: table 'late' has no column 'nope'
+
+> index nope.c
+error: no table named 'nope'
+
+> table ni { id: int @key, v: int @null @index }
+ok
+
+> put ni { id: 1, v: 5 }, { id: 2 }, { id: 3, v: null }
+put 3
+
+> get ni where v = null
+2|null
+3|null
+
+> get ni where v = 5
+1|5
+
+> set ni where id = 1 { v = null }
+set 1
+
+> get ni where v = null
+1|null
+2|null
+3|null
+
+> get ni where v = 5

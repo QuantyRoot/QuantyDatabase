@@ -1,0 +1,59 @@
+# table lifecycle and DDL validation
+
+> show tables
+
+> table users { id: int @key, name: text @index, score: int = 0 }
+ok
+
+> show tables
+users
+
+> table users { id: int @key }
+error: table 'users' already exists
+
+> table empty_pk { a: int }
+error: table 'empty_pk' needs at least one @key column
+
+> table badnull { a: int @key @null }
+error: key column 'a' cannot be @null
+
+> table dup { a: int @key, a: text }
+error: column 'a' is defined twice in table 'dup'
+
+> table baddef { a: int @key, b: int = "x" }
+error: default for column 'b': a text value does not fit into a column of type int
+
+> table t2 { a: int @key }
+ok
+
+> show tables
+t2
+users
+
+> drop table t2
+ok
+
+> show tables
+users
+
+> drop table t2
+error: no table named 't2'
+
+> table composite { a: int @key, b: text @key, v: int = 0 }
+ok
+
+> put composite { a: 1, b: "x" }, { a: 1, b: "y" }
+put 2
+
+> put composite { a: 1, b: "x" }
+error: duplicate key (1, "x") in table 'composite'
+
+> get composite
+1|x|0
+1|y|0
+
+> drop table users
+ok
+
+> show tables
+composite

@@ -1,0 +1,15 @@
+[package]
+name = "quanty-exec"
+description = "Planner and executor for QuantyDB: catalog, rows, indexes"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+quanty-core = { path = "../quanty-core" }
+quanty-ql = { path = "../quanty-ql" }
+
+[dev-dependencies]
+tempfile = "3"

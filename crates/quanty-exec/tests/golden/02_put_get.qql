@@ -1,0 +1,76 @@
+# inserts, defaults, nulls, projections
+
+> table users { id: int @key, name: text, score: int = 0, bio: text @null }
+ok
+
+> put users { id: 1, name: "elchi" }
+put 1
+
+> put users { id: 2, name: "mira", score: 7, bio: "hi" }
+put 1
+
+> put users { id: 3, name: "nox" }, { id: 4, name: "rex", score: 2 }
+put 2
+
+> get users
+1|elchi|0|null
+2|mira|7|hi
+3|nox|0|null
+4|rex|2|null
+
+> get users { name }
+elchi
+mira
+nox
+rex
+
+> get users { score, id }
+0|1
+7|2
+0|3
+2|4
+
+> get users { name, name }
+elchi|elchi
+mira|mira
+nox|nox
+rex|rex
+
+> put users { id: 1, name: "dupe" }
+error: duplicate key (1) in table 'users'
+
+> put users { id: 5, name: "ok" }, { id: 5, name: "dupe" }
+error: duplicate key (5) in table 'users'
+
+# the failed statement above was atomic, id 5 never landed
+> get users where id = 5
+
+> put users { id: 6 }
+error: column 'name' is missing and has no default
+
+> put users { id: 7, name: "x", nope: 1 }
+error: table 'users' has no column 'nope'
+
+> put users { id: 8, name: "x", name: "y" }
+error: column 'name' appears twice in this row
+
+> put users { id: null, name: "x" }
+error: column 'id': null in a column that is not @null
+
+> put users { id: 9, name: null }
+error: column 'name': null in a column that is not @null
+
+> put users { id: 10, name: "n", bio: null }
+put 1
+
+> get users where id = 10
+10|n|0|null
+
+> put users { id: 2 + 9, name: "computed" }
+put 1
+
+> get users { id } where name = "computed"
+11
+
+> put users { id: name, name: "x" }
+error: unknown column 'name'
