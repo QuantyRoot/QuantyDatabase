@@ -1,0 +1,603 @@
+//! The copy-on-write B-tree.
+//!
+//! Every operation that changes a node writes the change to a page owned by
+//! the current write batch. Nodes on committed pages are never touched, so
+//! every committed root keeps describing a complete, frozen tree forever
+//! (until GC exists, and then only outside the retention window).
+//!
+//! Within a batch, nodes the batch already owns are rewritten in place, so
+//! a batch grows with its working set and not with its operation count.
+//!
+//! Deletes do not rebalance yet: emptied nodes are unlinked and single-child
+//! branches collapse, but underfull nodes stay. Correct, occasionally
+//! wasteful; rebalancing lands together with space reclamation in phase 3
+//! (ADR-010).
+
+use std::sync::Arc;
+
+use crate::error::{Error, Result};
+use crate::node::{leaf_cell_size, Node, ValueRef};
+use crate::page::{PageId, PageType, NIL_PAGE, PAGE_HEADER_LEN};
+use crate::pager::{Pager, WriteBatch};
+use crate::storage::Storage;
+
+/// Read access to pages, implemented by the pager (committed state) and by
+/// a write batch (committed state plus the batch's own pages).
+pub trait ReadPages {
+    fn read(&self, id: PageId) -> Result<Arc<[u8]>>;
+    fn page_size(&self) -> u32;
+}
+
+impl<S: Storage> ReadPages for Pager<S> {
+    fn read(&self, id: PageId) -> Result<Arc<[u8]>> {
+        self.read_page(id)
+    }
+
+    fn page_size(&self) -> u32 {
+        self.page_size()
+    }
+}
+
+impl<S: Storage> ReadPages for WriteBatch<'_, S> {
+    fn read(&self, id: PageId) -> Result<Arc<[u8]>> {
+        self.read_page(id)
+    }
+
+    fn page_size(&self) -> u32 {
+        self.page_size()
+    }
+}
+
+/// Longest allowed key. Keeps branch fanout healthy on every legal page
+/// size; values have no limit thanks to overflow chains.
+pub fn max_key_len(page_size: u32) -> usize {
+    page_size as usize / 8
+}
+
+/// Values above this go to an overflow chain instead of living inline.
+fn inline_max(page_size: u32) -> usize {
+    page_size as usize / 4
+}
+
+// ---------------------------------------------------------------------------
+// Reads
+// ---------------------------------------------------------------------------
+
+pub(crate) fn get<P: ReadPages>(src: &P, root: PageId, key: &[u8]) -> Result<Option<Vec<u8>>> {
+    if root == NIL_PAGE || key.len() > max_key_len(src.page_size()) {
+        return Ok(None);
+    }
+    let mut page = root;
+    loop {
+        let buf = src.read(page)?;
+        match Node::decode(&buf, page)? {
+            Node::Branch {
+                first_child,
+                entries,
+            } => {
+                page = child_for(first_child, &entries, key);
+            }
+            Node::Leaf { entries } => {
+                return match entries.binary_search_by(|(k, _)| k.as_slice().cmp(key)) {
+                    Ok(i) => Ok(Some(read_value(src, &entries[i].1)?)),
+                    Err(_) => Ok(None),
+                };
+            }
+        }
+    }
+}
+
+/// Which child of a branch covers `key`.
+fn child_for(first_child: PageId, entries: &[(Vec<u8>, PageId)], key: &[u8]) -> PageId {
+    let idx = entries.partition_point(|(k, _)| k.as_slice() <= key);
+    if idx == 0 {
+        first_child
+    } else {
+        entries[idx - 1].1
+    }
+}
+
+pub(crate) fn read_value<P: ReadPages>(src: &P, value: &ValueRef) -> Result<Vec<u8>> {
+    match value {
+        ValueRef::Inline(v) => Ok(v.clone()),
+        ValueRef::Overflow { head, len } => {
+            let chunk = overflow_capacity(src.page_size());
+            let mut out = Vec::with_capacity(*len as usize);
+            let mut page = *head;
+            // hard bound on chain length guards against pointer loops in a
+            // corrupted file
+            let max_pages = (*len as usize).div_ceil(chunk).max(1);
+            for _ in 0..max_pages {
+                if page == NIL_PAGE {
+                    break;
+                }
+                let buf = src.read(page)?;
+                if crate::page::page_type(&buf)? != PageType::Overflow {
+                    return Err(Error::corrupted(
+                        page,
+                        "overflow chain hit a non-overflow page",
+                    ));
+                }
+                let next = u64::from_le_bytes(
+                    buf[PAGE_HEADER_LEN..PAGE_HEADER_LEN + 8]
+                        .try_into()
+                        .expect("hdr"),
+                );
+                let used = u16::from_le_bytes(
+                    buf[PAGE_HEADER_LEN + 8..PAGE_HEADER_LEN + 10]
+                        .try_into()
+                        .expect("hdr"),
+                ) as usize;
+                if used > chunk {
+                    return Err(Error::corrupted(
+                        page,
+                        "overflow page claims impossible length",
+                    ));
+                }
+                out.extend_from_slice(&buf[PAGE_HEADER_LEN + 10..PAGE_HEADER_LEN + 10 + used]);
+                page = next;
+            }
+            if out.len() as u64 != *len || page != NIL_PAGE {
+                return Err(Error::corrupted(*head, "overflow chain length mismatch"));
+            }
+            Ok(out)
+        }
+    }
+}
+
+fn overflow_capacity(page_size: u32) -> usize {
+    page_size as usize - PAGE_HEADER_LEN - 8 - 2
+}
+
+// ---------------------------------------------------------------------------
+// Writes
+// ---------------------------------------------------------------------------
+
+enum Insert {
+    Done(PageId),
+    Split(PageId, Vec<u8>, PageId),
+}
+
+enum Delete {
+    NotFound,
+    Updated(PageId),
+    Emptied,
+}
+
+/// Insert or replace `key`. Returns the new root.
+pub(crate) fn put<S: Storage>(
+    batch: &mut WriteBatch<'_, S>,
+    root: PageId,
+    key: &[u8],
+    value: &[u8],
+) -> Result<PageId> {
+    let ps = batch.page_size();
+    if key.is_empty() {
+        return Err(Error::InvalidArgument("keys must not be empty"));
+    }
+    if key.len() > max_key_len(ps) {
+        return Err(Error::InvalidArgument(
+            "key exceeds max_key_len for this page size",
+        ));
+    }
+
+    let vref = if value.len() > inline_max(ps) {
+        write_overflow(batch, value)?
+    } else {
+        ValueRef::Inline(value.to_vec())
+    };
+
+    if root == NIL_PAGE {
+        let node = Node::Leaf {
+            entries: vec![(key.to_vec(), vref)],
+        };
+        return write_node(batch, None, &node);
+    }
+    match insert_rec(batch, root, key, vref)? {
+        Insert::Done(new_root) => Ok(new_root),
+        Insert::Split(left, sep, right) => {
+            let node = Node::Branch {
+                first_child: left,
+                entries: vec![(sep, right)],
+            };
+            write_node(batch, None, &node)
+        }
+    }
+}
+
+fn insert_rec<S: Storage>(
+    batch: &mut WriteBatch<'_, S>,
+    page: PageId,
+    key: &[u8],
+    value: ValueRef,
+) -> Result<Insert> {
+    let buf = batch.read_page(page)?;
+    let mut node = Node::decode(&buf, page)?;
+    match &mut node {
+        Node::Leaf { entries } => {
+            match entries.binary_search_by(|(k, _)| k.as_slice().cmp(key)) {
+                Ok(i) => entries[i].1 = value,
+                Err(i) => entries.insert(i, (key.to_vec(), value)),
+            }
+            finish_leaf(batch, page, node)
+        }
+        Node::Branch {
+            first_child,
+            entries,
+        } => {
+            let idx = entries.partition_point(|(k, _)| k.as_slice() <= key);
+            let child = if idx == 0 {
+                *first_child
+            } else {
+                entries[idx - 1].1
+            };
+            match insert_rec(batch, child, key, value)? {
+                Insert::Done(new_child) => {
+                    if idx == 0 {
+                        *first_child = new_child;
+                    } else {
+                        entries[idx - 1].1 = new_child;
+                    }
+                    Ok(Insert::Done(write_node(batch, Some(page), &node)?))
+                }
+                Insert::Split(left, sep, right) => {
+                    if idx == 0 {
+                        *first_child = left;
+                    } else {
+                        entries[idx - 1].1 = left;
+                    }
+                    entries.insert(idx, (sep, right));
+                    finish_branch(batch, page, node)
+                }
+            }
+        }
+    }
+}
+
+fn finish_leaf<S: Storage>(
+    batch: &mut WriteBatch<'_, S>,
+    old_page: PageId,
+    node: Node,
+) -> Result<Insert> {
+    let ps = batch.page_size() as usize;
+    if node.encoded_size() <= ps {
+        return Ok(Insert::Done(write_node(batch, Some(old_page), &node)?));
+    }
+    let Node::Leaf { entries } = node else {
+        unreachable!("finish_leaf on a branch")
+    };
+
+    // split by encoded size so wildly different value sizes still balance
+    let total: usize = entries.iter().map(|(k, v)| leaf_cell_size(k, v)).sum();
+    let mut acc = 0;
+    let mut split_at = entries.len() - 1;
+    for (i, (k, v)) in entries.iter().enumerate() {
+        acc += leaf_cell_size(k, v);
+        if acc >= total / 2 {
+            split_at = (i + 1).clamp(1, entries.len() - 1);
+            break;
+        }
+    }
+    let mut left_entries = entries;
+    let right_entries = left_entries.split_off(split_at);
+    let sep = right_entries[0].0.clone();
+
+    let left = write_node(
+        batch,
+        Some(old_page),
+        &Node::Leaf {
+            entries: left_entries,
+        },
+    )?;
+    let right = write_node(
+        batch,
+        None,
+        &Node::Leaf {
+            entries: right_entries,
+        },
+    )?;
+    Ok(Insert::Split(left, sep, right))
+}
+
+fn finish_branch<S: Storage>(
+    batch: &mut WriteBatch<'_, S>,
+    old_page: PageId,
+    node: Node,
+) -> Result<Insert> {
+    let ps = batch.page_size() as usize;
+    if node.encoded_size() <= ps {
+        return Ok(Insert::Done(write_node(batch, Some(old_page), &node)?));
+    }
+    let Node::Branch {
+        first_child,
+        entries,
+    } = node
+    else {
+        unreachable!("finish_branch on a leaf")
+    };
+    debug_assert!(
+        entries.len() >= 3,
+        "a splitting branch always has several entries"
+    );
+
+    let mid = (entries.len() / 2).clamp(1, entries.len() - 2);
+    let mut left_entries = entries;
+    let mut right_entries = left_entries.split_off(mid);
+    let (sep, right_first) = right_entries.remove(0);
+
+    let left = write_node(
+        batch,
+        Some(old_page),
+        &Node::Branch {
+            first_child,
+            entries: left_entries,
+        },
+    )?;
+    let right = write_node(
+        batch,
+        None,
+        &Node::Branch {
+            first_child: right_first,
+            entries: right_entries,
+        },
+    )?;
+    Ok(Insert::Split(left, sep, right))
+}
+
+/// Delete `key`. Returns the new root and whether the key existed.
+pub(crate) fn remove<S: Storage>(
+    batch: &mut WriteBatch<'_, S>,
+    root: PageId,
+    key: &[u8],
+) -> Result<(PageId, bool)> {
+    if root == NIL_PAGE || key.len() > max_key_len(batch.page_size()) {
+        return Ok((root, false));
+    }
+    Ok(match delete_rec(batch, root, key)? {
+        Delete::NotFound => (root, false),
+        Delete::Updated(new_root) => (new_root, true),
+        Delete::Emptied => (NIL_PAGE, true),
+    })
+}
+
+fn delete_rec<S: Storage>(
+    batch: &mut WriteBatch<'_, S>,
+    page: PageId,
+    key: &[u8],
+) -> Result<Delete> {
+    let buf = batch.read_page(page)?;
+    let mut node = Node::decode(&buf, page)?;
+    match &mut node {
+        Node::Leaf { entries } => {
+            let Ok(i) = entries.binary_search_by(|(k, _)| k.as_slice().cmp(key)) else {
+                return Ok(Delete::NotFound);
+            };
+            entries.remove(i);
+            if entries.is_empty() {
+                Ok(Delete::Emptied)
+            } else {
+                Ok(Delete::Updated(write_node(batch, Some(page), &node)?))
+            }
+        }
+        Node::Branch {
+            first_child,
+            entries,
+        } => {
+            // conceptual child index: 0 = first_child, i >= 1 = entries[i-1]
+            let idx = entries.partition_point(|(k, _)| k.as_slice() <= key);
+            let child = if idx == 0 {
+                *first_child
+            } else {
+                entries[idx - 1].1
+            };
+            match delete_rec(batch, child, key)? {
+                Delete::NotFound => Ok(Delete::NotFound),
+                Delete::Updated(new_child) => {
+                    if idx == 0 {
+                        *first_child = new_child;
+                    } else {
+                        entries[idx - 1].1 = new_child;
+                    }
+                    Ok(Delete::Updated(write_node(batch, Some(page), &node)?))
+                }
+                Delete::Emptied => {
+                    if idx == 0 {
+                        if entries.is_empty() {
+                            return Ok(Delete::Emptied);
+                        }
+                        *first_child = entries.remove(0).1;
+                    } else {
+                        entries.remove(idx - 1);
+                    }
+                    if entries.is_empty() {
+                        // single-child branch: collapse the level entirely
+                        return Ok(Delete::Updated(*first_child));
+                    }
+                    Ok(Delete::Updated(write_node(batch, Some(page), &node)?))
+                }
+            }
+        }
+    }
+}
+
+/// Serialize a node, reusing `old_page` when this batch already owns it.
+fn write_node<S: Storage>(
+    batch: &mut WriteBatch<'_, S>,
+    old_page: Option<PageId>,
+    node: &Node,
+) -> Result<PageId> {
+    let encoded = node.encode(batch.page_size());
+    let id = match old_page {
+        Some(id) if batch.owns(id) => id,
+        _ => batch.allocate(match node {
+            Node::Leaf { .. } => PageType::Leaf,
+            Node::Branch { .. } => PageType::Branch,
+        }),
+    };
+    batch.page_mut(id)?.copy_from_slice(&encoded);
+    Ok(id)
+}
+
+fn write_overflow<S: Storage>(batch: &mut WriteBatch<'_, S>, value: &[u8]) -> Result<ValueRef> {
+    let chunk = overflow_capacity(batch.page_size());
+    let ids: Vec<PageId> = value
+        .chunks(chunk)
+        .map(|_| batch.allocate(PageType::Overflow))
+        .collect();
+    for (i, (part, &id)) in value.chunks(chunk).zip(&ids).enumerate() {
+        let next = ids.get(i + 1).copied().unwrap_or(NIL_PAGE);
+        let page = batch.page_mut(id)?;
+        page[PAGE_HEADER_LEN..PAGE_HEADER_LEN + 8].copy_from_slice(&next.to_le_bytes());
+        page[PAGE_HEADER_LEN + 8..PAGE_HEADER_LEN + 10].copy_from_slice(
+            &u16::try_from(part.len())
+                .expect("chunk fits u16")
+                .to_le_bytes(),
+        );
+        page[PAGE_HEADER_LEN + 10..PAGE_HEADER_LEN + 10 + part.len()].copy_from_slice(part);
+    }
+    Ok(ValueRef::Overflow {
+        head: ids.first().copied().unwrap_or(NIL_PAGE),
+        len: value.len() as u64,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Range scans
+// ---------------------------------------------------------------------------
+
+/// Forward iterator over `[start, end)` in key order. `None` bounds mean
+/// unbounded. Yields owned key/value pairs with overflow values resolved.
+pub struct Scan<'a, P: ReadPages> {
+    src: &'a P,
+    /// Branches on the path with the index of the next conceptual child to
+    /// descend into once the current subtree is exhausted.
+    stack: Vec<(Node, usize)>,
+    leaf: Vec<(Vec<u8>, ValueRef)>,
+    leaf_idx: usize,
+    end: Option<Vec<u8>>,
+    failed: bool,
+}
+
+impl<'a, P: ReadPages> Scan<'a, P> {
+    pub(crate) fn new(
+        src: &'a P,
+        root: PageId,
+        start: Option<&[u8]>,
+        end: Option<&[u8]>,
+    ) -> Result<Self> {
+        let mut scan = Scan {
+            src,
+            stack: Vec::new(),
+            leaf: Vec::new(),
+            leaf_idx: 0,
+            end: end.map(<[u8]>::to_vec),
+            failed: false,
+        };
+        if root != NIL_PAGE {
+            scan.descend(root, start)?;
+        }
+        Ok(scan)
+    }
+
+    /// Walk down to the leaf that contains the first key >= start,
+    /// remembering the path for later sideways moves.
+    fn descend(&mut self, mut page: PageId, start: Option<&[u8]>) -> Result<()> {
+        loop {
+            let buf = self.src.read(page)?;
+            match Node::decode(&buf, page)? {
+                Node::Branch {
+                    first_child,
+                    entries,
+                } => {
+                    let idx = match start {
+                        Some(key) => entries.partition_point(|(k, _)| k.as_slice() <= key),
+                        None => 0,
+                    };
+                    let child = if idx == 0 {
+                        first_child
+                    } else {
+                        entries[idx - 1].1
+                    };
+                    self.stack.push((
+                        Node::Branch {
+                            first_child,
+                            entries,
+                        },
+                        idx + 1,
+                    ));
+                    page = child;
+                }
+                Node::Leaf { entries } => {
+                    self.leaf_idx = match start {
+                        Some(key) => entries.partition_point(|(k, _)| k.as_slice() < key),
+                        None => 0,
+                    };
+                    self.leaf = entries;
+                    return Ok(());
+                }
+            }
+        }
+    }
+
+    /// Move to the next leaf, popping exhausted branches.
+    fn advance_leaf(&mut self) -> Result<bool> {
+        while let Some((node, next_idx)) = self.stack.last_mut() {
+            let Node::Branch {
+                first_child,
+                entries,
+            } = node
+            else {
+                unreachable!("scan stack only holds branches")
+            };
+            if *next_idx > entries.len() {
+                self.stack.pop();
+                continue;
+            }
+            let child = if *next_idx == 0 {
+                *first_child
+            } else {
+                entries[*next_idx - 1].1
+            };
+            *next_idx += 1;
+            self.descend(child, None)?;
+            return Ok(true);
+        }
+        Ok(false)
+    }
+}
+
+impl<P: ReadPages> Iterator for Scan<'_, P> {
+    type Item = Result<(Vec<u8>, Vec<u8>)>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.failed {
+            return None;
+        }
+        loop {
+            if self.leaf_idx >= self.leaf.len() {
+                match self.advance_leaf() {
+                    Ok(true) => continue,
+                    Ok(false) => return None,
+                    Err(e) => {
+                        self.failed = true;
+                        return Some(Err(e));
+                    }
+                }
+            }
+            let (key, vref) = &self.leaf[self.leaf_idx];
+            if let Some(end) = &self.end {
+                if key >= end {
+                    return None;
+                }
+            }
+            self.leaf_idx += 1;
+            return match read_value(self.src, vref) {
+                Ok(value) => Some(Ok((key.clone(), value))),
+                Err(e) => {
+                    self.failed = true;
+                    Some(Err(e))
+                }
+            };
+        }
+    }
+}
