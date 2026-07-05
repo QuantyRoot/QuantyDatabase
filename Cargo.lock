@@ -63,7 +63,7 @@ dependencies = [
 
 [[package]]
 name = "quanty-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "crc32c",
  "parking_lot",
@@ -71,7 +71,7 @@ dependencies = [
 
 [[package]]
 name = "quanty-exec"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "quanty-core",
  "quanty-ql",
@@ -79,7 +79,7 @@ dependencies = [
 
 [[package]]
 name = "quanty-ql"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "quanty-core",
 ]
