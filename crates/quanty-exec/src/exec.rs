@@ -70,11 +70,23 @@ impl<S: Storage> Session<S> {
         &self.db
     }
 
-    /// Parse and execute one statement. One statement is one transaction:
-    /// it commits fully or leaves no trace.
+    /// Parse and execute one QQL statement. One statement is one
+    /// transaction: it commits fully or leaves no trace.
     pub fn execute(&mut self, source: &str) -> Result<Output, ExecError> {
         let stmt = quanty_ql::parse(source)?;
-        match &stmt {
+        self.run_parsed(&stmt)
+    }
+
+    /// Parse and execute one SQL statement. The SQL front end lowers onto
+    /// the same AST, so everything downstream of the parser is shared:
+    /// same planner, same executor, same transaction rule.
+    pub fn execute_sql(&mut self, source: &str) -> Result<Output, ExecError> {
+        let stmt = quanty_ql::parse_sql(source)?;
+        self.run_parsed(&stmt)
+    }
+
+    fn run_parsed(&mut self, stmt: &Statement) -> Result<Output, ExecError> {
+        match stmt {
             // branch and history statements manage their own commits at
             // the database level instead of running inside a write tx
             Statement::Branch { name, at } => {
@@ -135,7 +147,7 @@ impl<S: Storage> Session<S> {
             _ => {
                 let tx = self.db.begin();
                 let mut run = Run { tx, mutated: false };
-                let output = run.statement(&stmt)?;
+                let output = run.statement(stmt)?;
                 if run.mutated {
                     run.tx.commit()?;
                 }

@@ -6,7 +6,11 @@
 //! ending in `...` is a prefix match, everything else must match exactly.
 //!
 //! Each file runs top to bottom against one fresh in-memory database, so
-//! scripts build on their own earlier statements.
+//! scripts build on their own earlier statements. The extension picks the
+//! front end: .qql runs through the QQL parser, .sql through the SQL
+//! parser. Same engine underneath, which is the point: the sql_* scripts
+//! mirror the logical cases of their QQL counterparts and must produce
+//! identical results.
 
 use quanty_core::Db;
 use quanty_exec::Session;
@@ -47,14 +51,19 @@ fn line_matches(expected: &str, actual: &str) -> bool {
     }
 }
 
-fn run_file(name: &str, source: &str) -> (u64, Vec<String>) {
+fn run_file(name: &str, source: &str, sql: bool) -> (u64, Vec<String>) {
     let mut session = Session::new(Db::in_memory().expect("in-memory db"));
     let mut failures = Vec::new();
     let cases = parse_script(source);
     let count = cases.len() as u64;
 
     for case in cases {
-        let rendered = match session.execute(&case.statement) {
+        let result = if sql {
+            session.execute_sql(&case.statement)
+        } else {
+            session.execute(&case.statement)
+        };
+        let rendered = match result {
             Ok(output) => output.render(),
             Err(e) => format!("error: {e}"),
         };
@@ -85,7 +94,10 @@ fn golden() {
     let mut entries: Vec<_> = std::fs::read_dir(&dir)
         .expect("golden dir")
         .map(|e| e.expect("dir entry").path())
-        .filter(|p| p.extension().is_some_and(|ext| ext == "qql"))
+        .filter(|p| {
+            p.extension()
+                .is_some_and(|ext| ext == "qql" || ext == "sql")
+        })
         .collect();
     entries.sort();
     assert!(!entries.is_empty(), "no golden files found in {dir:?}");
@@ -95,7 +107,8 @@ fn golden() {
     for path in &entries {
         let source = std::fs::read_to_string(path).expect("read golden file");
         let name = path.file_name().unwrap().to_string_lossy().to_string();
-        let (count, mut fails) = run_file(&name, &source);
+        let sql = path.extension().is_some_and(|ext| ext == "sql");
+        let (count, mut fails) = run_file(&name, &source, sql);
         total += count;
         failures.append(&mut fails);
     }
