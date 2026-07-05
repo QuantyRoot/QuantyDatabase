@@ -72,3 +72,16 @@ jobs:
         run: cargo test -p quanty-ql --release --test parser_fuzz -- --nocapture
         env:
           QUANTY_FUZZ_SECS: "600"
+
+  sql-parser-fuzz:
+    name: sql parser fuzz (10 min)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: fuzz the SQL parser
+        run: cargo test -p quanty-ql --release --test sql_parser_fuzz -- --nocapture
+        env:
+          QUANTY_FUZZ_SECS: "600"
