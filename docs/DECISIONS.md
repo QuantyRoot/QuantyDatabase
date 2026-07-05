@@ -124,3 +124,37 @@ under this rule.
 
 The crash, heavy and fuzz jobs stay on stable. They exist to catch storage
 bugs, not toolchain drift, and one pinned job is enough for that.
+
+## ADR-014: The SQL dialect borrows the engine's semantics
+
+Phase 4 adds SQL as a second front end. The tempting promise is "sqlite
+compatible"; the honest one is "sqlite flavored". A dialect that quietly
+behaves almost like sqlite is a trap for exactly the queries where it
+matters, so the line is drawn the other way around: the SQL parser lowers
+onto the same AST as QQL, the engine's semantics apply unchanged, and every
+place where SQL tradition would disagree is either refused at parse time or
+documented in docs/SQL.md.
+
+The concrete calls, all guarded by golden tests:
+
+- Null comparisons. The engine's `= null` holds where SQL's `= NULL` never
+  matches. Comparisons written against the NULL literal are parse errors
+  pointing at IS NULL / IS NOT NULL, which lower onto the engine's
+  null-safe operators and mean exactly what the SQL forms promise. IS as a
+  general null-safe comparison works like sqlite's.
+- Names match exactly, in the case they were written. sqlite matches
+  case-insensitively; a case-insensitive catalog is a bigger change than a
+  documented rule, and one exact spelling keeps diffs honest. Quoted names
+  must still have identifier shape, because everything in the catalog has
+  to render back into QQL, the canonical language; the fuzzer holds the two
+  front ends to that with parse(pretty(lowered)) == lowered.
+- Foreign keys parse and are not enforced, which is sqlite's own default.
+  WITHOUT ROWID and STRICT parse and change nothing because they describe
+  properties every table here has anyway.
+- The lossy type mappings (NUMERIC on float, the date family on text)
+  follow sqlite affinity in spirit and are spelled out in the docs instead
+  of being discovered.
+
+Unsupported SQL is refused with an error naming the missing piece, never
+parsed into something subtly different. That includes joins and
+transactions until their slices of this phase land.
