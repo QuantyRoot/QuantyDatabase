@@ -26,6 +26,8 @@
 //! 1000). Failure detail lands in the panic message with the temp path so
 //! a failing file can be inspected.
 
+mod common;
+
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -131,7 +133,7 @@ fn crash_harness() {
     let started = Instant::now();
 
     for iter in 0..iters {
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = common::TestDir::new();
         let db_path = dir.path().join("crash.qdb");
 
         let mut child = Command::new(&exe)
@@ -351,7 +353,7 @@ fn crash_harness_tree() {
     let started = Instant::now();
 
     for iter in 0..iters {
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = common::TestDir::new();
         let db_path = dir.path().join("crash_tree.qdb");
 
         let mut child = Command::new(&exe)

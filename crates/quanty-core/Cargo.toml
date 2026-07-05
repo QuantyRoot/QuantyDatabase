@@ -13,5 +13,3 @@ repository.workspace = true
 crc32c = "0.6"
 parking_lot = "0.12"
 
-[dev-dependencies]
-tempfile = "3"

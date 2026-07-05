@@ -2,6 +2,8 @@
 //! scan bounds, commit log. The randomized heavy lifting lives in
 //! btree_model.rs; these pin down the specific behaviors one by one.
 
+mod common;
+
 use quanty_core::{Db, Error, FileStorage, MemStorage, PagerOptions, Value};
 
 fn small_db() -> Db<MemStorage> {
@@ -70,7 +72,7 @@ fn overwriting_a_key_replaces_the_value() {
 
 #[test]
 fn large_values_roundtrip_through_overflow_chains() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = common::TestDir::new();
     let path = dir.path().join("ovf.qdb");
 
     // spans many overflow pages, content position-dependent
@@ -175,7 +177,7 @@ fn the_log_walks_the_whole_history() {
 
 #[test]
 fn snapshots_survive_a_reopen() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = common::TestDir::new();
     let path = dir.path().join("history.qdb");
     let (c1, c2);
     {

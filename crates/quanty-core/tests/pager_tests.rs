@@ -2,6 +2,8 @@
 //! "hostile file" cases: a corrupted database must produce errors, never
 //! panics and never silently wrong data.
 
+mod common;
+
 use quanty_core::{Error, FileStorage, MemStorage, PageType, Pager, PagerOptions};
 
 fn opts(page_size: u32) -> PagerOptions {
@@ -29,7 +31,7 @@ fn check_body(buf: &[u8], seed: u8) {
 
 #[test]
 fn write_commit_reopen_read_roundtrip() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = common::TestDir::new();
     let path = dir.path().join("roundtrip.qdb");
 
     let mut ids = Vec::new();
@@ -97,7 +99,7 @@ fn committed_pages_are_not_writable() {
 
 #[test]
 fn dropped_batch_leaves_no_trace() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = common::TestDir::new();
     let path = dir.path().join("dropped.qdb");
     {
         let pager = Pager::create(FileStorage::create(&path).unwrap(), opts(512)).unwrap();
@@ -120,7 +122,7 @@ fn dropped_batch_leaves_no_trace() {
 
 #[test]
 fn bit_flip_in_data_page_is_detected() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = common::TestDir::new();
     let path = dir.path().join("flip.qdb");
     let id = {
         let pager = Pager::create(FileStorage::create(&path).unwrap(), opts(512)).unwrap();
@@ -143,7 +145,7 @@ fn bit_flip_in_data_page_is_detected() {
 
 #[test]
 fn one_broken_meta_slot_recovers_from_the_other() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = common::TestDir::new();
     let path = dir.path().join("meta1.qdb");
     {
         let pager = Pager::create(FileStorage::create(&path).unwrap(), opts(512)).unwrap();
@@ -160,7 +162,7 @@ fn one_broken_meta_slot_recovers_from_the_other() {
 
 #[test]
 fn both_meta_slots_broken_is_an_error_not_a_panic() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = common::TestDir::new();
     let path = dir.path().join("meta2.qdb");
     {
         Pager::create(FileStorage::create(&path).unwrap(), opts(512)).unwrap();
@@ -177,7 +179,7 @@ fn both_meta_slots_broken_is_an_error_not_a_panic() {
 
 #[test]
 fn garbage_file_is_rejected_as_invalid_format() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = common::TestDir::new();
     let path = dir.path().join("garbage.bin");
     std::fs::write(&path, vec![0x5A; 4096]).unwrap();
     match Pager::open(FileStorage::open(&path).unwrap(), PagerOptions::default()) {

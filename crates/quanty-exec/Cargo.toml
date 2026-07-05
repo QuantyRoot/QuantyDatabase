@@ -11,5 +11,3 @@ repository.workspace = true
 quanty-core = { path = "../quanty-core" }
 quanty-ql = { path = "../quanty-ql" }
 
-[dev-dependencies]
-tempfile = "3"

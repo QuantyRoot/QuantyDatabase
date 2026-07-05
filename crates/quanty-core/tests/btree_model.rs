@@ -7,6 +7,8 @@
 //! reproduces exactly. Tune with QUANTY_MODEL_SEQS (sequences per test) and
 //! QUANTY_MODEL_OPS (operations per sequence).
 
+mod common;
+
 use std::collections::BTreeMap;
 use std::ops::Bound;
 
@@ -249,7 +251,7 @@ fn model_on_disk_with_reopens() {
     let ops = env_or("QUANTY_MODEL_OPS", 300);
     for seq in 0..seqs {
         let seed = 0xD15C_0000_0000_0000 | seq;
-        let dir = tempfile::tempdir().unwrap();
+        let dir = common::TestDir::new();
         let path = dir.path().join("model.qdb");
         let db = Db::create(
             FileStorage::create(&path).unwrap(),
