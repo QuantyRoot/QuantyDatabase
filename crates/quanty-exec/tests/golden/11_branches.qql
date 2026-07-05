@@ -1,0 +1,58 @@
+# named branches: create, switch, isolation, show branches
+#
+# note: branch and switch are themselves commits (they write the refs
+# tree), so commit ids advance faster than the data writes alone. show
+# branches prints the head id per branch, marking the current one.
+
+> table users { id: int @key, name: text }
+ok
+
+> put users { id: 1, name: "a" }
+put 1
+
+> show branches
+* main @2
+
+> branch experiment
+ok
+
+# both branches point at the same head right after the fork
+> show branches
+  experiment @2
+* main @2
+
+> switch experiment
+switched to experiment
+
+> put users { id: 2, name: "b" }
+put 1
+
+# the experiment sees its own write
+> get users
+1|a
+2|b
+
+> switch main
+switched to main
+
+# main does not
+> get users
+1|a
+
+# the two heads have diverged
+> show branches
+  experiment @...
+* main @2
+
+# a branch rooted at the very first commit sees only what existed then
+> branch scratch at 1
+ok
+
+> switch scratch
+switched to scratch
+
+# commit 1 created the table but held no rows yet
+> get users
+
+> switch main
+switched to main

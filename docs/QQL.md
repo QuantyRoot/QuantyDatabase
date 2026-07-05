@@ -23,6 +23,17 @@ index users.score
 drop table users
 show tables
 explain get users where name = "elchi"
+
+get users where score > 10 as of 42          # read commit 42
+get users as of time 1700000000000           # read by wall clock time
+branch experiment                            # fork at the current head
+branch fix at 42                             # fork at a specific commit
+switch experiment                            # move new writes to a branch
+merge experiment                             # fast-forward merge
+drop branch experiment
+show branches
+log                                           # current branch history
+gc keep 10                                    # retain 10 commits per branch
 ```
 
 One statement per string. `#` starts a comment that runs to the end of the
@@ -104,26 +115,61 @@ primary key with equalities, `IndexScan` when an indexed column is pinned,
 `SeqScan` otherwise. Whatever the access path did not consume shows up as
 a `Filter` above it.
 
+## Branches and history
+
+Commits form a history you can read back and fork, the same shape as git.
+
+`branch <name>` creates a named branch at the current head, or at a given
+commit with `branch <name> at <id>`. It does not switch to the new branch.
+`switch <name>` points new writes at another branch. Each branch keeps its
+own head, so writes on one are invisible on another until merged. `show
+branches` lists them with their head commit ids, marking the current one with
+`*`.
+
+`merge <name>` fast-forwards the current branch to another branch's head. It
+succeeds only when the current branch has not advanced since the fork; a
+diverged merge is rejected rather than guessed at, because real three-way
+merges need conflict handling that does not exist yet.
+
+`get ... as of <id>` reads a table as it stood at a commit, schema included:
+a table that did not exist at that commit is reported as unknown. `as of time
+<ms>` resolves to the newest commit on the current branch at or before a unix
+millisecond timestamp. Projections, filters, ordering and limits all apply to
+a historical read exactly as to a live one. Commit ids are what `log` and
+every commit acknowledgment print.
+
+`log` lists the current branch's history, newest first, down to its retention
+floor. `gc keep <n>` reclaims the space of commits older than the `n` newest
+per branch; reads of a reclaimed commit fail with a clear message. Retaining
+zero commits is refused, since a branch must keep at least its head.
+
 ## Grammar
 
 ```
-statement  = table_def | drop | put | get | set | del | index | show | explain
+statement  = table_def | drop | put | get | set | del | index | show
+           | branch | switch | merge | log | gc | explain
 explain    = "explain" statement
 table_def  = "table" ident "{" column+ "}"
 column     = ident ":" type ("=" literal | "@" attr)*    (commas optional)
 type       = "int" | "float" | "text" | "bytes" | "bool"
 attr       = "key" | "index" | "null"
-drop       = "drop" "table" ident
+drop       = "drop" ("table" | "branch") ident
 put        = "put" ident row ("," row)*
 row        = "{" ident ":" expr ("," ident ":" expr)* "}"
 get        = "get" ident ("{" ident ("," ident)* "}")?
-             ("where" expr)? ("order" "by" ident ("asc"|"desc")?)?
+             as_of? ("where" expr)? ("order" "by" ident ("asc"|"desc")?)?
              ("limit" int)?
+as_of      = "as" "of" ("time")? int
 set        = "set" ident ("where" expr)? "{" assign ("," assign)* "}"
 assign     = ident ("=" | "+=" | "-=" | "*=" | "/=") expr
 del        = "del" ident ("where" expr)?
 index      = "index" ident "." ident
-show       = "show" "tables"
+show       = "show" ("tables" | "branches")
+branch     = "branch" ident ("at" int)?
+switch     = "switch" ident
+merge      = "merge" ident
+log        = "log"
+gc         = "gc" "keep" int
 
 expr       = or
 or         = and ("or" and)*

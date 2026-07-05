@@ -13,10 +13,12 @@
 //! 4. fsync
 //!
 //! A crash before step 4 completes leaves the previous meta untouched and
-//! the previous commit fully intact, because dirty pages are only ever
-//! written to fresh page ids, never over pages an older commit references.
-//! That rule is enforced here, not merely hoped for: `WriteBatch::page_mut`
-//! refuses to touch anything that was not allocated in the current batch.
+//! the previous commit fully intact, because dirty pages only ever go to
+//! page ids nothing references: fresh ids past the end of the file, or ids
+//! listed in the free list, which by construction (see freelist.rs) are
+//! referenced by nothing at all. That rule is enforced here, not merely
+//! hoped for: `WriteBatch::page_mut` refuses to touch anything that was
+//! not allocated in the current batch.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -26,6 +28,7 @@ use parking_lot::{Mutex, MutexGuard, RwLock};
 
 use crate::cache::PageCache;
 use crate::error::{Error, Result};
+use crate::freelist;
 use crate::meta::{self, Meta};
 use crate::page::{self, PageId, PageType, DEFAULT_PAGE_SIZE};
 use crate::storage::Storage;
@@ -82,6 +85,7 @@ impl<S: Storage> Pager<S> {
             page_count: 2,
             unix_ts_ms: now_ms(),
             commit_page: page::NIL_PAGE,
+            refs_root: page::NIL_PAGE,
         };
 
         // Both slots start out identical so recovery always finds a valid
@@ -151,6 +155,13 @@ impl<S: Storage> Pager<S> {
             catalog_root: base.catalog_root,
             freelist_root: base.freelist_root,
             commit_page: base.commit_page,
+            refs_root: base.refs_root,
+            reuse_pool: Vec::new(),
+            chain_cursor: base.freelist_root,
+            deferred_free: Vec::new(),
+            touched_freelist: false,
+            allow_reuse: true,
+            freelist_override: None,
             base,
             dirty: BTreeMap::new(),
         }
@@ -172,18 +183,73 @@ pub struct WriteBatch<'p, S: Storage> {
     catalog_root: PageId,
     freelist_root: PageId,
     commit_page: PageId,
+    refs_root: PageId,
+    /// Page ids ready for reuse, taken from consumed free list pages.
+    reuse_pool: Vec<PageId>,
+    /// Next unread page of the committed free list chain.
+    chain_cursor: PageId,
+    /// Chain pages this batch consumed. They are still referenced by the
+    /// previous meta until the commit point, so they must not be reused
+    /// now; they get listed in the free list this batch writes instead.
+    deferred_free: Vec<PageId>,
+    touched_freelist: bool,
+    /// Garbage collection turns reuse off so its own writes cannot land
+    /// on pages whose freedom it is in the middle of deciding.
+    allow_reuse: bool,
+    /// When set, the free list written at commit is exactly this list.
+    freelist_override: Option<Vec<PageId>>,
 }
 
 impl<S: Storage> WriteBatch<'_, S> {
-    /// Allocate a fresh page with an initialized header. Only pages
+    /// Allocate a page with an initialized header, reusing a free page
+    /// when one is available and extending the file otherwise. Only pages
     /// allocated here are writable in this batch.
     pub fn allocate(&mut self, page_type: PageType) -> PageId {
-        let id = self.next_page;
-        self.next_page += 1;
+        let id = self.take_page_id();
         let mut buf = vec![0u8; self.pager.page_size as usize].into_boxed_slice();
         page::init_header(&mut buf, page_type);
         self.dirty.insert(id, buf);
         id
+    }
+
+    fn take_page_id(&mut self) -> PageId {
+        if self.allow_reuse {
+            if self.reuse_pool.is_empty() && self.chain_cursor != page::NIL_PAGE {
+                // pull the next chain page into the pool; the chain page
+                // itself becomes free, but only for later transactions
+                if let Ok(buf) = self.pager.read_page(self.chain_cursor) {
+                    if let Ok((next, ids)) = freelist::decode_page(&buf, self.chain_cursor) {
+                        self.reuse_pool.extend(ids);
+                        self.deferred_free.push(self.chain_cursor);
+                        self.chain_cursor = next;
+                        self.touched_freelist = true;
+                    } else {
+                        // a broken chain is corruption, but allocation has
+                        // no error path; stop consuming and let the next
+                        // read of that page report it properly
+                        self.chain_cursor = page::NIL_PAGE;
+                    }
+                } else {
+                    self.chain_cursor = page::NIL_PAGE;
+                }
+            }
+            if let Some(id) = self.reuse_pool.pop() {
+                return id;
+            }
+        }
+        let id = self.next_page;
+        self.next_page += 1;
+        id
+    }
+
+    /// Replace the committed free list wholesale. Garbage collection uses
+    /// this after computing the exact free set. The batch keeps allocating
+    /// normally; at commit time the final list is the given set minus
+    /// every page this batch ended up writing, so nothing in-use can be
+    /// listed as free.
+    pub fn set_freelist(&mut self, ids: Vec<PageId>) {
+        self.freelist_override = Some(ids);
+        self.touched_freelist = true;
     }
 
     /// Mutable access to a page allocated in this batch. Refuses committed
@@ -224,6 +290,10 @@ impl<S: Storage> WriteBatch<'_, S> {
         self.commit_page = page;
     }
 
+    pub fn set_refs_root(&mut self, root: PageId) {
+        self.refs_root = root;
+    }
+
     /// The committed meta this batch is building on.
     pub fn base_meta(&self) -> &Meta {
         &self.base
@@ -244,16 +314,82 @@ impl<S: Storage> WriteBatch<'_, S> {
         self.next_page - self.base.page_count
     }
 
+    /// Persist the free list. Two sources feed it: the batch's own
+    /// leftovers (unused reuse pool plus consumed chain pages) or, when
+    /// garbage collection set an override, the full swept set minus every
+    /// page this batch wrote.
+    ///
+    /// Chain pages holding the list are taken from ids that are both in
+    /// the list and safe to write right now, meaning ids out of the reuse
+    /// pool, which by the free list invariant nothing references. Only
+    /// when those run out does the chain extend the file. Deferred pages
+    /// (the previous chain) are listed but never written, because the
+    /// previous meta still references them until the commit point.
+    fn settle_freelist(&mut self) -> Result<()> {
+        if !self.touched_freelist
+            && self.deferred_free.is_empty()
+            && self.freelist_override.is_none()
+        {
+            return Ok(()); // never looked at it, meta keeps the old root
+        }
+        let writable: Vec<PageId> = std::mem::take(&mut self.reuse_pool);
+        let (mut remaining, tail) = match self.freelist_override.take() {
+            Some(mut list) => {
+                // the swept set includes the old chain and old refs pages;
+                // they are listable (unreferenced once this meta lands)
+                // but everything the batch wrote is in use and must go
+                list.retain(|id| !self.dirty.contains_key(id));
+                (list, page::NIL_PAGE)
+            }
+            None => {
+                let mut ids = writable.clone();
+                ids.append(&mut self.deferred_free);
+                (ids, self.chain_cursor)
+            }
+        };
+        // from here on allocation is settling only
+        self.allow_reuse = false;
+        self.chain_cursor = page::NIL_PAGE;
+        self.deferred_free.clear();
+
+        let writable: std::collections::HashSet<PageId> = writable.into_iter().collect();
+        let per_page = freelist::ids_per_page(self.pager.page_size);
+        let mut head = tail;
+        while !remaining.is_empty() {
+            // a chain page from the list itself when one is writable,
+            // a fresh page otherwise
+            let page_id = match remaining.iter().position(|id| writable.contains(id)) {
+                Some(i) => {
+                    let id = remaining.swap_remove(i);
+                    let mut buf = vec![0u8; self.pager.page_size as usize].into_boxed_slice();
+                    page::init_header(&mut buf, PageType::FreeList);
+                    self.dirty.insert(id, buf);
+                    id
+                }
+                None => self.allocate(PageType::FreeList),
+            };
+            let take = remaining.len().min(per_page);
+            let chunk: Vec<PageId> = remaining.split_off(remaining.len() - take);
+            freelist::encode_page(self.page_mut(page_id)?, head, &chunk);
+            head = page_id;
+        }
+        self.freelist_root = head;
+        Ok(())
+    }
+
     /// Make the batch durable. Returns the new txid.
     pub fn commit(mut self) -> Result<u64> {
         let txid = self.base.txid + 1;
         let ps = self.pager.page_size as u64;
+
+        self.settle_freelist()?;
 
         for root in [
             self.data_root,
             self.catalog_root,
             self.freelist_root,
             self.commit_page,
+            self.refs_root,
         ] {
             if root != page::NIL_PAGE && (root < 2 || root >= self.next_page) {
                 return Err(Error::InvalidArgument("root pointer outside the file"));
@@ -279,6 +415,7 @@ impl<S: Storage> WriteBatch<'_, S> {
             page_count: self.next_page,
             unix_ts_ms: now_ms(),
             commit_page: self.commit_page,
+            refs_root: self.refs_root,
         };
         let mut meta_buf = vec![0u8; self.pager.page_size as usize];
         new_meta.encode(&mut meta_buf);

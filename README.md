@@ -65,8 +65,8 @@ bolted on:
                      +---------------------------------------------+
 ```
 
-- **Time travel.** `get users as of -2h`. Query any past state of your
-  database. The "oh no, I just broke prod" command.
+- **Time travel.** `get users as of 42` or `as of time <unix_ms>`. Query any
+  past state of your database. The "oh no, I just broke prod" command.
 - **Branching.** Fork your entire database in milliseconds, test a risky
   migration on the branch, merge or throw it away. Copy-on-write means a
   branch costs nothing until it diverges.
@@ -92,7 +92,7 @@ table users {
 
 get users where score > 100 order by score desc limit 10
 set users where id = 1 { score += 5 }
-get users as of -30m where name = "elchi"
+get users as of 42 where name = "elchi"
 ```
 
 Embedded in Rust:

@@ -250,6 +250,12 @@ fn verify_database(path: &std::path::Path, last_acked_txid: u64, iter: u64) {
 /// exactly this function.
 type Puts = Vec<(Vec<u8>, Vec<u8>)>;
 
+/// The child's progress counter lives inside the tree itself, so replay
+/// stays anchored to applied operations rather than to txids. That matters
+/// once garbage collection runs in the kill window: a gc commit consumes a
+/// txid without carrying workload, and a replay keyed on txids would drift.
+const OP_COUNTER_KEY: &[u8] = b"\x00op-counter";
+
 fn tree_ops_for_commit(c: u64) -> (Puts, Option<Vec<u8>>) {
     let key = |c: u64, j: u64| format!("k/{:08}/{j}", c).into_bytes();
     let mut puts = Vec::new();
@@ -297,19 +303,31 @@ fn crash_tree_child_entry() {
     writeln!(out, "READY").unwrap();
     out.flush().unwrap();
 
+    let mut db = db;
     loop {
         let mut tx = db.begin();
-        let c = tx.pending_commit_id();
-        let (puts, delete) = tree_ops_for_commit(c);
+        let n = match tx.get(OP_COUNTER_KEY).expect("child read counter") {
+            Some(v) => u64::from_le_bytes(v.as_slice().try_into().expect("counter width")) + 1,
+            None => 1,
+        };
+        let (puts, delete) = tree_ops_for_commit(n);
         for (k, v) in &puts {
             tx.put(k, v).expect("child put");
         }
         if let Some(k) = &delete {
             tx.delete(k).expect("child delete");
         }
-        let committed = tx.commit().expect("child commit");
-        writeln!(out, "COMMIT {committed}").unwrap();
+        tx.put(OP_COUNTER_KEY, &n.to_le_bytes())
+            .expect("child put counter");
+        tx.commit().expect("child commit");
+        writeln!(out, "COMMIT {n}").unwrap();
         out.flush().unwrap();
+
+        // garbage collection runs inside the kill window on purpose: a
+        // SIGKILL mid-gc must never cost a retained commit
+        if n % 6 == 0 {
+            db.gc(3).expect("child gc");
+        }
     }
 }
 
@@ -398,13 +416,20 @@ fn verify_tree_database(path: &std::path::Path, last_acked: u64, iter: u64) {
     )
     .unwrap_or_else(|e| panic!("iter {iter}: recovery failed: {e} ({path:?})"));
 
-    let recovered = db.head_commit();
+    let snap = db.snapshot();
+    let recovered = match snap
+        .get(OP_COUNTER_KEY)
+        .unwrap_or_else(|e| panic!("iter {iter}: counter read: {e} ({path:?})"))
+    {
+        Some(v) => u64::from_le_bytes(v.as_slice().try_into().expect("counter width")),
+        None => 0,
+    };
     assert!(
         recovered >= last_acked,
-        "iter {iter}: durability violation: recovered commit {recovered} < acknowledged {last_acked} ({path:?})",
+        "iter {iter}: durability violation: recovered op {recovered} < acknowledged {last_acked} ({path:?})",
     );
 
-    // replay the deterministic workload up to the recovered commit
+    // replay the deterministic workload up to the recovered operation
     let mut model = std::collections::BTreeMap::new();
     for c in 1..=recovered {
         let (puts, delete) = tree_ops_for_commit(c);
@@ -415,10 +440,12 @@ fn verify_tree_database(path: &std::path::Path, last_acked: u64, iter: u64) {
             model.remove(&k);
         }
     }
+    if recovered > 0 {
+        model.insert(OP_COUNTER_KEY.to_vec(), recovered.to_le_bytes().to_vec());
+    }
 
     // the reopened tree must contain exactly that state: nothing missing
     // (committed data survives), nothing extra (uncommitted work vanished)
-    let snap = db.snapshot();
     let got: Vec<_> = snap
         .scan(None, None)
         .unwrap_or_else(|e| panic!("iter {iter}: scan: {e} ({path:?})"))

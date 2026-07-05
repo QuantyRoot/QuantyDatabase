@@ -33,6 +33,11 @@ pub fn pretty(stmt: &Statement) -> String {
             if let Some(cols) = &g.projection {
                 out.push_str(&format!(" {{ {} }}", cols.join(", ")));
             }
+            match g.as_of {
+                Some(AsOf::Commit(n)) => out.push_str(&format!(" as of {n}")),
+                Some(AsOf::Time(n)) => out.push_str(&format!(" as of time {n}")),
+                None => {}
+            }
             if let Some(f) = &g.filter {
                 out.push_str(&format!(" where {}", expr(f)));
             }
@@ -73,6 +78,14 @@ pub fn pretty(stmt: &Statement) -> String {
         }
         Statement::IndexDef { table, column } => format!("index {table}.{column}"),
         Statement::ShowTables => "show tables".to_string(),
+        Statement::Branch { name, at: Some(n) } => format!("branch {name} at {n}"),
+        Statement::Branch { name, at: None } => format!("branch {name}"),
+        Statement::Switch { name } => format!("switch {name}"),
+        Statement::Merge { name } => format!("merge {name}"),
+        Statement::DropBranch { name } => format!("drop branch {name}"),
+        Statement::ShowBranches => "show branches".to_string(),
+        Statement::Log => "log".to_string(),
+        Statement::Gc { keep } => format!("gc keep {keep}"),
         Statement::Explain(inner) => format!("explain {}", pretty(inner)),
     }
 }

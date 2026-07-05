@@ -1,0 +1,59 @@
+# fast-forward merge and divergence rejection
+#
+# commit ids advance on every branch and switch, so merge acknowledgments
+# below use a prefix match rather than pinning an exact id.
+
+> table t { id: int @key, v: int = 0 }
+ok
+
+> put t { id: 1, v: 10 }
+put 1
+
+> branch feature
+ok
+
+> switch feature
+switched to feature
+
+> put t { id: 2, v: 20 }
+put 1
+
+> switch main
+switched to main
+
+# main has not moved since the fork, so this fast-forwards
+> merge feature
+merged feature, head is now commit ...
+
+> get t
+1|10
+2|20
+
+# merging again changes nothing
+> merge feature
+merged feature, head is now commit ...
+
+# now force a divergence
+> branch other
+ok
+
+> put t { id: 3, v: 30 }
+put 1
+
+> switch other
+switched to other
+
+> put t { id: 4, v: 40 }
+put 1
+
+> switch main
+switched to main
+
+> merge other
+error: storage error: invalid argument: branches have diverged; only fast-forward merges are supported for now
+
+> merge main
+error: storage error: invalid argument: cannot merge a branch into itself
+
+> merge ghost
+error: storage error: invalid argument: no branch with this name

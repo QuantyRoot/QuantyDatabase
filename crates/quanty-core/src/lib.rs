@@ -20,15 +20,17 @@ mod commit;
 mod db;
 pub mod encoding;
 mod error;
+mod freelist;
 mod meta;
 mod node;
 pub mod page;
 mod pager;
+pub mod refs;
 mod storage;
 
 pub use btree::{max_key_len, ReadPages, Scan};
 pub use commit::CommitInfo;
-pub use db::{Db, Snapshot, WriteTx};
+pub use db::{Db, DbStats, GcReport, Snapshot, WriteTx};
 pub use encoding::{decode_key, encode_key, Value};
 pub use error::{Error, Result};
 pub use meta::{Meta, FORMAT_VERSION, MAGIC};
@@ -36,4 +38,5 @@ pub use page::{
     PageId, PageType, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, MIN_PAGE_SIZE, NIL_PAGE, PAGE_HEADER_LEN,
 };
 pub use pager::{Pager, PagerOptions, WriteBatch};
+pub use refs::{BranchRef, DEFAULT_BRANCH};
 pub use storage::{FileStorage, MemStorage, Storage};

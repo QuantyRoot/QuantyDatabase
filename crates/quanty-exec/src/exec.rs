@@ -13,15 +13,19 @@
 //! and index probes are plain range scans.
 
 use quanty_core::{decode_key, encode_key, Db, Storage, Value, WriteTx};
-use quanty_ql::ast::{Direction, Expr, Get, Statement};
+use quanty_ql::ast::{AsOf, Direction, Expr, Get, Statement};
 
 use crate::catalog::{self, Table};
 use crate::error::ExecError;
 use crate::plan::{self, Access, AccessPlan, ExplainNode};
 use crate::value_ops::{self, NoScope, Scope};
+use quanty_core::Snapshot;
 
 /// Fetched rows: `(row key, decoded column values)` pairs.
 type Fetched = Vec<(Vec<u8>, Vec<Value>)>;
+
+/// Raw key/value pairs from a scan, before row decoding.
+type RawRows = Vec<(Vec<u8>, Vec<u8>)>;
 
 pub struct Session<S: Storage> {
     db: Db<S>,
@@ -66,17 +70,233 @@ impl<S: Storage> Session<S> {
         &self.db
     }
 
-    /// Parse and execute one statement.
-    pub fn execute(&self, source: &str) -> Result<Output, ExecError> {
+    /// Parse and execute one statement. One statement is one transaction:
+    /// it commits fully or leaves no trace.
+    pub fn execute(&mut self, source: &str) -> Result<Output, ExecError> {
         let stmt = quanty_ql::parse(source)?;
-        let tx = self.db.begin();
-        let mut run = Run { tx, mutated: false };
-        let output = run.statement(&stmt)?;
-        if run.mutated {
-            run.tx.commit()?;
+        match &stmt {
+            // branch and history statements manage their own commits at
+            // the database level instead of running inside a write tx
+            Statement::Branch { name, at } => {
+                self.db.create_branch(name, *at)?;
+                Ok(Output::Ok)
+            }
+            Statement::Switch { name } => {
+                self.db.switch_branch(name)?;
+                Ok(Output::Lines(vec![format!("switched to {name}")]))
+            }
+            Statement::Merge { name } => {
+                let head = self.db.merge_ff(name)?;
+                Ok(Output::Lines(vec![format!(
+                    "merged {name}, head is now commit {head}"
+                )]))
+            }
+            Statement::DropBranch { name } => {
+                self.db.drop_branch(name)?;
+                Ok(Output::Ok)
+            }
+            Statement::ShowBranches => {
+                let current = self.db.current_branch();
+                let lines = self
+                    .db
+                    .branches()?
+                    .into_iter()
+                    .map(|(name, r)| {
+                        let marker = if name == current { "*" } else { " " };
+                        format!("{marker} {name} @{}", r.head_id)
+                    })
+                    .collect();
+                Ok(Output::Lines(lines))
+            }
+            Statement::Log => {
+                let lines = self
+                    .db
+                    .log()?
+                    .into_iter()
+                    .map(|c| format!("commit {} parent {}", c.commit_id, c.parent_id))
+                    .collect();
+                Ok(Output::Lines(lines))
+            }
+            Statement::Gc { keep } => {
+                let report = self.db.gc(*keep as usize)?;
+                Ok(Output::Lines(vec![format!(
+                    "gc pruned {} commits, freed {} pages",
+                    report.pruned_commits, report.freed_pages
+                )]))
+            }
+            // reads from history resolve a snapshot and never open a tx
+            Statement::Get(get) if get.as_of.is_some() => {
+                let snap = match get.as_of.expect("checked above") {
+                    AsOf::Commit(id) => self.db.snapshot_at(id)?,
+                    AsOf::Time(t) => self.db.snapshot_at_time(t)?,
+                };
+                run_get(&snap, get)
+            }
+            _ => {
+                let tx = self.db.begin();
+                let mut run = Run { tx, mutated: false };
+                let output = run.statement(&stmt)?;
+                if run.mutated {
+                    run.tx.commit()?;
+                }
+                Ok(output)
+            }
         }
-        Ok(output)
     }
+}
+
+/// A point in time to read from: the open transaction (branch head plus
+/// the statement's own writes) or a historical snapshot. Reads go through
+/// this so `get` behaves identically against both, including reading the
+/// table definition of that point in time; schema changes travel through
+/// history like everything else.
+///
+/// Scans collect eagerly: the two underlying iterator types differ, and
+/// every result set passes through sorting and projection anyway.
+trait View {
+    fn view_get(&self, key: &[u8]) -> quanty_core::Result<Option<Vec<u8>>>;
+    fn view_scan(&self, start: Option<&[u8]>, end: Option<&[u8]>) -> Result<RawRows, ExecError>;
+    fn view_catalog_get(&self, key: &[u8]) -> quanty_core::Result<Option<Vec<u8>>>;
+}
+
+impl<S: Storage> View for WriteTx<'_, S> {
+    fn view_get(&self, key: &[u8]) -> quanty_core::Result<Option<Vec<u8>>> {
+        self.get(key)
+    }
+    fn view_scan(&self, start: Option<&[u8]>, end: Option<&[u8]>) -> Result<RawRows, ExecError> {
+        let mut out = Vec::new();
+        for item in self.scan(start, end)? {
+            out.push(item?);
+        }
+        Ok(out)
+    }
+    fn view_catalog_get(&self, key: &[u8]) -> quanty_core::Result<Option<Vec<u8>>> {
+        self.catalog_get(key)
+    }
+}
+
+impl<S: Storage> View for Snapshot<'_, S> {
+    fn view_get(&self, key: &[u8]) -> quanty_core::Result<Option<Vec<u8>>> {
+        self.get(key)
+    }
+    fn view_scan(&self, start: Option<&[u8]>, end: Option<&[u8]>) -> Result<RawRows, ExecError> {
+        let mut out = Vec::new();
+        for item in self.scan(start, end)? {
+            out.push(item?);
+        }
+        Ok(out)
+    }
+    fn view_catalog_get(&self, key: &[u8]) -> quanty_core::Result<Option<Vec<u8>>> {
+        self.catalog_get(key)
+    }
+}
+
+fn load_table_from<V: View>(view: &V, name: &str) -> Result<Table, ExecError> {
+    match view.view_catalog_get(&catalog::table_key(name))? {
+        Some(bytes) => Table::deserialize(&bytes),
+        None => Err(ExecError::plan(format!("no table named '{name}'"))),
+    }
+}
+
+/// The whole read pipeline: plan, fetch, filter, order, limit, project.
+fn run_get<V: View>(view: &V, get: &Get) -> Result<Output, ExecError> {
+    let table = load_table_from(view, &get.table)?;
+    if let Some(filter) = &get.filter {
+        validate_columns(&table, filter)?;
+    }
+    let plan = plan::plan_access(&table, get.filter.as_ref())?;
+    let mut rows: Vec<Vec<Value>> = fetch_rows(view, &table, &plan)?
+        .into_iter()
+        .map(|(_, v)| v)
+        .collect();
+
+    if let Some((col, dir)) = &get.order {
+        let pos = table
+            .column_position(col)
+            .ok_or_else(|| ExecError::plan(format!("cannot order by unknown column '{col}'")))?;
+        rows.sort_by(|a, b| {
+            let ord = value_ops::sort_cmp(&a[pos], &b[pos]);
+            match dir {
+                Direction::Asc => ord,
+                Direction::Desc => ord.reverse(),
+            }
+        });
+    }
+    if let Some(limit) = get.limit {
+        rows.truncate(limit as usize);
+    }
+    if let Some(cols) = &get.projection {
+        let positions: Vec<usize> = cols
+            .iter()
+            .map(|c| {
+                table.column_position(c).ok_or_else(|| {
+                    ExecError::plan(format!("table '{}' has no column '{c}'", table.name))
+                })
+            })
+            .collect::<Result<_, _>>()?;
+        rows = rows
+            .into_iter()
+            .map(|row| positions.iter().map(|&p| row[p].clone()).collect())
+            .collect();
+    }
+    Ok(Output::Rows(rows))
+}
+
+fn fetch_rows<V: View>(view: &V, table: &Table, plan: &AccessPlan) -> Result<Fetched, ExecError> {
+    let mut out = Vec::new();
+    match &plan.access {
+        Access::KeyLookup { key_values } => {
+            let key = row_key(table, key_values);
+            if let Some(bytes) = view.view_get(&key)? {
+                out.push((key, decode_row(table, &bytes)?));
+            }
+        }
+        Access::IndexScan {
+            value, index_id, ..
+        } => {
+            let prefix = {
+                let mut parts = vec![Value::Int(*index_id as i64)];
+                parts.push(value.clone());
+                encode_key(&parts)
+            };
+            let end = key_successor(&prefix);
+            for (entry_key, _) in view.view_scan(Some(&prefix), end.as_deref())? {
+                let decoded = decode_key(&entry_key)
+                    .map_err(|_| ExecError::exec("index entry does not decode"))?;
+                // (index_id, value, pk...)
+                if decoded.len() < 3 {
+                    return Err(ExecError::exec("index entry is too short, this is a bug"));
+                }
+                let pk = &decoded[2..];
+                let key = row_key(table, pk);
+                let bytes = view.view_get(&key)?.ok_or_else(|| {
+                    ExecError::exec("index points at a missing row, this is a bug")
+                })?;
+                out.push((key, decode_row(table, &bytes)?));
+            }
+        }
+        Access::SeqScan => {
+            let prefix = table_prefix(table.id);
+            let end = key_successor(&prefix);
+            for (key, bytes) in view.view_scan(Some(&prefix), end.as_deref())? {
+                out.push((key, decode_row(table, &bytes)?));
+            }
+        }
+    }
+    if let Some(residual) = &plan.residual {
+        let mut filtered = Vec::with_capacity(out.len());
+        for (key, values) in out {
+            let scope = RowScope {
+                table,
+                values: &values,
+            };
+            if value_ops::as_condition(value_ops::eval(residual, &scope)?)? {
+                filtered.push((key, values));
+            }
+        }
+        out = filtered;
+    }
+    Ok(out)
 }
 
 /// One statement's execution state.
@@ -101,6 +321,17 @@ impl<S: Storage> Run<'_, S> {
             Statement::IndexDef { table, column } => self.create_index(table, column),
             Statement::ShowTables => self.show_tables(),
             Statement::Explain(inner) => self.explain(inner),
+            // branch and history statements never reach here: Session::execute
+            // routes them before any write transaction opens
+            Statement::Branch { .. }
+            | Statement::Switch { .. }
+            | Statement::Merge { .. }
+            | Statement::DropBranch { .. }
+            | Statement::ShowBranches
+            | Statement::Log
+            | Statement::Gc { .. } => Err(ExecError::exec(
+                "branch or history statement reached the write path, this is a bug",
+            )),
         }
     }
 
@@ -109,10 +340,7 @@ impl<S: Storage> Run<'_, S> {
     // -----------------------------------------------------------------
 
     fn load_table(&self, name: &str) -> Result<Table, ExecError> {
-        match self.tx.catalog_get(&catalog::table_key(name))? {
-            Some(bytes) => Table::deserialize(&bytes),
-            None => Err(ExecError::plan(format!("no table named '{name}'"))),
-        }
+        load_table_from(&self.tx, name)
     }
 
     fn store_table(&mut self, table: &Table) -> Result<(), ExecError> {
@@ -291,47 +519,12 @@ impl<S: Storage> Run<'_, S> {
     }
 
     fn get(&self, get: &Get) -> Result<Output, ExecError> {
-        let table = self.load_table(&get.table)?;
-        if let Some(filter) = &get.filter {
-            validate_columns(&table, filter)?;
+        // as-of reads are handled before a write tx is ever opened, in
+        // `Session::execute`; inside a write statement they make no sense
+        if get.as_of.is_some() {
+            return Err(ExecError::plan("as of cannot run inside a write statement"));
         }
-        let plan = plan::plan_access(&table, get.filter.as_ref())?;
-        let mut rows: Vec<Vec<Value>> = self
-            .fetch(&table, &plan)?
-            .into_iter()
-            .map(|(_, v)| v)
-            .collect();
-
-        if let Some((col, dir)) = &get.order {
-            let pos = table.column_position(col).ok_or_else(|| {
-                ExecError::plan(format!("cannot order by unknown column '{col}'"))
-            })?;
-            rows.sort_by(|a, b| {
-                let ord = value_ops::sort_cmp(&a[pos], &b[pos]);
-                match dir {
-                    Direction::Asc => ord,
-                    Direction::Desc => ord.reverse(),
-                }
-            });
-        }
-        if let Some(limit) = get.limit {
-            rows.truncate(limit as usize);
-        }
-        if let Some(cols) = &get.projection {
-            let positions: Vec<usize> = cols
-                .iter()
-                .map(|c| {
-                    table.column_position(c).ok_or_else(|| {
-                        ExecError::plan(format!("table '{}' has no column '{c}'", table.name))
-                    })
-                })
-                .collect::<Result<_, _>>()?;
-            rows = rows
-                .into_iter()
-                .map(|row| positions.iter().map(|&p| row[p].clone()).collect())
-                .collect();
-        }
-        Ok(Output::Rows(rows))
+        run_get(&self.tx, get)
     }
 
     fn set(
@@ -434,62 +627,7 @@ impl<S: Storage> Run<'_, S> {
     /// Fetch `(row_key, values)` pairs for an access plan, residual filter
     /// already applied.
     fn fetch(&self, table: &Table, plan: &AccessPlan) -> Result<Fetched, ExecError> {
-        let mut out = Vec::new();
-        match &plan.access {
-            Access::KeyLookup { key_values } => {
-                let key = row_key(table, key_values);
-                if let Some(bytes) = self.tx.get(&key)? {
-                    out.push((key, decode_row(table, &bytes)?));
-                }
-            }
-            Access::IndexScan {
-                value, index_id, ..
-            } => {
-                let prefix = {
-                    let mut parts = vec![Value::Int(*index_id as i64)];
-                    parts.push(value.clone());
-                    encode_key(&parts)
-                };
-                let end = key_successor(&prefix);
-                for item in self.tx.scan(Some(&prefix), end.as_deref())? {
-                    let (entry_key, _) = item?;
-                    let decoded = decode_key(&entry_key)
-                        .map_err(|_| ExecError::exec("index entry does not decode"))?;
-                    // (index_id, value, pk...)
-                    if decoded.len() < 3 {
-                        return Err(ExecError::exec("index entry is too short, this is a bug"));
-                    }
-                    let pk = &decoded[2..];
-                    let key = row_key(table, pk);
-                    let bytes = self.tx.get(&key)?.ok_or_else(|| {
-                        ExecError::exec("index points at a missing row, this is a bug")
-                    })?;
-                    out.push((key, decode_row(table, &bytes)?));
-                }
-            }
-            Access::SeqScan => {
-                let prefix = table_prefix(table.id);
-                let end = key_successor(&prefix);
-                for item in self.tx.scan(Some(&prefix), end.as_deref())? {
-                    let (key, bytes) = item?;
-                    out.push((key, decode_row(table, &bytes)?));
-                }
-            }
-        }
-        if let Some(residual) = &plan.residual {
-            let mut filtered = Vec::with_capacity(out.len());
-            for (key, values) in out {
-                let scope = RowScope {
-                    table,
-                    values: &values,
-                };
-                if value_ops::as_condition(value_ops::eval(residual, &scope)?)? {
-                    filtered.push((key, values));
-                }
-            }
-            out = filtered;
-        }
-        Ok(out)
+        fetch_rows(&self.tx, table, plan)
     }
 
     fn delete_range(&mut self, prefix: &[u8]) -> Result<(), ExecError> {

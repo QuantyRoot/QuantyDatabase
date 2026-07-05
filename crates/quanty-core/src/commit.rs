@@ -1,9 +1,10 @@
 //! Commit records.
 //!
 //! Every commit writes one commit record page describing itself and linking
-//! to its predecessor. The meta points at the newest record, so the file
-//! carries its full history as a chain. Snapshots of old commits are looked
-//! up here; branches turn this chain into a DAG in phase 3.
+//! to its parent's record. History is a DAG exactly like git: records are
+//! the objects, branch heads in the refs tree are the pointers into it.
+//! Lookups walk parent edges from branch heads down to each branch's
+//! retention floor, never further, so pruned records are never touched.
 //!
 //! Body layout after the 16 byte page header (see docs/FORMAT.md):
 //!
@@ -14,7 +15,7 @@
 //! 32      8     data root page at this commit
 //! 40      8     catalog root page at this commit
 //! 48      8     page of the parent's commit record (0 = none)
-//! 56      8     wall clock, unix milliseconds (informational)
+//! 56      8     wall clock, unix milliseconds
 //! ```
 
 use crate::error::{Error, Result};
@@ -30,7 +31,8 @@ pub struct CommitInfo {
     pub parent_id: u64,
     pub data_root: PageId,
     pub catalog_root: PageId,
-    pub prev_commit_page: PageId,
+    /// Page of the parent's commit record, the DAG edge.
+    pub parent_page: PageId,
     pub unix_ts_ms: u64,
 }
 
@@ -38,20 +40,22 @@ const OFF_ID: usize = PAGE_HEADER_LEN;
 const OFF_PARENT: usize = OFF_ID + 8;
 const OFF_DATA_ROOT: usize = OFF_PARENT + 8;
 const OFF_CATALOG_ROOT: usize = OFF_DATA_ROOT + 8;
-const OFF_PREV_PAGE: usize = OFF_CATALOG_ROOT + 8;
-const OFF_TS: usize = OFF_PREV_PAGE + 8;
+const OFF_PARENT_PAGE: usize = OFF_CATALOG_ROOT + 8;
+const OFF_TS: usize = OFF_PARENT_PAGE + 8;
 
 /// Write the commit record for the transaction the batch is about to
-/// commit. Returns the record's page id for `WriteBatch::set_commit_page`.
+/// commit. The parent is the head of the branch being committed to, which
+/// is the base txid on a linear history but an older commit when writing
+/// on a branch that is not the newest.
 pub(crate) fn write_record<S: Storage>(
     batch: &mut WriteBatch<'_, S>,
+    parent_id: u64,
+    parent_page: PageId,
     data_root: PageId,
     catalog_root: PageId,
     unix_ts_ms: u64,
 ) -> Result<PageId> {
     let commit_id = batch.base_meta().txid + 1;
-    let parent_id = batch.base_meta().txid;
-    let prev_page = batch.base_meta().commit_page;
 
     let id = batch.allocate(PageType::Commit);
     let buf = batch.page_mut(id)?;
@@ -59,7 +63,7 @@ pub(crate) fn write_record<S: Storage>(
     buf[OFF_PARENT..OFF_PARENT + 8].copy_from_slice(&parent_id.to_le_bytes());
     buf[OFF_DATA_ROOT..OFF_DATA_ROOT + 8].copy_from_slice(&data_root.to_le_bytes());
     buf[OFF_CATALOG_ROOT..OFF_CATALOG_ROOT + 8].copy_from_slice(&catalog_root.to_le_bytes());
-    buf[OFF_PREV_PAGE..OFF_PREV_PAGE + 8].copy_from_slice(&prev_page.to_le_bytes());
+    buf[OFF_PARENT_PAGE..OFF_PARENT_PAGE + 8].copy_from_slice(&parent_page.to_le_bytes());
     buf[OFF_TS..OFF_TS + 8].copy_from_slice(&unix_ts_ms.to_le_bytes());
     Ok(id)
 }
@@ -76,24 +80,55 @@ pub(crate) fn read_record<P: ReadPages>(src: &P, page_id: PageId) -> Result<Comm
         parent_id: u64_at(OFF_PARENT),
         data_root: u64_at(OFF_DATA_ROOT),
         catalog_root: u64_at(OFF_CATALOG_ROOT),
-        prev_commit_page: u64_at(OFF_PREV_PAGE),
+        parent_page: u64_at(OFF_PARENT_PAGE),
         unix_ts_ms: u64_at(OFF_TS),
     })
 }
 
-/// Walk the chain from the newest record and return the record for
-/// `commit_id`. Linear for now; a commit index tree arrives with branches.
-pub(crate) fn find<P: ReadPages>(src: &P, head: PageId, commit_id: u64) -> Result<CommitInfo> {
+/// Walk parent edges from a branch head and return the record for
+/// `commit_id`, stopping at the branch's retention floor. `floor` is the
+/// oldest retained commit id; 0 means the walk may reach the root. The
+/// floor exists so a walk never follows a parent edge into a record that
+/// garbage collection has reclaimed.
+pub(crate) fn find<P: ReadPages>(
+    src: &P,
+    head: PageId,
+    floor: u64,
+    commit_id: u64,
+) -> Result<Option<CommitInfo>> {
     let mut at = head;
     while at != NIL_PAGE {
         let rec = read_record(src, at)?;
         if rec.commit_id == commit_id {
-            return Ok(rec);
+            return Ok(Some(rec));
         }
-        if rec.commit_id < commit_id {
-            break; // the chain is ordered, no point walking further back
+        if rec.commit_id < commit_id || rec.commit_id <= floor {
+            return Ok(None); // ids only shrink down the edge; floor is the wall
         }
-        at = rec.prev_commit_page;
+        at = rec.parent_page;
     }
-    Err(Error::InvalidArgument("no such commit id"))
+    Ok(None)
+}
+
+/// Newest record on a branch with a timestamp at or before `unix_ts_ms`,
+/// respecting the retention floor. Returns `None` when every retained
+/// commit is newer than the requested time.
+pub(crate) fn find_at_time<P: ReadPages>(
+    src: &P,
+    head: PageId,
+    floor: u64,
+    unix_ts_ms: u64,
+) -> Result<Option<CommitInfo>> {
+    let mut at = head;
+    while at != NIL_PAGE {
+        let rec = read_record(src, at)?;
+        if rec.unix_ts_ms <= unix_ts_ms {
+            return Ok(Some(rec));
+        }
+        if rec.commit_id <= floor {
+            return Ok(None);
+        }
+        at = rec.parent_page;
+    }
+    Ok(None)
 }

@@ -57,15 +57,16 @@ Acceptance:
 ## Phase 3: Time travel + branches
 
 AS OF (timestamp and commit id), named branches, create/switch/delete,
-fast-forward merge, `quanty log`, retention policies, incremental GC.
+fast-forward merge, `quanty log`, retention policies, GC (mark and sweep;
+an incremental variant can come later if pauses ever matter).
 
 Acceptance:
-- [ ] AS OF returns historically correct results in golden tests
-- [ ] branch, write divergent data on two branches, read both correctly
-- [ ] fast-forward merge works, non-ff merge is cleanly rejected for now
-- [ ] GC reclaims space (file stops growing under keep=heads churn workload)
+- [x] AS OF returns historically correct results in golden tests
+- [x] branch, write divergent data on two branches, read both correctly
+- [x] fast-forward merge works, non-ff merge is cleanly rejected for now
+- [x] GC reclaims space (file stops growing under keep=heads churn workload)
       and never touches a retained commit (verified by the crash harness
-      running concurrently with GC)
+      running GC in the kill window)
 
 ## Phase 4: SQL dialect + SQLite import
 

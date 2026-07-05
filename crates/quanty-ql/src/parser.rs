@@ -111,13 +111,23 @@ impl Parser {
 
     fn statement(&mut self) -> Result<Statement, ParseError> {
         let at = self.at();
-        let verb =
-            self.ident("a statement (table, get, put, set, del, drop, index, show, explain)")?;
+        let verb = self.ident(
+            "a statement (table, get, put, set, del, drop, index, show, branch, switch, merge, log, gc, explain)",
+        )?;
         match verb.as_str() {
             "table" => self.table_def(),
             "drop" => {
-                self.expect_kw("table")?;
-                Ok(Statement::DropTable { name: self.ident("a table name")? })
+                let what_at = self.at();
+                match self.ident("'table' or 'branch' after drop")?.as_str() {
+                    "table" => Ok(Statement::DropTable { name: self.ident("a table name")? }),
+                    "branch" => {
+                        Ok(Statement::DropBranch { name: self.ident("a branch name")? })
+                    }
+                    other => Err(ParseError::at(
+                        what_at,
+                        format!("drop works on 'table' or 'branch', not '{other}'"),
+                    )),
+                }
             }
             "put" => self.put(),
             "get" => self.get(),
@@ -130,13 +140,52 @@ impl Parser {
                 Ok(Statement::IndexDef { table, column })
             }
             "show" => {
-                self.expect_kw("tables")?;
-                Ok(Statement::ShowTables)
+                let what_at = self.at();
+                match self.ident("'tables' or 'branches' after show")?.as_str() {
+                    "tables" => Ok(Statement::ShowTables),
+                    "branches" => Ok(Statement::ShowBranches),
+                    other => Err(ParseError::at(
+                        what_at,
+                        format!("show knows 'tables' and 'branches', not '{other}'"),
+                    )),
+                }
+            }
+            "branch" => {
+                let name = self.ident("a branch name")?;
+                let at = if self.eat_kw("at") {
+                    let n_at = self.at();
+                    match self.bump() {
+                        Token::Int(n) if n >= 0 => Some(n as u64),
+                        _ => {
+                            return Err(ParseError::at(
+                                n_at,
+                                "branch ... at wants a commit id (a non-negative integer)",
+                            ))
+                        }
+                    }
+                } else {
+                    None
+                };
+                Ok(Statement::Branch { name, at })
+            }
+            "switch" => Ok(Statement::Switch { name: self.ident("a branch name")? }),
+            "merge" => Ok(Statement::Merge { name: self.ident("a branch name")? }),
+            "log" => Ok(Statement::Log),
+            "gc" => {
+                self.expect_kw("keep")?;
+                let n_at = self.at();
+                match self.bump() {
+                    Token::Int(n) if n >= 0 => Ok(Statement::Gc { keep: n as u64 }),
+                    _ => Err(ParseError::at(
+                        n_at,
+                        "gc keep wants the number of commits to retain per branch",
+                    )),
+                }
             }
             "explain" => Ok(Statement::Explain(Box::new(self.statement()?))),
             other => Err(ParseError::at(
                 at,
-                format!("'{other}' is not a statement (try table, get, put, set, del, drop, index, show, explain)"),
+                format!("'{other}' is not a statement (try table, get, put, set, del, drop, index, show, branch, switch, merge, log, gc, explain)"),
             )),
         }
     }
@@ -261,6 +310,26 @@ impl Parser {
         } else {
             None
         };
+        let as_of = if self.eat_kw("as") {
+            self.expect_kw("of")?;
+            let time = self.eat_kw("time");
+            let n_at = self.at();
+            match self.bump() {
+                Token::Int(n) if n >= 0 => Some(if time {
+                    AsOf::Time(n as u64)
+                } else {
+                    AsOf::Commit(n as u64)
+                }),
+                _ => {
+                    return Err(ParseError::at(
+                        n_at,
+                        "as of wants a commit id, or 'as of time' a unix millisecond timestamp",
+                    ))
+                }
+            }
+        } else {
+            None
+        };
         let filter = if self.eat_kw("where") {
             Some(self.expr()?)
         } else {
@@ -291,6 +360,7 @@ impl Parser {
         Ok(Statement::Get(Get {
             table,
             projection,
+            as_of,
             filter,
             order,
             limit,
@@ -524,6 +594,46 @@ fn show(token: &Token) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn time_travel_and_branch_statements_roundtrip() {
+        for q in [
+            "get users as of 42",
+            "get users { name } as of time 1700000000000 where score > 1 limit 2",
+            "branch experiment",
+            "branch fix at 17",
+            "switch experiment",
+            "merge experiment",
+            "drop branch experiment",
+            "show branches",
+            "log",
+            "gc keep 10",
+            "explain get users as of 3",
+        ] {
+            let ast = parse(q).unwrap_or_else(|e| panic!("{q}: {e}"));
+            assert_eq!(
+                parse(&crate::pretty(&ast)).unwrap(),
+                ast,
+                "roundtrip of {q}"
+            );
+        }
+    }
+
+    #[test]
+    fn time_travel_and_branch_statement_errors_point_at_the_problem() {
+        for (q, needle) in [
+            ("get users as 5", "of"),
+            ("get users as of x", "commit id"),
+            ("gc", "keep"),
+            ("gc keep", "retain"),
+            ("branch b at -1", "non-negative"),
+            ("drop users", "'table' or 'branch'"),
+            ("show everything", "branches"),
+        ] {
+            let err = parse(q).unwrap_err().to_string();
+            assert!(err.contains(needle), "{q}: expected {needle:?} in {err:?}");
+        }
+    }
 
     #[test]
     fn parses_the_architecture_examples() {

@@ -8,11 +8,13 @@
 //! Within a batch, nodes the batch already owns are rewritten in place, so
 //! a batch grows with its working set and not with its operation count.
 //!
-//! Deletes do not rebalance yet: emptied nodes are unlinked and single-child
-//! branches collapse, but underfull nodes stay. Correct, occasionally
-//! wasteful; rebalancing lands together with space reclamation in phase 3
-//! (ADR-010).
+//! Deletes merge underfull nodes with a neighbor when the pair fits into
+//! one page (ADR-010). There is no key borrowing between siblings: a lone
+//! underfull node between two full neighbors stays as it is, which keeps
+//! the logic small and bounds waste well enough in practice. Emptied nodes
+//! are unlinked and single-child branches collapse into their child.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use crate::error::{Error, Result};
@@ -398,6 +400,11 @@ fn delete_rec<S: Storage>(
                     } else {
                         entries[idx - 1].1 = new_child;
                     }
+                    merge_underfull_child(batch, first_child, entries, idx)?;
+                    if entries.is_empty() {
+                        // merged down to a single child: collapse the level
+                        return Ok(Delete::Updated(*first_child));
+                    }
                     Ok(Delete::Updated(write_node(batch, Some(page), &node)?))
                 }
                 Delete::Emptied => {
@@ -421,6 +428,164 @@ fn delete_rec<S: Storage>(
 }
 
 /// Serialize a node, reusing `old_page` when this batch already owns it.
+/// After a delete descended into the child at conceptual index `idx`
+/// (0 = first_child, i >= 1 = entries[i - 1]), merge that child with a
+/// neighbor when it has become underfull and the pair fits into one page.
+/// Cascades naturally: the parent gets smaller here, and the caller one
+/// level up runs the same check on it.
+fn merge_underfull_child<S: Storage>(
+    batch: &mut WriteBatch<'_, S>,
+    first_child: &mut PageId,
+    entries: &mut Vec<(Vec<u8>, PageId)>,
+    idx: usize,
+) -> Result<()> {
+    if entries.is_empty() {
+        return Ok(()); // single child, nothing to merge with
+    }
+    let ps = batch.page_size() as usize;
+    let child_page = if idx == 0 {
+        *first_child
+    } else {
+        entries[idx - 1].1
+    };
+    let child_buf = batch.read_page(child_page)?;
+    if Node::decode(&child_buf, child_page)?.encoded_size() >= ps / 4 {
+        return Ok(()); // healthy
+    }
+
+    // prefer the right neighbor; the last child merges leftward
+    let (left_idx, right_idx) = if idx < entries.len() {
+        (idx, idx + 1)
+    } else {
+        (idx - 1, idx)
+    };
+    let left_page = if left_idx == 0 {
+        *first_child
+    } else {
+        entries[left_idx - 1].1
+    };
+    let right_page = entries[right_idx - 1].1;
+    let left_buf = batch.read_page(left_page)?;
+    let right_buf = batch.read_page(right_page)?;
+    let left = Node::decode(&left_buf, left_page)?;
+    let right = Node::decode(&right_buf, right_page)?;
+
+    let merged = match (left, right) {
+        (Node::Leaf { entries: mut l }, Node::Leaf { entries: r }) => {
+            l.extend(r);
+            Node::Leaf { entries: l }
+        }
+        (
+            Node::Branch {
+                first_child: lf,
+                entries: mut l,
+            },
+            Node::Branch {
+                first_child: rf,
+                entries: r,
+            },
+        ) => {
+            // the parent separator is exactly the key the right node's
+            // first child needs once it joins the left node's entry list
+            let sep = entries[right_idx - 1].0.clone();
+            l.push((sep, rf));
+            l.extend(r);
+            Node::Branch {
+                first_child: lf,
+                entries: l,
+            }
+        }
+        _ => {
+            return Err(Error::corrupted(
+                left_page,
+                "sibling nodes of different kinds",
+            ))
+        }
+    };
+
+    // leave headroom so a merge does not split again on the next insert
+    if merged.encoded_size() > ps * 7 / 8 {
+        return Ok(());
+    }
+    let new_left = write_node(batch, Some(left_page), &merged)?;
+    if left_idx == 0 {
+        *first_child = new_left;
+    } else {
+        entries[left_idx - 1].1 = new_left;
+    }
+    entries.remove(right_idx - 1);
+    Ok(())
+}
+
+/// Insert every page a tree references into `out`: node pages plus
+/// overflow chain pages. Garbage collection marks live pages with this;
+/// `Db::stats` reuses it for diagnostics. Skipping already-present pages
+/// is not just a cycle guard, it makes marking shared COW structure
+/// between commits cheap, because an already-marked node implies an
+/// already-marked subtree.
+pub(crate) fn collect_pages<P: ReadPages>(
+    src: &P,
+    root: PageId,
+    out: &mut HashSet<PageId>,
+) -> Result<()> {
+    if root == NIL_PAGE {
+        return Ok(());
+    }
+    let mut stack = vec![root];
+    while let Some(page) = stack.pop() {
+        if !out.insert(page) {
+            continue;
+        }
+        let buf = src.read(page)?;
+        match Node::decode(&buf, page)? {
+            Node::Leaf { entries } => {
+                for (_, value) in entries {
+                    if let ValueRef::Overflow { head, len } = value {
+                        collect_overflow(src, head, len, out)?;
+                    }
+                }
+            }
+            Node::Branch {
+                first_child,
+                entries,
+            } => {
+                stack.push(first_child);
+                stack.extend(entries.into_iter().map(|(_, child)| child));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn collect_overflow<P: ReadPages>(
+    src: &P,
+    head: PageId,
+    len: u64,
+    out: &mut HashSet<PageId>,
+) -> Result<()> {
+    let chunk = overflow_capacity(src.page_size());
+    let max_pages = (len as usize).div_ceil(chunk).max(1);
+    let mut page = head;
+    for _ in 0..max_pages {
+        if page == NIL_PAGE || !out.insert(page) {
+            break;
+        }
+        let buf = src.read(page)?;
+        if crate::page::page_type(&buf)? != PageType::Overflow {
+            return Err(Error::corrupted(
+                page,
+                "overflow chain hit a non-overflow page",
+            ));
+        }
+        page = u64::from_le_bytes(
+            buf[PAGE_HEADER_LEN..PAGE_HEADER_LEN + 8]
+                .try_into()
+                .expect("hdr"),
+        );
+    }
+    Ok(())
+}
+
 fn write_node<S: Storage>(
     batch: &mut WriteBatch<'_, S>,
     old_page: Option<PageId>,

@@ -1,0 +1,44 @@
+# log walks branch history; gc reclaims commits outside retention
+#
+# no branches here, so ids are the data writes: table = 1, puts = 2, 3, 4.
+
+> table t { id: int @key }
+ok
+
+> put t { id: 1 }
+put 1
+
+> put t { id: 2 }
+put 1
+
+> put t { id: 3 }
+put 1
+
+# newest first, down to the empty root
+> log
+commit 4 parent 3
+commit 3 parent 2
+commit 2 parent 1
+commit 1 parent 0
+
+# keep the two newest commits; freed page count depends on layout
+> gc keep 2
+gc pruned ...
+
+# the retained commits still read
+> get t as of 4
+1
+2
+3
+
+# the pruned ones are gone, with a clear message
+> get t as of 1
+error: storage error: invalid argument: no such commit id (it may have been garbage collected)
+
+# log now stops at the retention floor
+> log
+commit 4 parent 3
+commit 3 parent 2
+
+> gc keep 0
+error: storage error: invalid argument: gc must retain at least one commit per branch

@@ -27,8 +27,31 @@ pub enum Statement {
     IndexDef { table: String, column: String },
     /// `show tables`
     ShowTables,
+    /// `branch experiment` or `branch fix at 42`
+    Branch { name: String, at: Option<u64> },
+    /// `switch experiment`
+    Switch { name: String },
+    /// `merge experiment` (fast-forward only for now)
+    Merge { name: String },
+    /// `drop branch experiment`
+    DropBranch { name: String },
+    /// `show branches`
+    ShowBranches,
+    /// `log`, the current branch's history
+    Log,
+    /// `gc keep 10`
+    Gc { keep: u64 },
     /// `explain <statement>`
     Explain(Box<Statement>),
+}
+
+/// `as of 42` pins a commit id; `as of time 1700000000000` resolves the
+/// newest commit at or before a unix millisecond timestamp on the current
+/// branch. Commit ids are what `log` and every commit acknowledgment print.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AsOf {
+    Commit(u64),
+    Time(u64),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -36,6 +59,8 @@ pub struct Get {
     pub table: String,
     /// None means all columns in declaration order.
     pub projection: Option<Vec<String>>,
+    /// Read from history instead of the branch head.
+    pub as_of: Option<AsOf>,
     pub filter: Option<Expr>,
     pub order: Option<(String, Direction)>,
     pub limit: Option<u64>,

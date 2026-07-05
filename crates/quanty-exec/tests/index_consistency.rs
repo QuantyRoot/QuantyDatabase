@@ -38,7 +38,7 @@ fn rows(output: Output) -> Vec<Vec<quanty_core::Value>> {
 
 fn run_sequence(seed: u64) {
     let mut rng = Rng(seed);
-    let session = Session::new(Db::in_memory().unwrap());
+    let mut session = Session::new(Db::in_memory().unwrap());
     session
         .execute("table w { id: int @key, tag: text @index, v: int @null @index, plain: int = 0 }")
         .unwrap_or_else(|e| panic!("seed {seed}: create: {e}"));
@@ -156,7 +156,7 @@ fn indexes_stay_consistent_under_random_workloads() {
 fn verifier_actually_detects_damage() {
     // a checker that cannot fail checks nothing: damage an index entry on
     // purpose and demand a complaint
-    let session = Session::new(Db::in_memory().unwrap());
+    let mut session = Session::new(Db::in_memory().unwrap());
     session
         .execute("table d { id: int @key, tag: text @index }")
         .unwrap();

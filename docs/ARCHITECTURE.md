@@ -28,7 +28,7 @@ If code and this doc disagree, fix one of them.
  |  QQL lexer/parser -> logical plan -> physical plan -> executor|
  +-------------------------------+-------------------------------+
  |  catalog                                                      |
- |  schemas, tables, indexes, branches (stored as system tables) |
+ |  schemas, tables, indexes (branch heads live in the refs tree) |
  +-------------------------------+-------------------------------+
  |  storage core                                                 |
  |  pager | COW B-tree | commit log | MVCC | free list | blobs   |
@@ -97,9 +97,13 @@ wall clock timestamp
 optional message / tag
 ```
 
-Commits form a DAG exactly like git. Branch heads are stored in a small
-system table. `AS OF <time>` resolves to the newest commit on the current
-branch with timestamp <= time. `AS OF #<commit>` pins an exact commit.
+Commits form a DAG exactly like git. Branch heads live in a small refs tree
+that sits outside the versioned data and catalog trees, so a pointer into
+history is never versioned by the commits it points at (see ADR-011). `as of
+time <ms>` resolves to the newest commit on the current branch at or before a
+timestamp; `as of <commit>` pins an exact commit id. Garbage collection marks
+what the retained commits reach and sweeps the rest into the free list for
+reuse.
 
 ### MVCC and concurrency
 

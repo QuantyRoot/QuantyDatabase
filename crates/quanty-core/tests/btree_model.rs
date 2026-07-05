@@ -168,6 +168,15 @@ fn run_sequence<S: Storage, F: FnMut() -> Db<S>>(
             history.push((commit_id, model.clone()));
         }
 
+        // occasionally collect garbage; the head must be untouched (the
+        // post-commit comparison below runs right after) and history
+        // checks at the end must see retention respected exactly
+        if rng.below(25) == 0 {
+            let keep = 1 + rng.below(4) as usize;
+            db.gc(keep)
+                .unwrap_or_else(|e| panic!("seed {seed}: gc: {e}"));
+        }
+
         // occasionally drop everything and reopen from disk
         if let Some(reopen) = reopen.as_mut() {
             if rng.below(8) == 0 {
@@ -189,8 +198,17 @@ fn run_sequence<S: Storage, F: FnMut() -> Db<S>>(
         );
     }
 
-    // historical snapshots must read exactly the state they were taken at
+    // retained snapshots must read exactly the state they were taken at;
+    // snapshots that fell out of retention must say so, never lie
+    let floor = db.log().unwrap().last().map(|c| c.commit_id).unwrap_or(0);
     for (commit_id, old_model) in &history {
+        if *commit_id < floor {
+            assert!(
+                db.snapshot_at(*commit_id).is_err(),
+                "seed {seed}: snapshot_at({commit_id}) below floor {floor} did not error",
+            );
+            continue;
+        }
         let snap = db
             .snapshot_at(*commit_id)
             .unwrap_or_else(|e| panic!("seed {seed}: snapshot_at({commit_id}): {e}"));

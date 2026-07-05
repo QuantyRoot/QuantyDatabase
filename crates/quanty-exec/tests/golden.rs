@@ -48,7 +48,7 @@ fn line_matches(expected: &str, actual: &str) -> bool {
 }
 
 fn run_file(name: &str, source: &str) -> (u64, Vec<String>) {
-    let session = Session::new(Db::in_memory().expect("in-memory db"));
+    let mut session = Session::new(Db::in_memory().expect("in-memory db"));
     let mut failures = Vec::new();
     let cases = parse_script(source);
     let count = cases.len() as u64;

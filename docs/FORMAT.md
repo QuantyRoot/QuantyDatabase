@@ -1,4 +1,4 @@
-# QuantyDB File Format, version 1
+# QuantyDB File Format, version 2
 
 Normative description of the on-disk format as implemented in quanty-core.
 If the code and this document disagree, one of them has a bug and the fix
@@ -59,7 +59,7 @@ Immediately after the 16 byte header:
 ```
 offset  size  field
 16      8     magic, the ASCII bytes "QUANTYDB"
-24      4     format version, 1
+24      4     format version, 2
 28      4     page size in bytes
 32      8     txid of this commit
 40      8     data root page id       (0 = none)
@@ -68,7 +68,12 @@ offset  size  field
 64      8     page count: total pages in the file, metas included
 72      8     commit wall clock time, unix milliseconds (informational)
 80      8     newest commit record page (0 = none)
+88      8     refs tree root (0 = none)
 ```
+
+The refs root points at the branch pointer tree (see below). It lives in the
+meta rather than under the catalog root on purpose: a commit must not version
+the pointers that point at it.
 
 The rest of the page is zero. The checksum covers the whole page, zeros
 included. A meta page is valid when its checksum verifies, the magic and
@@ -125,9 +130,10 @@ and reject chains that end early, run long or loop.
 
 ## Commit records
 
-Every commit writes one commit record page; the meta points at the newest
-one, forming a chain back through history. This is what snapshots of old
-commits and, later, branches hang off.
+Every commit writes one commit record page describing itself and pointing at
+its parent's record. History is a directed acyclic graph exactly like git:
+records are the objects, branch heads in the refs tree are the pointers into
+them. Snapshots and `AS OF` queries walk parent edges from a branch head.
 
 ```
 16      8     commit id (equals the txid that sealed this page)
@@ -135,8 +141,58 @@ commits and, later, branches hang off.
 32      8     data root page at this commit
 40      8     catalog root page at this commit
 48      8     page of the parent's commit record (0 = none)
-56      8     wall clock, unix milliseconds (informational)
+56      8     wall clock, unix milliseconds
 ```
+
+The field at offset 48 is the DAG edge. On a linear history it points at the
+immediately preceding commit; on a branch that forked from an older commit it
+points at that older commit's record, so two branches share all history up to
+their fork point without copying any of it. A garbage collection run stops
+each walk at the branch's retention floor, so a parent edge is never followed
+into a record that has been reclaimed.
+
+## Free list
+
+The free list holds page ids that no retained commit references, ready for
+reuse by later commits. It is a chain of FreeList pages. Body after the 16
+byte header:
+
+```
+16      8     next chain page (0 = last)
+24      2     number of ids in this page (u16)
+26      n*8   page ids
+```
+
+One invariant makes reuse crash safe: **a page id in the free list is
+referenced by nothing at all, including the free list itself.** A chain page
+is never listed in the chain it belongs to. When a commit consumes a chain
+page to harvest its ids, that page is not reused within the same commit,
+because the previous meta still references it until the commit point; it is
+instead listed in the new free list the commit writes. Chain pages holding
+the new list are drawn from ids that are already free and safe to write, and
+only extend the file when none are available.
+
+## Refs tree
+
+Branch pointers live in an ordinary B-tree rooted at the meta's refs root,
+outside the versioned data and catalog trees. Keys use the standard tuple
+encoding:
+
+- `("head")` holds the name of the current branch
+- `("branch", <name>)` holds a 24 byte branch record
+
+The branch record is three little-endian u64 fields:
+
+```
+0       8     head commit id (0 = empty history)
+8       8     head commit record page (0 = empty history)
+16      8     retention floor: oldest retained commit id (0 = unbounded)
+```
+
+A fresh database has no refs tree (refs root 0). It reads as a single
+implicit branch named "main" whose head is the newest commit. The tree
+materializes on the first branch operation, seeded with that implicit branch,
+so a database that never branches never pays for any of this.
 
 ## Commit protocol
 
@@ -156,9 +212,10 @@ Step 4 is the commit point. Two invariants make this safe without a WAL:
   meta write can only damage the slot being written, never the previous
   commit's meta.
 - **Copy-on-write.** Transaction T only ever writes to page ids that no meta
-  with txid <= T-1 references (fresh allocations past the old page count;
-  reused free pages follow the same rule once the free list exists). A crash
-  during step 1 or 2 therefore cannot damage any committed state.
+  with txid <= T-1 references: fresh allocations past the old page count, or
+  ids taken from the free list, which by the invariant above are referenced
+  by nothing. A crash during step 1 or 2 therefore cannot damage any
+  committed state.
 
 ## Recovery
 
@@ -175,10 +232,23 @@ Quanty database.
 ## Compatibility rules
 
 - Readers must reject any format version they do not know.
-- Flags and reserved page types must be zero / unused in version 1; readers
-  treat violations as corruption.
+- Flags and reserved page types must be zero / unused; readers treat
+  violations as corruption.
 - Additive changes (new page types, new meta fields inside the zero region)
   bump the version. Nothing is reinterpreted in place, ever.
+
+## Version history
+
+- **Version 1** (phases 0 to 2): pager, COW B-tree, commit chain, catalog and
+  data trees, overflow chains.
+- **Version 2** (phase 3): adds the refs tree root to the meta and reworks the
+  commit record's parent link into a DAG edge, enabling branches, `AS OF`, and
+  garbage collection with a free list.
+
+Pre-1.0, format versions are not migrated. A file written by an older version
+is rejected with a clear message rather than upgraded in place; the project is
+young enough that carrying migration code is not yet worth its weight (see
+ADR-012). This will change before any 1.0 release.
 
 ## Logical layer (phase 2)
 

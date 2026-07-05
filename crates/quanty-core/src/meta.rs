@@ -18,6 +18,7 @@
 //! 64      8     page count (total pages in file, metas included)
 //! 72      8     unix timestamp in ms
 //! 80      8     newest commit record page (0 = none)
+//! 88      8     refs tree root (0 = none)
 //! ```
 
 use crate::error::{Error, Result};
@@ -25,7 +26,7 @@ use crate::page::{self, PageId, PageType, PAGE_HEADER_LEN};
 use crate::storage::Storage;
 
 pub const MAGIC: [u8; 8] = *b"QUANTYDB";
-pub const FORMAT_VERSION: u32 = 1;
+pub const FORMAT_VERSION: u32 = 2;
 
 const OFF_MAGIC: usize = PAGE_HEADER_LEN;
 const OFF_VERSION: usize = OFF_MAGIC + 8;
@@ -37,6 +38,7 @@ const OFF_FREELIST_ROOT: usize = OFF_CATALOG_ROOT + 8;
 const OFF_PAGE_COUNT: usize = OFF_FREELIST_ROOT + 8;
 const OFF_TIMESTAMP: usize = OFF_PAGE_COUNT + 8;
 const OFF_COMMIT_PAGE: usize = OFF_TIMESTAMP + 8;
+const OFF_REFS_ROOT: usize = OFF_COMMIT_PAGE + 8;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Meta {
@@ -49,6 +51,10 @@ pub struct Meta {
     pub unix_ts_ms: u64,
     /// Page holding the newest commit record, the head of the commit chain.
     pub commit_page: PageId,
+    /// Root of the refs tree, which holds branch heads. Refs live outside
+    /// the versioned trees on purpose: a pointer into history must not be
+    /// versioned by the commits it points at.
+    pub refs_root: PageId,
 }
 
 impl Meta {
@@ -66,6 +72,7 @@ impl Meta {
         put_u64(buf, OFF_PAGE_COUNT, self.page_count);
         put_u64(buf, OFF_TIMESTAMP, self.unix_ts_ms);
         put_u64(buf, OFF_COMMIT_PAGE, self.commit_page);
+        put_u64(buf, OFF_REFS_ROOT, self.refs_root);
         page::seal(buf, self.txid);
     }
 
@@ -80,7 +87,8 @@ impl Meta {
         let version = get_u32(buf, OFF_VERSION);
         if version != FORMAT_VERSION {
             return Err(Error::InvalidFormat(format!(
-                "format version {version} is not supported (this build reads {FORMAT_VERSION})"
+                "format version {version} is not supported (this build reads {FORMAT_VERSION}; \
+                 pre-alpha formats are not migrated, see docs/FORMAT.md)"
             )));
         }
         let page_size = get_u32(buf, OFF_PAGE_SIZE);
@@ -105,6 +113,7 @@ impl Meta {
             page_count: get_u64(buf, OFF_PAGE_COUNT),
             unix_ts_ms: get_u64(buf, OFF_TIMESTAMP),
             commit_page: get_u64(buf, OFF_COMMIT_PAGE),
+            refs_root: get_u64(buf, OFF_REFS_ROOT),
         };
         if meta.page_count < 2 {
             return Err(Error::corrupted(
@@ -198,6 +207,7 @@ mod tests {
             page_count: 2,
             unix_ts_ms: 123,
             commit_page: 0,
+            refs_root: 0,
         }
     }
 
