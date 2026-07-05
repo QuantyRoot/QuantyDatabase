@@ -102,3 +102,25 @@ contract within a version: the same version reads and writes compatibly, and
 the version number is bumped whenever the layout changes. This decision will
 be revisited before any 1.0 release, at which point forward migration becomes
 a supported feature.
+
+## ADR-013: The MSRV claim covers the test suite, not just the build
+
+`rust-version = "1.75"` said the project works on 1.75, but CI only ran
+`cargo build --workspace` on that toolchain. Dev dependencies are compiled
+for tests, not for plain builds, so the tempfile dependency tree was free to
+drift onto newer language editions unnoticed; by the time this was caught,
+cargo 1.75 could no longer even parse the getrandom manifest in the lock
+file. The green check proved less than it appeared to, which collides with
+ADR-009.
+
+Decision: the MSRV claim means `cargo test --workspace` passes on 1.75, and
+CI enforces exactly that, with `--locked` so the committed lock file is the
+thing the badge certifies (cargo 1.75 has no MSRV-aware dependency
+resolution). Consequence: dev dependencies now count against the MSRV. The
+only one we had was tempfile, used for temp directories in eleven places;
+that is a thirty line helper in tests/common now, and the workspace has zero
+external dev dependencies. New ones are welcome when they are worth carrying
+under this rule.
+
+The crash, heavy and fuzz jobs stay on stable. They exist to catch storage
+bugs, not toolchain drift, and one pinned job is enough for that.

@@ -39,13 +39,15 @@ jobs:
           QUANTY_CRASH_ITERS: "1000"
 
   msrv:
-    name: build on MSRV (1.75)
+    name: test on MSRV (1.75)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.75
       - uses: Swatinem/rust-cache@v2
-      - run: cargo build --workspace
+      # --locked: cargo 1.75 has no MSRV-aware dependency resolution, so
+      # the committed lock file is exactly what this job certifies.
+      - run: cargo test --workspace --locked
 
   heavy:
     name: heavy tests (release)
