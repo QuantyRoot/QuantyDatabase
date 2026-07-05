@@ -70,13 +70,25 @@ Acceptance:
 
 ## Phase 4: SQL dialect + SQLite import
 
-SQL front end (subset per ARCHITECTURE.md), .sqlite importer reading the
-SQLite format directly.
+SQL front end (subset per ARCHITECTURE.md) lowering to the same plans as
+QQL, inner and left joins in the planner and executor, multi-statement
+transactions, a .sqlite importer reading the SQLite format directly, and a
+minimal quanty-cli around it.
 
 Acceptance:
-- [ ] import of a real-world SQLite db (chinook) with schema + data verified
-      row by row against the source
 - [ ] the SQL golden suite runs the same logical cases as the QQL suite
+- [ ] SQL parser fuzzing 1h without crash, same bar as the QQL parser
+- [ ] inner and left joins return results identical to a brute force
+      reference on randomized workloads; explain pins the join strategy
+      (nested loop vs index nested loop) in golden tests
+- [ ] begin/commit/rollback across statements, and the crash harness kills
+      inside an open transaction: committed data survives, the open
+      transaction vanishes without a trace
+- [ ] import of a real-world SQLite db (chinook, checked into the repo)
+      with schema + data verified row by row against the source
+- [ ] the SQLite reader rejects corrupted and hostile files with errors,
+      never panics or wrong data (fuzzed, same bar as our own format
+      reader)
 - [ ] unsupported SQL returns a clear error, wrong results count as P0 bugs
 
 ## Phase 5: Server mode
