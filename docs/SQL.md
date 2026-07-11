@@ -20,6 +20,7 @@ Two principles shape everything below (decided in ADR-014):
 
 ```
 SELECT * | col [, col ...] FROM table
+    [[INNER | LEFT [OUTER]] JOIN table ON expr ...]
     [WHERE expr]
     [ORDER BY col [ASC | DESC]]
     [LIMIT n]
@@ -146,18 +147,36 @@ in both systems.
 One more: `+` on text concatenates (engine rule). sqlite would coerce to
 numbers instead. `||` is the portable spelling.
 
+## Joins
+
+`JOIN` and `INNER JOIN` are inner joins; `LEFT JOIN` and `LEFT OUTER JOIN`
+are left outer joins. Both need an `ON` condition. `RIGHT` and `FULL`
+joins, `CROSS` and `NATURAL` joins, `USING`, comma joins and table aliases
+are refused with a message naming the piece; the semantics live in
+docs/QQL.md and are the same whichever front end wrote the statement.
+
+Columns may be qualified with the table name (`cities.id`) or left bare
+when unambiguous. `ON` decides matching; `WHERE` runs after the whole join
+and, on a `LEFT JOIN`, sees the null-padded rows too. Because the engine's
+`= NULL` is a parse error, the way to keep only unmatched left rows is
+`WHERE right.key IS NULL`, exactly as in sqlite.
+
+`EXPLAIN` shows the join strategy the planner chose (nested loop, or a key
+or index probe of the right table); see docs/QQL.md for how to read it. The
+strategy is a speed choice only and never changes the result.
+
 ## Not in the subset (yet)
 
 Everything here fails with an error naming the missing piece. Planned for
-this phase: joins (INNER and LEFT) and transactions across statements
-(BEGIN / COMMIT / ROLLBACK). Not scheduled: expressions and aliases in the
-select list, DISTINCT, functions and aggregates, GROUP BY / HAVING,
-compound selects, OFFSET, subqueries, CASE, CAST, BETWEEN, IN, LIKE,
-positional INSERT, INSERT ... SELECT, upserts, ALTER TABLE, views,
-triggers, temporary tables, unique and check constraints, COLLATE,
-multi-column / unique / partial / descending indexes, DROP INDEX,
-IF [NOT] EXISTS, AUTOINCREMENT, PRAGMA, ATTACH, parameters, bitwise
-operators.
+this phase: transactions across statements (BEGIN / COMMIT / ROLLBACK).
+Not scheduled: expressions and aliases in the select list, table aliases,
+RIGHT / FULL / CROSS / NATURAL joins, USING, comma joins, DISTINCT,
+functions and aggregates, GROUP BY / HAVING, compound selects, OFFSET,
+subqueries, CASE, CAST, BETWEEN, IN, LIKE, positional INSERT,
+INSERT ... SELECT, upserts, ALTER TABLE, views, triggers, temporary
+tables, unique and check constraints, COLLATE, multi-column / unique /
+partial / descending indexes, DROP INDEX, IF [NOT] EXISTS, AUTOINCREMENT,
+PRAGMA, ATTACH, parameters, bitwise operators.
 
 Time travel and branching have no SQL spelling; they stay QQL-only
 (`as of`, `branch`, `switch`, `merge`, `log`, `gc`).

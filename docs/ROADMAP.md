@@ -76,9 +76,9 @@ transactions, a .sqlite importer reading the SQLite format directly, and a
 minimal quanty-cli around it.
 
 Acceptance:
-- [ ] the SQL golden suite runs the same logical cases as the QQL suite
+- [x] the SQL golden suite runs the same logical cases as the QQL suite
 - [ ] SQL parser fuzzing 1h without crash, same bar as the QQL parser
-- [ ] inner and left joins return results identical to a brute force
+- [x] inner and left joins return results identical to a brute force
       reference on randomized workloads; explain pins the join strategy
       (nested loop vs index nested loop) in golden tests
 - [ ] begin/commit/rollback across statements, and the crash harness kills

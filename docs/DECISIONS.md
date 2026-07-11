@@ -158,3 +158,39 @@ The concrete calls, all guarded by golden tests:
 Unsupported SQL is refused with an error naming the missing piece, never
 parsed into something subtly different. That includes joins and
 transactions until their slices of this phase land.
+
+## ADR-015: Joins live in the AST, and probes are only shortcuts
+
+Phase 4's second slice adds joins. Two decisions shaped it.
+
+Joins belong to the shared AST, not to SQL alone. The canonical language is
+QQL and the fuzzer holds both front ends to parse(pretty(lowered)) ==
+lowered, so anything the SQL front end can build must be expressible in QQL.
+QQL therefore gets join syntax too: `get t join u on ...` and `left join`.
+The `on` condition is a normal expression, and column references grew a
+qualified form (`u.id`) that both languages parse the same way. There are
+no table aliases yet, because `as` collides with `as of` and self-joins are
+the only thing aliases would unlock right now; a table joined to itself is a
+named error rather than a guess.
+
+Joins are left-deep and evaluated in written order: the base table scans,
+each `on` may reference the tables joined so far, `where` runs once over the
+fully joined row, then ordering, limit and projection. `where` after the
+join, with no predicate pushdown in this version, is the boring correct
+default; pushing a filter below a join is an optimization that has to prove
+it preserves left-join semantics, and that proof is not worth writing before
+there is a benchmark asking for it.
+
+The strategy layer is a pure accelerator. A join step may probe the right
+table by primary key (`KeyProbe`) or by secondary index (`IndexProbe`)
+instead of scanning it (`NestedLoop`), but the full `on` condition is still
+evaluated on every candidate the probe returns. So a probe can only skip
+rows that could not have matched; it can never add or drop a result row
+compared to the nested loop. To keep that guarantee airtight, a probe is
+only planned when the probe value's type cannot fail to coerce to the right
+column's type (equal types, or int widening to float); every other case
+falls back to the nested loop rather than risk a coercion error the scan
+would not have hit. The join model test checks this the hard way: the same
+data goes into three right-table shapes that force the three strategies, and
+all three must return the same multiset as a brute-force reference join, on
+thousands of randomized inputs.

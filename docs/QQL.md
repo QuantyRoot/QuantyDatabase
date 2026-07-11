@@ -17,6 +17,7 @@ table users {
 
 put users { id: 1, name: "elchi" }, { id: 2, name: "mira" }
 get users { name, score } where score > 10 order by score desc limit 5
+get users join cities on users.city = cities.id { users.name, cities.name }
 set users where id = 1 { score += 5 }
 del users where score < 0
 index users.score
@@ -99,6 +100,39 @@ Assigning key columns is not supported yet (needs row moves, phase 3).
 Without `order by`, rows come back in primary key order. `limit n` caps the
 result after sorting.
 
+## Joins
+
+A `get` can join more tables onto the base table, each with its own `on`
+condition:
+
+```
+get users join cities on users.city = cities.id
+get users left join cities on users.city = cities.id { users.name, cities.name }
+```
+
+`join` keeps only rows that match; `left join` keeps every base row and
+fills the right columns with null when nothing matches. Joins chain left to
+right, so a later `on` may reference any table named so far. A row of the
+result is the base table's columns followed by each joined table's columns,
+in join order.
+
+Column references may be qualified with the table name, `cities.id`, or
+left bare when the name occurs in only one table in the statement. A bare
+name that two tables share is an error that lists the qualified spellings,
+rather than a silent pick. Table aliases do not exist yet, so a table
+cannot be joined to itself.
+
+`where` runs after all joins, over the combined row, which matters for
+`left join`: a condition in `on` decides whether the right side matches,
+while the same condition in `where` filters the padded rows too. To find
+base rows with no match, test a right key for null in `where`:
+
+```
+get users left join cities on users.city = cities.id where cities.id = null
+```
+
+`as of` reads every joined table from the same historical snapshot.
+
 ## Reading plans
 
 `explain` in front of `get`, `put`, `set` or `del` prints the plan instead
@@ -114,6 +148,14 @@ Access paths in this version: `KeyLookup` when the filter pins the whole
 primary key with equalities, `IndexScan` when an indexed column is pinned,
 `SeqScan` otherwise. Whatever the access path did not consume shows up as
 a `Filter` above it.
+
+A join prints as a `NestedLoopJoin` or `IndexNestedLoopJoin` node with two
+children: the plan for the left side and the access to the right side. The
+right access is a `SeqScan` for a nested loop, or a `KeyProbe` or
+`IndexProbe` when the `on` condition lets the join look the right row up by
+key or index instead of scanning. A probe is only a shortcut: the full `on`
+condition is still checked on every candidate, so the strategy never
+changes which rows come out, only how fast.
 
 ## Branches and history
 
@@ -156,9 +198,11 @@ attr       = "key" | "index" | "null"
 drop       = "drop" ("table" | "branch") ident
 put        = "put" ident row ("," row)*
 row        = "{" ident ":" expr ("," ident ":" expr)* "}"
-get        = "get" ident ("{" ident ("," ident)* "}")?
-             as_of? ("where" expr)? ("order" "by" ident ("asc"|"desc")?)?
+get        = "get" ident join* ("{" colref ("," colref)* "}")?
+             as_of? ("where" expr)? ("order" "by" colref ("asc"|"desc")?)?
              ("limit" int)?
+join       = ("left")? "join" ident "on" expr
+colref     = ident ("." ident)?
 as_of      = "as" "of" ("time")? int
 set        = "set" ident ("where" expr)? "{" assign ("," assign)* "}"
 assign     = ident ("=" | "+=" | "-=" | "*=" | "/=") expr
@@ -179,6 +223,6 @@ cmp        = add (("=" | "!=" | "<" | "<=" | ">" | ">=") add)?
 add        = mul (("+" | "-") mul)*
 mul        = unary (("*" | "/" | "%") unary)*
 unary      = "-" unary | primary
-primary    = literal | ident | "(" expr ")"
+primary    = literal | colref | "(" expr ")"
 literal    = int | float | string | bytes | "true" | "false" | "null"
 ```
