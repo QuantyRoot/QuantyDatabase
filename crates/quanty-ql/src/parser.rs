@@ -94,6 +94,17 @@ impl Parser {
         }
     }
 
+    /// `name` or `table.name`.
+    fn column_ref(&mut self, what: &str) -> Result<ColumnRef, ParseError> {
+        let first = self.ident(what)?;
+        if self.eat(&Token::Dot) {
+            let column = self.ident("a column name after '.'")?;
+            Ok(ColumnRef::qualified(first, column))
+        } else {
+            Ok(ColumnRef::bare(first))
+        }
+    }
+
     fn expect_eof(&mut self) -> Result<(), ParseError> {
         if self.peek() == &Token::Eof {
             Ok(())
@@ -297,10 +308,25 @@ impl Parser {
 
     fn get(&mut self) -> Result<Statement, ParseError> {
         let table = self.ident("a table name")?;
+        let mut joins = Vec::new();
+        loop {
+            let kind = if self.eat_kw("left") {
+                self.expect_kw("join")?;
+                JoinKind::Left
+            } else if self.eat_kw("join") {
+                JoinKind::Inner
+            } else {
+                break;
+            };
+            let table = self.ident("a table name to join")?;
+            self.expect_kw("on")?;
+            let on = self.expr()?;
+            joins.push(Join { kind, table, on });
+        }
         let projection = if self.eat(&Token::LBrace) {
             let mut cols = Vec::new();
             loop {
-                cols.push(self.ident("a column name")?);
+                cols.push(self.column_ref("a column name")?);
                 if !self.eat(&Token::Comma) {
                     break;
                 }
@@ -337,7 +363,7 @@ impl Parser {
         };
         let order = if self.eat_kw("order") {
             self.expect_kw("by")?;
-            let col = self.ident("a column name")?;
+            let col = self.column_ref("a column name")?;
             let dir = if self.eat_kw("desc") {
                 Direction::Desc
             } else {
@@ -359,6 +385,7 @@ impl Parser {
         };
         Ok(Statement::Get(Get {
             table,
+            joins,
             projection,
             as_of,
             filter,
@@ -516,7 +543,12 @@ impl Parser {
         match self.peek().clone() {
             Token::Ident(w) => {
                 self.bump();
-                Ok(Expr::Column(w))
+                if self.eat(&Token::Dot) {
+                    let column = self.ident("a column name after '.'")?;
+                    Ok(Expr::Column(ColumnRef::qualified(w, column)))
+                } else {
+                    Ok(Expr::Column(ColumnRef::bare(w)))
+                }
             }
             Token::LParen => {
                 self.bump();
@@ -551,7 +583,7 @@ impl Parser {
 
 fn desugar(column: &str, op: BinaryOp, rhs: Expr) -> Expr {
     Expr::Binary(
-        Box::new(Expr::Column(column.to_string())),
+        Box::new(Expr::Column(ColumnRef::bare(column))),
         op,
         Box::new(rhs),
     )
@@ -652,7 +684,7 @@ mod tests {
         assert_eq!(
             assigns[0].expr,
             Expr::Binary(
-                Box::new(Expr::Column("a".into())),
+                Box::new(Expr::Column(ColumnRef::bare("a"))),
                 BinaryOp::Add,
                 Box::new(Expr::Literal(Value::Int(2))),
             )

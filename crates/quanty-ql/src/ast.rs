@@ -1,4 +1,6 @@
-//! The QQL abstract syntax tree.
+//! The abstract syntax tree, shared by both front ends.
+
+use std::fmt;
 
 use quanty_core::Value;
 
@@ -57,13 +59,63 @@ pub enum AsOf {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Get {
     pub table: String,
-    /// None means all columns in declaration order.
-    pub projection: Option<Vec<String>>,
+    /// Joined tables in written order; the join tree is left-deep.
+    pub joins: Vec<Join>,
+    /// None means all columns of all tables in declaration order.
+    pub projection: Option<Vec<ColumnRef>>,
     /// Read from history instead of the branch head.
     pub as_of: Option<AsOf>,
     pub filter: Option<Expr>,
-    pub order: Option<(String, Direction)>,
+    pub order: Option<(ColumnRef, Direction)>,
     pub limit: Option<u64>,
+}
+
+/// `join orders on users.id = orders.user_id`, optionally `left join`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Join {
+    pub kind: JoinKind,
+    pub table: String,
+    pub on: Expr,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JoinKind {
+    Inner,
+    Left,
+}
+
+/// A column reference, optionally qualified: `score` or `users.score`.
+/// Statements over one table rarely need the qualifier; joins need it
+/// wherever a bare name would be ambiguous.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ColumnRef {
+    pub table: Option<String>,
+    pub column: String,
+}
+
+impl ColumnRef {
+    pub fn bare(column: impl Into<String>) -> Self {
+        ColumnRef {
+            table: None,
+            column: column.into(),
+        }
+    }
+
+    pub fn qualified(table: impl Into<String>, column: impl Into<String>) -> Self {
+        ColumnRef {
+            table: Some(table.into()),
+            column: column.into(),
+        }
+    }
+}
+
+impl fmt::Display for ColumnRef {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.table {
+            Some(t) => write!(f, "{t}.{}", self.column),
+            None => write!(f, "{}", self.column),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -120,7 +172,7 @@ pub struct Assign {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Expr {
     Literal(Value),
-    Column(String),
+    Column(ColumnRef),
     Unary(UnaryOp, Box<Expr>),
     Binary(Box<Expr>, BinaryOp, Box<Expr>),
 }

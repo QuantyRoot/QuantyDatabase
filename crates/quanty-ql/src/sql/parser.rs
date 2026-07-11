@@ -326,10 +326,7 @@ impl Parser {
                         "the select list takes plain column names or * for now; expressions are not supported yet",
                     ));
                 }
-                let name = self.ident("a column name")?;
-                if self.peek() == &Tok::Dot {
-                    return Err(self.not_yet("qualified column names"));
-                }
+                let name = self.column_ref("a column name")?;
                 if self.peek() == &Tok::LParen {
                     return Err(self.not_yet("functions and aggregates"));
                 }
@@ -347,7 +344,7 @@ impl Parser {
         };
 
         self.expect_kw("from", "'from' (select without from is not supported yet)")?;
-        let table = self.table_name()?;
+        let (table, joins) = self.parse_from()?;
 
         let filter = if self.eat_kw("where") {
             Some(self.expr()?)
@@ -367,7 +364,7 @@ impl Parser {
 
         let order = if self.eat_kw("order") {
             self.expect_kw("by", "'by' after 'order'")?;
-            let col = self.ident("a column name to order by")?;
+            let col = self.column_ref("a column name to order by")?;
             if self.at_kw("collate") {
                 return Err(self.not_yet("collate"));
             }
@@ -412,6 +409,7 @@ impl Parser {
 
         Ok(Statement::Get(Get {
             table,
+            joins,
             projection,
             as_of: None,
             filter,
@@ -420,9 +418,59 @@ impl Parser {
         }))
     }
 
-    /// A table reference: a bare name. Everything a bigger select would
-    /// hang here (aliases, joins, subqueries) fails with a targeted error.
-    fn table_name(&mut self) -> Result<String, ParseError> {
+    /// `name` or `table.name`.
+    fn column_ref(&mut self, what: &str) -> Result<ColumnRef, ParseError> {
+        let first = self.ident(what)?;
+        if self.eat(&Tok::Dot) {
+            let column = self.ident("a column name after '.'")?;
+            Ok(ColumnRef::qualified(first, column))
+        } else {
+            Ok(ColumnRef::bare(first))
+        }
+    }
+
+    /// The from clause: a base table and a left-deep chain of joins.
+    /// INNER JOIN and plain JOIN are inner, LEFT [OUTER] JOIN is left.
+    /// Everything else a bigger from clause could hold (aliases, right and
+    /// full joins, comma joins, subqueries) fails with a targeted error.
+    fn parse_from(&mut self) -> Result<(String, Vec<Join>), ParseError> {
+        let table = self.one_table()?;
+        let mut joins = Vec::new();
+        loop {
+            let kind = if self.eat_kw("join") {
+                JoinKind::Inner
+            } else if self.eat_kw("inner") {
+                self.expect_kw("join", "'join' after 'inner'")?;
+                JoinKind::Inner
+            } else if self.eat_kw("left") {
+                self.eat_kw("outer");
+                self.expect_kw("join", "'join' after 'left'")?;
+                JoinKind::Left
+            } else if self.at_kw("right") || self.at_kw("full") {
+                return Err(self.not_yet("right and full outer joins"));
+            } else if self.at_kw("cross") || self.at_kw("natural") {
+                return Err(self.not_yet("cross and natural joins (write join ... on ...)"));
+            } else if self.peek() == &Tok::Comma {
+                return Err(ParseError::at(
+                    self.at(),
+                    "implicit comma joins are not supported; write join ... on ...",
+                ));
+            } else {
+                break;
+            };
+            let table = self.one_table()?;
+            if self.at_kw("using") {
+                return Err(self.not_yet("join ... using (write on ... = ...)"));
+            }
+            self.expect_kw("on", "'on' with the join condition")?;
+            let on = self.expr()?;
+            joins.push(Join { kind, table, on });
+        }
+        Ok((table, joins))
+    }
+
+    /// One table reference: a bare name, no alias.
+    fn one_table(&mut self) -> Result<String, ParseError> {
         let name = self.ident("a table name")?;
         if self.peek() == &Tok::Dot {
             return Err(ParseError::at(
@@ -430,23 +478,13 @@ impl Parser {
                 "database-qualified names are not supported; there is one database per file",
             ));
         }
-        if let Some(word) = self.kw() {
-            match word.as_str() {
-                "join" | "inner" | "left" | "right" | "full" | "cross" | "natural" => {
-                    return Err(self.not_yet("joins"));
-                }
-                "as" => return Err(self.not_yet("table aliases")),
-                w if !RESERVED.contains(&w) => {
-                    return Err(self.not_yet("table aliases"));
-                }
-                _ => {}
-            }
-        }
-        if matches!(self.peek(), Tok::Quoted(_)) {
+        if self.at_kw("as") {
             return Err(self.not_yet("table aliases"));
         }
-        if self.peek() == &Tok::Comma {
-            return Err(self.not_yet("joins"));
+        if matches!(self.peek(), Tok::Word(w) if !RESERVED.contains(&w.to_ascii_lowercase().as_str()))
+            || matches!(self.peek(), Tok::Quoted(_))
+        {
+            return Err(self.not_yet("table aliases"));
         }
         Ok(name)
     }
@@ -1168,20 +1206,14 @@ impl Parser {
                     "select" => return Err(self.not_yet("subqueries")),
                     _ => {}
                 }
-                let name = self.ident("a column name or value")?;
+                let name = self.column_ref("a column name or value")?;
                 if self.peek() == &Tok::LParen {
                     return Err(self.not_yet("functions and aggregates"));
-                }
-                if self.peek() == &Tok::Dot {
-                    return Err(self.not_yet("qualified column names"));
                 }
                 Ok(Expr::Column(name))
             }
             Tok::Quoted(_) => {
-                let name = self.ident("a column name")?;
-                if self.peek() == &Tok::Dot {
-                    return Err(self.not_yet("qualified column names"));
-                }
+                let name = self.column_ref("a column name")?;
                 Ok(Expr::Column(name))
             }
             other => Err(ParseError::at(
@@ -1277,6 +1309,18 @@ mod tests {
             ("EXPLAIN QUERY PLAN SELECT * FROM users WHERE id = 7", r#"explain get users where id = 7"#),
             ("SELECT a FROM t WHERE b IS NULL AND c IS NOT NULL", r#"get t { a } where b = null and c != null"#),
             ("SELECT a FROM t WHERE a = x'c0ffee' OR a <> x''", r#"get t { a } where a = x"c0ffee" or a != x"""#),
+            (
+                "SELECT users.name, cities.name FROM users JOIN cities ON users.city = cities.id",
+                r#"get users join cities on users.city = cities.id { users.name, cities.name }"#,
+            ),
+            (
+                "SELECT * FROM users LEFT OUTER JOIN cities ON users.city = cities.id WHERE cities.rank > 1",
+                r#"get users left join cities on users.city = cities.id where cities.rank > 1"#,
+            ),
+            (
+                "SELECT a.x FROM a INNER JOIN b ON a.x = b.y JOIN c ON b.z = c.w ORDER BY c.w DESC LIMIT 3",
+                r#"get a join b on a.x = b.y join c on b.z = c.w { a.x } order by c.w desc limit 3"#,
+            ),
         ] {
             let via_sql = parse_sql(sql).unwrap_or_else(|e| panic!("sql failed: {sql}\n{e}"));
             let via_qql = parse_qql(qql).unwrap_or_else(|e| panic!("qql failed: {qql}\n{e}"));
@@ -1299,7 +1343,11 @@ mod tests {
         assert_eq!(get.table, "table");
         assert_eq!(
             get.projection,
-            Some(vec!["order".into(), "limit".into(), "set".into()])
+            Some(vec![
+                ColumnRef::bare("order"),
+                ColumnRef::bare("limit"),
+                ColumnRef::bare("set")
+            ])
         );
     }
 
@@ -1363,8 +1411,12 @@ mod tests {
     #[test]
     fn unsupported_sql_names_the_missing_piece() {
         for (input, needle) in [
-            ("SELECT * FROM a JOIN b ON a.id = b.id", "joins"),
-            ("SELECT * FROM a, b", "joins"),
+            ("SELECT * FROM a, b", "comma joins"),
+            (
+                "SELECT * FROM a RIGHT JOIN b ON a.id = b.id",
+                "right and full",
+            ),
+            ("SELECT * FROM a JOIN b USING (id)", "using"),
             ("SELECT count(x) FROM t", "aggregates"),
             ("SELECT * FROM t GROUP BY a", "group by"),
             ("SELECT DISTINCT a FROM t", "distinct"),

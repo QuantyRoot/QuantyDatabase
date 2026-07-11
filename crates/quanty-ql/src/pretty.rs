@@ -30,7 +30,15 @@ pub fn pretty(stmt: &Statement) -> String {
         }
         Statement::Get(g) => {
             let mut out = format!("get {}", g.table);
+            for j in &g.joins {
+                let kw = match j.kind {
+                    JoinKind::Inner => "join",
+                    JoinKind::Left => "left join",
+                };
+                out.push_str(&format!(" {kw} {} on {}", j.table, expr(&j.on)));
+            }
             if let Some(cols) = &g.projection {
+                let cols: Vec<String> = cols.iter().map(ToString::to_string).collect();
                 out.push_str(&format!(" {{ {} }}", cols.join(", ")));
             }
             match g.as_of {
@@ -110,7 +118,7 @@ fn column(c: &ColumnDef) -> String {
 pub fn expr(e: &Expr) -> String {
     match e {
         Expr::Literal(v) => literal(v),
-        Expr::Column(c) => c.clone(),
+        Expr::Column(c) => c.to_string(),
         Expr::Unary(UnaryOp::Neg, inner) => format!("(-{})", expr(inner)),
         Expr::Unary(UnaryOp::Not, inner) => format!("(not {})", expr(inner)),
         Expr::Binary(l, op, r) => format!("({} {} {})", expr(l), op.as_str(), expr(r)),
