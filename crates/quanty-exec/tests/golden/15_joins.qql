@@ -1,0 +1,140 @@
+# joins: probe strategies, null padding, qualified names, chained joins
+# see docs/QQL.md and ADR-015. the sql mirror is sql_15_joins.sql
+
+> table users { id: int @key, name: text, city: int @null }
+ok
+
+> table cities { id: int @key, name: text, code: int @index, rank: int @null }
+ok
+
+# user 3 points at a city that does not exist, user 4 has no city at all
+> put users { id: 1, name: "ada", city: 10 }, { id: 2, name: "bob", city: 20 }, { id: 3, name: "cy", city: 99 }, { id: 4, name: "di", city: null }
+put 4
+
+> put cities { id: 10, name: "oslo", code: 100, rank: 1 }, { id: 20, name: "bonn", code: 200, rank: 2 }, { id: 30, name: "riga", code: 300, rank: 3 }
+put 3
+
+# inner join on the right primary key: two rows match
+> get users join cities on users.city = cities.id
+1|ada|10|10|oslo|100|1
+2|bob|20|20|bonn|200|2
+
+# left join keeps unmatched left rows, padded with nulls on the right
+> get users left join cities on users.city = cities.id
+1|ada|10|10|oslo|100|1
+2|bob|20|20|bonn|200|2
+3|cy|99|null|null|null|null
+4|di|null|null|null|null|null
+
+# qualified projection reaches columns of the same name in both tables
+> get users join cities on users.city = cities.id { users.name, cities.name }
+ada|oslo
+bob|bonn
+
+# an unqualified name resolves when it is unique across the scope
+> get users join cities on users.city = cities.id { city, code }
+10|100
+20|200
+
+# a second conjunct in on narrows the match
+> get users join cities on users.city = cities.id and cities.rank = 1
+1|ada|10|10|oslo|100|1
+
+# where runs after the join
+> get users join cities on users.city = cities.id where cities.rank > 1
+2|bob|20|20|bonn|200|2
+
+# where reaching the right side of padded rows
+> get users left join cities on users.city = cities.id where cities.id = null
+3|cy|99|null|null|null|null
+4|di|null|null|null|null|null
+
+# order by a right column
+> get users join cities on users.city = cities.id order by cities.name desc
+1|ada|10|10|oslo|100|1
+2|bob|20|20|bonn|200|2
+
+# order and limit together, over a left join
+> get users left join cities on users.city = cities.id order by cities.rank asc limit 2
+3|cy|99|null|null|null|null
+4|di|null|null|null|null|null
+
+# key on the right: key probe
+> explain get users join cities on users.city = cities.id
+IndexNestedLoopJoin inner on (users.city = cities.id)
+  SeqScan users
+  KeyProbe cities (id)
+
+# indexed column on the right: index probe
+> explain get users join cities on users.city = cities.code
+IndexNestedLoopJoin inner on (users.city = cities.code)
+  SeqScan users
+  IndexProbe cities via code
+
+# neither key nor indexed: nested loop
+> explain get users join cities on users.city = cities.rank
+NestedLoopJoin inner on (users.city = cities.rank)
+  SeqScan users
+  SeqScan cities
+
+# a left join keeps the probe, only the kind in the label changes
+> explain get users left join cities on users.city = cities.id
+IndexNestedLoopJoin left on (users.city = cities.id)
+  SeqScan users
+  KeyProbe cities (id)
+
+# residual in on, plus a filter, a sort and a limit stacked above
+> explain get users join cities on users.city = cities.id and cities.rank > 0 where users.id > 1 order by cities.name asc limit 5
+Limit 5
+  Sort cities.name asc
+    Filter (users.id > 1)
+      IndexNestedLoopJoin inner on ((users.city = cities.id) and (cities.rank > 0))
+        SeqScan users
+        KeyProbe cities (id)
+
+# name is in both tables: unqualified use is ambiguous
+> get users join cities on users.city = cities.id { name }
+error: column 'name' is ambiguous here; qualify it (users.name or cities.name)
+
+# id is in both tables: ambiguous inside a filter too
+> get users join cities on users.city = cities.id where id = 10
+error: column 'id' is ambiguous here; qualify it (users.id or cities.id)
+
+# a qualifier naming no table in this statement
+> get users join cities on users.city = cities.id { orders.name }
+error: no table named 'orders' in this statement
+
+# a column that exists in no table
+> get users join cities on users.city = cities.id { zzz }
+error: no table in this statement has a column 'zzz'
+
+# joining a table to itself needs aliases, which are not supported
+> get users join users on users.id = users.id
+error: table 'users' appears twice in this statement; table aliases are not supported yet
+
+# an on-condition may not name a table joined later in the chain
+> get users join cities on regions.area = cities.name
+error: no table named 'regions' in this statement
+
+# three-table chain: users to cities on the key, cities to regions on the index value
+> table regions { code: int @key, area: text }
+ok
+
+> put regions { code: 100, area: "north" }, { code: 200, area: "south" }
+put 2
+
+> get users join cities on users.city = cities.id join regions on cities.code = regions.code { users.name, regions.area }
+ada|north
+bob|south
+
+> explain get users join cities on users.city = cities.id join regions on cities.code = regions.code
+IndexNestedLoopJoin inner on (cities.code = regions.code)
+  IndexNestedLoopJoin inner on (users.city = cities.id)
+    SeqScan users
+    KeyProbe cities (id)
+  KeyProbe regions (code)
+
+# a join reading a past snapshot: as of pins a commit, joins run over that view
+> get users join cities on users.city = cities.id { users.name, cities.name } as of 4
+ada|oslo
+bob|bonn

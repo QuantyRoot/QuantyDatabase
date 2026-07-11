@@ -8,21 +8,21 @@ ok
 > CREATE TABLE u (id INTEGER PRIMARY KEY)
 ok
 
-# joins arrive later in this phase
-> SELECT * FROM t JOIN u ON t.id = u.id
-error: parse error at byte 16: not supported yet: joins
+# join shapes outside inner and left
+> SELECT * FROM t RIGHT JOIN u ON t.id = u.id
+error: parse error at byte 16: not supported yet: right and full outer joins
 
-> SELECT * FROM t LEFT JOIN u ON t.id = u.id
-error: parse error at byte 16: not supported yet: joins
+> SELECT * FROM t NATURAL JOIN u
+error: parse error at byte 16: not supported yet: cross and natural joins (write join ... on ...)
+
+> SELECT * FROM t JOIN u USING (id)
+error: parse error at byte 23: not supported yet: join ... using (write on ... = ...)
 
 > SELECT * FROM t, u
-error: parse error at byte 15: not supported yet: joins
+error: parse error at byte 15: implicit comma joins are not supported; write join ... on ...
 
 > SELECT * FROM t AS x
 error: parse error at byte 16: not supported yet: table aliases
-
-> SELECT t.a FROM t
-error: parse error at byte 8: not supported yet: qualified column names
 
 # select list shapes
 > SELECT DISTINCT a FROM t
