@@ -13,7 +13,7 @@
 //! and index probes are plain range scans.
 
 use quanty_core::{decode_key, encode_key, Db, Storage, Value, WriteTx};
-use quanty_ql::ast::{AsOf, Direction, Expr, Get, Statement};
+use quanty_ql::ast::{AsOf, ColumnRef, Direction, Expr, Get, Statement};
 
 use crate::catalog::{self, Table};
 use crate::error::ExecError;
@@ -212,6 +212,9 @@ fn load_table_from<V: View>(view: &V, name: &str) -> Result<Table, ExecError> {
 
 /// The whole read pipeline: plan, fetch, filter, order, limit, project.
 fn run_get<V: View>(view: &V, get: &Get) -> Result<Output, ExecError> {
+    if !get.joins.is_empty() {
+        return run_join_get(view, get);
+    }
     let table = load_table_from(view, &get.table)?;
     if let Some(filter) = &get.filter {
         validate_columns(&table, filter)?;
@@ -223,9 +226,16 @@ fn run_get<V: View>(view: &V, get: &Get) -> Result<Output, ExecError> {
         .collect();
 
     if let Some((col, dir)) = &get.order {
-        let pos = table
-            .column_position(col)
-            .ok_or_else(|| ExecError::plan(format!("cannot order by unknown column '{col}'")))?;
+        if let Some(t) = &col.table {
+            if t != &table.name {
+                return Err(ExecError::plan(format!(
+                    "no table named '{t}' in this statement"
+                )));
+            }
+        }
+        let pos = table.column_position(&col.column).ok_or_else(|| {
+            ExecError::plan(format!("cannot order by unknown column '{}'", col.column))
+        })?;
         rows.sort_by(|a, b| {
             let ord = value_ops::sort_cmp(&a[pos], &b[pos]);
             match dir {
@@ -240,11 +250,7 @@ fn run_get<V: View>(view: &V, get: &Get) -> Result<Output, ExecError> {
     if let Some(cols) = &get.projection {
         let positions: Vec<usize> = cols
             .iter()
-            .map(|c| {
-                table.column_position(c).ok_or_else(|| {
-                    ExecError::plan(format!("table '{}' has no column '{c}'", table.name))
-                })
-            })
+            .map(|c| position_in(&table, c))
             .collect::<Result<_, _>>()?;
         rows = rows
             .into_iter()
@@ -307,6 +313,307 @@ fn fetch_rows<V: View>(view: &V, table: &Table, plan: &AccessPlan) -> Result<Fet
             }
         }
         out = filtered;
+    }
+    Ok(out)
+}
+
+// ---------------------------------------------------------------------------
+// joins
+// ---------------------------------------------------------------------------
+
+/// The tables of a join statement, in from-clause order, with the offset
+/// of each table's columns inside the combined row.
+pub(crate) struct Bound {
+    tables: Vec<Table>,
+    offsets: Vec<usize>,
+}
+
+impl Bound {
+    fn new(tables: Vec<Table>) -> Result<Bound, ExecError> {
+        for (i, a) in tables.iter().enumerate() {
+            if tables[..i].iter().any(|b| b.name == a.name) {
+                return Err(ExecError::plan(format!(
+                    "table '{}' appears twice in this statement; table aliases are not supported yet",
+                    a.name
+                )));
+            }
+        }
+        let mut offsets = Vec::with_capacity(tables.len());
+        let mut width = 0;
+        for t in &tables {
+            offsets.push(width);
+            width += t.columns.len();
+        }
+        Ok(Bound { tables, offsets })
+    }
+
+    /// Resolve a reference against the first `upto` tables. Unqualified
+    /// names must be unambiguous within that scope.
+    fn resolve_within(&self, r: &ColumnRef, upto: usize) -> Result<usize, ExecError> {
+        match &r.table {
+            Some(t) => {
+                let Some(i) = self.tables[..upto].iter().position(|tab| &tab.name == t) else {
+                    return Err(ExecError::plan(format!(
+                        "no table named '{t}' in this statement"
+                    )));
+                };
+                match self.tables[i].column_position(&r.column) {
+                    Some(pos) => Ok(self.offsets[i] + pos),
+                    None => Err(ExecError::plan(format!(
+                        "table '{t}' has no column '{}'",
+                        r.column
+                    ))),
+                }
+            }
+            None => {
+                let mut hits = Vec::new();
+                for (i, t) in self.tables[..upto].iter().enumerate() {
+                    if let Some(pos) = t.column_position(&r.column) {
+                        hits.push((i, pos));
+                    }
+                }
+                match hits.as_slice() {
+                    [] => Err(ExecError::plan(format!(
+                        "no table in this statement has a column '{}'",
+                        r.column
+                    ))),
+                    [(i, pos)] => Ok(self.offsets[*i] + pos),
+                    many => {
+                        let spellings: Vec<String> = many
+                            .iter()
+                            .map(|(i, _)| format!("{}.{}", self.tables[*i].name, r.column))
+                            .collect();
+                        Err(ExecError::plan(format!(
+                            "column '{}' is ambiguous here; qualify it ({})",
+                            r.column,
+                            spellings.join(" or ")
+                        )))
+                    }
+                }
+            }
+        }
+    }
+
+    fn validate_within(&self, expr: &Expr, upto: usize) -> Result<(), ExecError> {
+        match expr {
+            Expr::Literal(_) => Ok(()),
+            Expr::Column(r) => self.resolve_within(r, upto).map(|_| ()),
+            Expr::Unary(_, inner) => self.validate_within(inner, upto),
+            Expr::Binary(l, _, r) => {
+                self.validate_within(l, upto)?;
+                self.validate_within(r, upto)
+            }
+        }
+    }
+}
+
+/// A combined row over the first `upto` tables of a bind.
+struct BoundScope<'a> {
+    bound: &'a Bound,
+    upto: usize,
+    values: &'a [Value],
+}
+
+impl Scope for BoundScope<'_> {
+    fn column(&self, r: &ColumnRef) -> Result<Value, ExecError> {
+        Ok(self.values[self.bound.resolve_within(r, self.upto)?].clone())
+    }
+}
+
+/// Load and bind everything a join statement needs; shared between
+/// execution and explain so both see the identical plan.
+fn bind_join_get<V: View>(
+    view: &V,
+    get: &Get,
+) -> Result<(Bound, Vec<plan::JoinStrategy>), ExecError> {
+    let mut tables = vec![load_table_from(view, &get.table)?];
+    for j in &get.joins {
+        tables.push(load_table_from(view, &j.table)?);
+    }
+    let bound = Bound::new(tables)?;
+    // each on-condition sees the tables joined so far plus its own
+    for (i, join) in get.joins.iter().enumerate() {
+        bound.validate_within(&join.on, i + 2)?;
+    }
+    if let Some(filter) = &get.filter {
+        bound.validate_within(filter, bound.tables.len())?;
+    }
+    let mut strategies = Vec::with_capacity(get.joins.len());
+    for (i, join) in get.joins.iter().enumerate() {
+        let left: Vec<&Table> = bound.tables[..=i].iter().collect();
+        strategies.push(plan::plan_join(&left, &bound.tables[i + 1], &join.on));
+    }
+    Ok((bound, strategies))
+}
+
+fn run_join_get<V: View>(view: &V, get: &Get) -> Result<Output, ExecError> {
+    let (bound, strategies) = bind_join_get(view, get)?;
+
+    // base table: full scan; the filter runs after all joins
+    let seq = AccessPlan {
+        access: Access::SeqScan,
+        residual: None,
+    };
+    let mut rows: Vec<Vec<Value>> = fetch_rows(view, &bound.tables[0], &seq)?
+        .into_iter()
+        .map(|(_, v)| v)
+        .collect();
+
+    for (i, (join, strategy)) in get.joins.iter().zip(&strategies).enumerate() {
+        rows = join_step(view, rows, &bound, i, join, strategy)?;
+    }
+
+    if let Some(filter) = &get.filter {
+        let mut kept = Vec::with_capacity(rows.len());
+        for row in rows {
+            let scope = BoundScope {
+                bound: &bound,
+                upto: bound.tables.len(),
+                values: &row,
+            };
+            if value_ops::as_condition(value_ops::eval(filter, &scope)?)? {
+                kept.push(row);
+            }
+        }
+        rows = kept;
+    }
+
+    if let Some((col, dir)) = &get.order {
+        let pos = bound.resolve_within(col, bound.tables.len())?;
+        rows.sort_by(|a, b| {
+            let ord = value_ops::sort_cmp(&a[pos], &b[pos]);
+            match dir {
+                Direction::Asc => ord,
+                Direction::Desc => ord.reverse(),
+            }
+        });
+    }
+    if let Some(limit) = get.limit {
+        rows.truncate(limit as usize);
+    }
+    if let Some(cols) = &get.projection {
+        let positions: Vec<usize> = cols
+            .iter()
+            .map(|c| bound.resolve_within(c, bound.tables.len()))
+            .collect::<Result<_, _>>()?;
+        rows = rows
+            .into_iter()
+            .map(|row| positions.iter().map(|&p| row[p].clone()).collect())
+            .collect();
+    }
+    Ok(Output::Rows(rows))
+}
+
+/// One join step. The strategy only decides which right rows become
+/// candidates; the full on-condition runs on every candidate, so every
+/// strategy returns exactly what the nested loop would.
+fn join_step<V: View>(
+    view: &V,
+    left_rows: Vec<Vec<Value>>,
+    bound: &Bound,
+    step: usize,
+    join: &quanty_ql::ast::Join,
+    strategy: &plan::JoinStrategy,
+) -> Result<Vec<Vec<Value>>, ExecError> {
+    let right = &bound.tables[step + 1];
+    let right_width = right.columns.len();
+    let upto = step + 2;
+    let mut out = Vec::new();
+
+    // the nested loop materializes the right side once
+    let materialized = if matches!(strategy, plan::JoinStrategy::NestedLoop) {
+        let seq = AccessPlan {
+            access: Access::SeqScan,
+            residual: None,
+        };
+        Some(
+            fetch_rows(view, right, &seq)?
+                .into_iter()
+                .map(|(_, v)| v)
+                .collect::<Vec<_>>(),
+        )
+    } else {
+        None
+    };
+
+    for left in left_rows {
+        let candidates: Vec<Vec<Value>> = match strategy {
+            plan::JoinStrategy::NestedLoop => materialized.clone().expect("materialized above"),
+            plan::JoinStrategy::KeyProbe { left: probe } => {
+                let value = BoundScope {
+                    bound,
+                    upto: step + 1,
+                    values: &left,
+                }
+                .column(probe)?;
+                if matches!(value, Value::Null) {
+                    // key columns are never null; nothing can match
+                    Vec::new()
+                } else {
+                    let key = right.key_positions()[0];
+                    let coerced = value_ops::coerce(value, right.columns[key].ty, false)
+                        .expect("plan_join only probes with compatible types");
+                    let plan = AccessPlan {
+                        access: Access::KeyLookup {
+                            key_values: vec![coerced],
+                        },
+                        residual: None,
+                    };
+                    fetch_rows(view, right, &plan)?
+                        .into_iter()
+                        .map(|(_, v)| v)
+                        .collect()
+                }
+            }
+            plan::JoinStrategy::IndexProbe {
+                left: probe,
+                column,
+                index_id,
+            } => {
+                let value = BoundScope {
+                    bound,
+                    upto: step + 1,
+                    values: &left,
+                }
+                .column(probe)?;
+                // null probes a null index entry, matching the engine's
+                // null = null rule; coercion cannot fail (see plan_join)
+                let coerced = value_ops::coerce(value, right.columns[*column].ty, true)
+                    .expect("plan_join only probes with compatible types");
+                let plan = AccessPlan {
+                    access: Access::IndexScan {
+                        column: *column,
+                        index_id: *index_id,
+                        value: coerced,
+                    },
+                    residual: None,
+                };
+                fetch_rows(view, right, &plan)?
+                    .into_iter()
+                    .map(|(_, v)| v)
+                    .collect()
+            }
+        };
+
+        let mut matched = false;
+        for r in candidates {
+            let mut combined = left.clone();
+            combined.extend(r);
+            let scope = BoundScope {
+                bound,
+                upto,
+                values: &combined,
+            };
+            if value_ops::as_condition(value_ops::eval(&join.on, &scope)?)? {
+                out.push(combined);
+                matched = true;
+            }
+        }
+        if join.kind == quanty_ql::ast::JoinKind::Left && !matched {
+            let mut padded = left;
+            padded.resize(padded.len() + right_width, Value::Null);
+            out.push(padded);
+        }
     }
     Ok(out)
 }
@@ -662,6 +969,35 @@ impl<S: Storage> Run<'_, S> {
 
     fn explain(&self, inner: &Statement) -> Result<Output, ExecError> {
         let node = match inner {
+            Statement::Get(get) if !get.joins.is_empty() => {
+                let (bound, strategies) = bind_join_get(&self.tx, get)?;
+                let mut node = ExplainNode::leaf(format!("SeqScan {}", bound.tables[0].name));
+                for (i, (join, strategy)) in get.joins.iter().zip(&strategies).enumerate() {
+                    let probe = plan::explain_join_probe(&bound.tables[i + 1], strategy);
+                    node = ExplainNode {
+                        label: plan::join_label(join, strategy),
+                        children: vec![node, probe],
+                    };
+                }
+                if let Some(filter) = &get.filter {
+                    node = ExplainNode::over(
+                        format!("Filter {}", quanty_ql::pretty::expr(filter)),
+                        node,
+                    );
+                }
+                if let Some((col, dir)) = &get.order {
+                    bound.resolve_within(col, bound.tables.len())?;
+                    let dir = match dir {
+                        Direction::Asc => "asc",
+                        Direction::Desc => "desc",
+                    };
+                    node = ExplainNode::over(format!("Sort {col} {dir}"), node);
+                }
+                if let Some(n) = get.limit {
+                    node = ExplainNode::over(format!("Limit {n}"), node);
+                }
+                node
+            }
             Statement::Get(get) => {
                 let table = self.load_table(&get.table)?;
                 if let Some(f) = &get.filter {
@@ -774,15 +1110,27 @@ struct RowScope<'a> {
 }
 
 impl Scope for RowScope<'_> {
-    fn column(&self, name: &str) -> Result<Value, ExecError> {
-        match self.table.column_position(name) {
-            Some(pos) => Ok(self.values[pos].clone()),
-            None => Err(ExecError::plan(format!(
-                "table '{}' has no column '{name}'",
-                self.table.name
-            ))),
+    fn column(&self, r: &ColumnRef) -> Result<Value, ExecError> {
+        Ok(self.values[position_in(self.table, r)?].clone())
+    }
+}
+
+/// Resolve a reference against a single-table statement. A qualifier must
+/// name that table.
+fn position_in(table: &Table, r: &ColumnRef) -> Result<usize, ExecError> {
+    if let Some(t) = &r.table {
+        if t != &table.name {
+            return Err(ExecError::plan(format!(
+                "no table named '{t}' in this statement"
+            )));
         }
     }
+    table.column_position(&r.column).ok_or_else(|| {
+        ExecError::plan(format!(
+            "table '{}' has no column '{}'",
+            table.name, r.column
+        ))
+    })
 }
 
 /// Every column reference in the expression must exist, checked up front
@@ -790,13 +1138,7 @@ impl Scope for RowScope<'_> {
 fn validate_columns(table: &Table, expr: &Expr) -> Result<(), ExecError> {
     match expr {
         Expr::Literal(_) => Ok(()),
-        Expr::Column(name) => match table.column_position(name) {
-            Some(_) => Ok(()),
-            None => Err(ExecError::plan(format!(
-                "table '{}' has no column '{name}'",
-                table.name
-            ))),
-        },
+        Expr::Column(r) => position_in(table, r).map(|_| ()),
         Expr::Unary(_, inner) => validate_columns(table, inner),
         Expr::Binary(l, _, r) => {
             validate_columns(table, l)?;

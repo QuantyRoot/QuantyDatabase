@@ -11,28 +11,28 @@
 use std::cmp::Ordering;
 
 use quanty_core::Value;
-use quanty_ql::ast::{BinaryOp, Expr, TypeName, UnaryOp};
+use quanty_ql::ast::{BinaryOp, ColumnRef, Expr, TypeName, UnaryOp};
 
 use crate::error::ExecError;
 
-/// A row scope: resolve column names to values during evaluation.
+/// A row scope: resolve column references to values during evaluation.
 pub trait Scope {
-    fn column(&self, name: &str) -> Result<Value, ExecError>;
+    fn column(&self, r: &ColumnRef) -> Result<Value, ExecError>;
 }
 
 /// The empty scope, for evaluating constant expressions.
 pub struct NoScope;
 
 impl Scope for NoScope {
-    fn column(&self, name: &str) -> Result<Value, ExecError> {
-        Err(ExecError::plan(format!("unknown column '{name}'")))
+    fn column(&self, r: &ColumnRef) -> Result<Value, ExecError> {
+        Err(ExecError::plan(format!("unknown column '{r}'")))
     }
 }
 
 pub fn eval(expr: &Expr, scope: &dyn Scope) -> Result<Value, ExecError> {
     match expr {
         Expr::Literal(v) => Ok(v.clone()),
-        Expr::Column(name) => scope.column(name),
+        Expr::Column(r) => scope.column(r),
         Expr::Unary(UnaryOp::Neg, inner) => match eval(inner, scope)? {
             Value::Int(i) => Ok(Value::Int(
                 i.checked_neg()
