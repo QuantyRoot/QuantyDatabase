@@ -81,7 +81,7 @@ Acceptance:
 - [x] inner and left joins return results identical to a brute force
       reference on randomized workloads; explain pins the join strategy
       (nested loop vs index nested loop) in golden tests
-- [ ] begin/commit/rollback across statements, and the crash harness kills
+- [x] begin/commit/rollback across statements, and the crash harness kills
       inside an open transaction: committed data survives, the open
       transaction vanishes without a trace
 - [ ] import of a real-world SQLite db (chinook, checked into the repo)

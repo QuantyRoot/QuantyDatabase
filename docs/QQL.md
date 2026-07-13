@@ -25,6 +25,10 @@ drop table users
 show tables
 explain get users where name = "elchi"
 
+begin                                        # open an explicit transaction
+commit                                       # apply it, all or nothing
+rollback                                     # discard it
+
 get users where score > 10 as of 42          # read commit 42
 get users as of time 1700000000000           # read by wall clock time
 branch experiment                            # fork at the current head
@@ -157,6 +161,35 @@ key or index instead of scanning. A probe is only a shortcut: the full `on`
 condition is still checked on every candidate, so the strategy never
 changes which rows come out, only how fast.
 
+## Transactions
+
+Without `begin`, every statement is its own transaction: it commits fully
+or leaves no trace, and a read-only statement commits nothing at all.
+
+`begin` opens an explicit transaction that spans statements. Everything
+after it is buffered: reads inside the transaction see its own pending
+writes, but nothing is visible to anyone else and nothing is durable until
+`commit`, which applies the whole sequence as a single commit with one
+commit id. `rollback` throws the sequence away. A process that dies with a
+transaction open leaves the database exactly as it was before `begin`.
+
+```
+begin
+put orders { id: 1, total: 30 }
+set stock where id = 7 { count -= 1 }
+get stock where id = 7        # sees count already decremented
+commit                        # both writes land as one commit
+```
+
+A statement that fails inside a transaction is not buffered and does not
+end the transaction: fix the statement and carry on, or `rollback`. Nested
+`begin` is an error, as is `commit` or `rollback` with nothing open.
+
+Branch and history statements (`branch`, `switch`, `merge`, `drop branch`,
+`log`, `gc`) manage commits themselves and are refused inside a
+transaction; close it first. `as of` reads committed history by definition,
+so inside a transaction it ignores the pending writes.
+
 ## Branches and history
 
 Commits form a history you can read back and fork, the same shape as git.
@@ -189,7 +222,8 @@ zero commits is refused, since a branch must keep at least its head.
 
 ```
 statement  = table_def | drop | put | get | set | del | index | show
-           | branch | switch | merge | log | gc | explain
+           | branch | switch | merge | log | gc | txn | explain
+txn        = "begin" | "commit" | "rollback"
 explain    = "explain" statement
 table_def  = "table" ident "{" column+ "}"
 column     = ident ":" type ("=" literal | "@" attr)*    (commas optional)

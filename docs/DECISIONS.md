@@ -194,3 +194,45 @@ would not have hit. The join model test checks this the hard way: the same
 data goes into three right-table shapes that force the three strategies, and
 all three must return the same multiset as a brute-force reference join, on
 thousands of randomized inputs.
+
+## ADR-016: An open transaction is a replayed statement list, for now
+
+Phase 4's third slice adds `begin` / `commit` / `rollback` across
+statements. The obvious implementation is to hold a core `WriteTx` open in
+the session for the transaction's lifetime. That does not typecheck, and
+the reason is worth writing down: a `WriteTx` borrows the `Db`, so a
+session holding both is self-referential, and `Db::gc` needs `&mut self`,
+which an outstanding borrow would forbid. Working around that with interior
+mutability or a self-referential crate would put unsafe or a dependency
+underneath the most safety-critical code in the project, to save work in a
+path nobody has benchmarked yet.
+
+So the transaction is its statement list. An open transaction buffers the
+mutating statements it accepted, in order, and its effect is defined as
+that list applied to one write transaction at `commit`. To read or explain
+mid-transaction, the list is replayed into a throwaway write transaction
+that is then dropped, so a read sees exactly what `commit` would produce so
+far and nothing sticks. `rollback` drops the list. Crash safety is
+inherited rather than added: an open transaction has not touched the disk
+at all, so a process killed with one open leaves the database exactly as it
+was before `begin`, and `commit` is a single core commit and therefore
+already atomic. The txn crash harness kills a thousand times inside open
+transactions and demands whole transaction groups back, never a partial
+one.
+
+The cost is honest and quadratic: the n-th statement of a transaction
+replays n-1 statements before it. That is fine for the transaction sizes
+this thing has today and unacceptable for a bulk load inside one
+transaction, so the replacement is already scoped: buffer a write set
+(owned key/value overlay plus catalog overlay) instead of statements, read
+through the overlay onto a base snapshot, and apply the overlay in one
+write transaction at commit. That version needs the executor to run against
+an overlay view rather than a `WriteTx` directly, which is a real change to
+`Run`, and it should land with a benchmark that shows the replay hurting,
+not before.
+
+A mutation that fails inside a transaction is not buffered and does not
+close the transaction: it is validated by the same replay that would run
+it, so a rejected statement simply never joins the list. Branch and history
+statements own their commits and are refused inside a transaction rather
+than silently reordered around it.

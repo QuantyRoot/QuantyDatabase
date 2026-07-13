@@ -39,6 +39,10 @@ DROP TABLE name
 
 EXPLAIN [QUERY PLAN] statement
 
+BEGIN [DEFERRED | IMMEDIATE | EXCLUSIVE] [TRANSACTION]
+COMMIT [TRANSACTION] | END [TRANSACTION]
+ROLLBACK [TRANSACTION]
+
 SHOW TABLES
 ```
 
@@ -165,18 +169,28 @@ and, on a `LEFT JOIN`, sees the null-padded rows too. Because the engine's
 or index probe of the right table); see docs/QQL.md for how to read it. The
 strategy is a speed choice only and never changes the result.
 
+## Transactions
+
+BEGIN, COMMIT (also spelled END) and ROLLBACK work across statements and
+mean what they do in sqlite: the statements between BEGIN and COMMIT apply
+as one unit or not at all, and reads inside the transaction see its own
+pending writes. The locking words after BEGIN (DEFERRED, IMMEDIATE,
+EXCLUSIVE) parse and change nothing; there is one writer per database
+anyway. Savepoints are not supported. The semantics are shared with QQL,
+see docs/QQL.md.
+
 ## Not in the subset (yet)
 
-Everything here fails with an error naming the missing piece. Planned for
-this phase: transactions across statements (BEGIN / COMMIT / ROLLBACK).
-Not scheduled: expressions and aliases in the select list, table aliases,
-RIGHT / FULL / CROSS / NATURAL joins, USING, comma joins, DISTINCT,
-functions and aggregates, GROUP BY / HAVING, compound selects, OFFSET,
-subqueries, CASE, CAST, BETWEEN, IN, LIKE, positional INSERT,
-INSERT ... SELECT, upserts, ALTER TABLE, views, triggers, temporary
-tables, unique and check constraints, COLLATE, multi-column / unique /
-partial / descending indexes, DROP INDEX, IF [NOT] EXISTS, AUTOINCREMENT,
-PRAGMA, ATTACH, parameters, bitwise operators.
+Everything here fails with an error naming the missing piece. Nothing from
+this phase is outstanding. Not scheduled: expressions and aliases in the
+select list, table aliases, RIGHT / FULL / CROSS / NATURAL joins, USING,
+comma joins, savepoints, DISTINCT, functions and aggregates, GROUP BY /
+HAVING, compound selects, OFFSET, subqueries, CASE, CAST, BETWEEN, IN,
+LIKE, positional INSERT, INSERT ... SELECT, upserts, ALTER TABLE, views,
+triggers, temporary tables, unique and check constraints, COLLATE,
+multi-column / unique / partial / descending indexes, DROP INDEX,
+IF [NOT] EXISTS, AUTOINCREMENT, PRAGMA, ATTACH, parameters, bitwise
+operators.
 
 Time travel and branching have no SQL spelling; they stay QQL-only
 (`as of`, `branch`, `switch`, `merge`, `log`, `gc`).
