@@ -103,18 +103,13 @@ error: parse error at byte 19: not supported yet: update ... from
 > DELETE FROM t ORDER BY id LIMIT 1
 error: parse error at byte 14: not supported yet: order by / limit on delete
 
-# transactions arrive later in this phase
-> BEGIN
-error: parse error at byte 0: not supported yet: transactions across statements
-
-> COMMIT
-error: parse error at byte 0: not supported yet: transactions across statements
-
-> ROLLBACK
-error: parse error at byte 0: not supported yet: transactions across statements
-
+# begin / commit / rollback are supported now (see sql_16_txn.sql);
+# savepoints are not
 > SAVEPOINT sp1
-error: parse error at byte 0: not supported yet: transactions across statements
+error: parse error at byte 0: not supported yet: savepoints
+
+> RELEASE sp1
+error: parse error at byte 0: not supported yet: savepoints
 
 # ddl
 > CREATE TABLE IF NOT EXISTS t (id INTEGER PRIMARY KEY)

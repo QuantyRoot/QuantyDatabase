@@ -38,6 +38,19 @@ jobs:
         env:
           QUANTY_CRASH_ITERS: "1000"
 
+  txn-crash-harness:
+    name: txn crash harness (1000 kills)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: kill -9 inside an open transaction a thousand times
+        run: cargo test -p quanty-exec --test txn_crash -- --nocapture
+        env:
+          QUANTY_TXN_CRASH_ITERS: "1000"
+
   msrv:
     name: test on MSRV (1.75)
     runs-on: ubuntu-latest

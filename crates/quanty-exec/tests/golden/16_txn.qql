@@ -1,0 +1,121 @@
+# explicit transactions: begin buffers, commit persists, rollback discards.
+# see docs/QQL.md and ADR-016. the sql mirror is sql_16_txn.sql
+
+> table t { id: int @key, n: int }
+ok
+
+> put t { id: 1, n: 10 }
+put 1
+
+# a rolled back transaction leaves no trace
+> begin
+ok
+
+> put t { id: 2, n: 20 }
+put 1
+
+# a read inside the transaction sees its own pending writes
+> get t
+1|10
+2|20
+
+> rollback
+ok
+
+# and afterwards the pending row is gone
+> get t
+1|10
+
+# a committed transaction applies all its statements at once
+> begin
+ok
+
+> put t { id: 3, n: 30 }
+put 1
+
+> set t where id = 1 { n += 5 }
+set 1
+
+> del t where id = 3
+del 1
+
+> put t { id: 4, n: 40 }
+put 1
+
+# the read reflects everything buffered so far
+> get t order by id
+1|15
+4|40
+
+> commit
+ok
+
+> get t order by id
+1|15
+4|40
+
+# control errors
+> commit
+error: no transaction is open
+
+> rollback
+error: no transaction is open
+
+# nesting is refused
+> begin
+ok
+
+> begin
+error: a transaction is already open; commit or rollback first
+
+# a failing statement keeps the transaction open and buffers nothing
+> put t { id: 1, n: 99 }
+error: duplicate key (1) in table 't'
+
+> get t order by id
+1|15
+4|40
+
+# branch and history statements may not run inside a transaction
+> branch side
+error: branch and history statements cannot run inside a transaction; commit or rollback first
+
+> gc keep 5
+error: branch and history statements cannot run inside a transaction; commit or rollback first
+
+# reads of history inside a transaction ignore the pending writes
+> put t { id: 5, n: 50 }
+put 1
+
+> get t as of 2 order by id
+1|10
+
+> get t order by id
+1|15
+4|40
+5|50
+
+> rollback
+ok
+
+# after rollback the id 5 write is gone
+> get t order by id
+1|15
+4|40
+
+# explain works inside a transaction, over the pending schema and data
+> begin
+ok
+
+> table u { id: int @key, t_id: int @index }
+ok
+
+> explain get u where t_id = 1
+IndexScan u via t_id = 1
+
+> rollback
+ok
+
+# u never existed outside the rolled back transaction
+> get u
+error: no table named 'u'
