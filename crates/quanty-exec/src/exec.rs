@@ -29,6 +29,9 @@ type RawRows = Vec<(Vec<u8>, Vec<u8>)>;
 
 pub struct Session<S: Storage> {
     db: Db<S>,
+    /// Buffered mutations of an explicit `begin` transaction, in order.
+    /// `None` in autocommit mode. See `run_in_txn` for the replay model.
+    txn: Option<Vec<Statement>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -63,7 +66,7 @@ impl Output {
 
 impl<S: Storage> Session<S> {
     pub fn new(db: Db<S>) -> Self {
-        Session { db }
+        Session { db, txn: None }
     }
 
     pub fn db(&self) -> &Db<S> {
@@ -87,6 +90,32 @@ impl<S: Storage> Session<S> {
 
     fn run_parsed(&mut self, stmt: &Statement) -> Result<Output, ExecError> {
         match stmt {
+            // transaction control drives the session's txn state
+            Statement::Begin => {
+                if self.txn.is_some() {
+                    return Err(ExecError::exec(
+                        "a transaction is already open; commit or rollback first",
+                    ));
+                }
+                self.txn = Some(Vec::new());
+                Ok(Output::Ok)
+            }
+            Statement::Commit => {
+                let Some(buffered) = self.txn.take() else {
+                    return Err(ExecError::exec("no transaction is open"));
+                };
+                self.commit_buffered(&buffered)?;
+                Ok(Output::Ok)
+            }
+            Statement::Rollback => {
+                if self.txn.take().is_none() {
+                    return Err(ExecError::exec("no transaction is open"));
+                }
+                Ok(Output::Ok)
+            }
+            // while a transaction is open every other statement is buffered
+            // or served from a replay, never committed on its own
+            _ if self.txn.is_some() => self.run_in_txn(stmt),
             // branch and history statements manage their own commits at
             // the database level instead of running inside a write tx
             Statement::Branch { name, at } => {
@@ -137,13 +166,7 @@ impl<S: Storage> Session<S> {
                 )]))
             }
             // reads from history resolve a snapshot and never open a tx
-            Statement::Get(get) if get.as_of.is_some() => {
-                let snap = match get.as_of.expect("checked above") {
-                    AsOf::Commit(id) => self.db.snapshot_at(id)?,
-                    AsOf::Time(t) => self.db.snapshot_at_time(t)?,
-                };
-                run_get(&snap, get)
-            }
+            Statement::Get(get) if get.as_of.is_some() => self.read_as_of(get),
             _ => {
                 let tx = self.db.begin();
                 let mut run = Run { tx, mutated: false };
@@ -154,6 +177,104 @@ impl<S: Storage> Session<S> {
                 Ok(output)
             }
         }
+    }
+
+    /// A historical read: resolve the snapshot and run against it. Never
+    /// opens a write transaction and, inside an explicit transaction,
+    /// ignores the pending writes because `as of` asks for committed
+    /// history by definition.
+    fn read_as_of(&self, get: &Get) -> Result<Output, ExecError> {
+        let snap = match get.as_of.expect("caller checked as_of is some") {
+            AsOf::Commit(id) => self.db.snapshot_at(id)?,
+            AsOf::Time(t) => self.db.snapshot_at_time(t)?,
+        };
+        run_get(&snap, get)
+    }
+
+    /// Statement handling while an explicit transaction is open.
+    ///
+    /// The model is replay: the transaction is exactly the ordered list of
+    /// its mutating statements, and its effect is that list applied to a
+    /// single write transaction, atomically, at `commit`. To read or
+    /// validate mid-transaction, that list is replayed into a throwaway
+    /// write transaction and then discarded, so a read sees precisely what
+    /// `commit` would produce so far, and nothing sticks until `commit`.
+    /// This is the boring, obviously correct version; a write-set overlay
+    /// that avoids the replay is the planned optimization (ADR-016).
+    fn run_in_txn(&mut self, stmt: &Statement) -> Result<Output, ExecError> {
+        match stmt {
+            // database-level statements own their commits and cannot be
+            // part of a data transaction; make the user close it first
+            Statement::Branch { .. }
+            | Statement::Switch { .. }
+            | Statement::Merge { .. }
+            | Statement::DropBranch { .. }
+            | Statement::ShowBranches
+            | Statement::Log
+            | Statement::Gc { .. } => Err(ExecError::exec(
+                "branch and history statements cannot run inside a transaction; \
+                 commit or rollback first",
+            )),
+            // history reads are independent of the pending writes
+            Statement::Get(get) if get.as_of.is_some() => self.read_as_of(get),
+            // reads and explains: replay the pending writes, run, discard
+            Statement::Get(_) | Statement::ShowTables | Statement::Explain(_) => {
+                let buffered = self.txn.as_ref().expect("transaction is open");
+                self.dry_run(buffered, stmt)
+            }
+            // mutations: replay plus this statement must succeed before it
+            // joins the buffer; on error nothing is buffered and the
+            // transaction stays open, matching statement-level rollback
+            Statement::TableDef(_)
+            | Statement::DropTable { .. }
+            | Statement::Put { .. }
+            | Statement::Set { .. }
+            | Statement::Del { .. }
+            | Statement::IndexDef { .. } => {
+                let buffered = self.txn.as_ref().expect("transaction is open");
+                let output = self.dry_run(buffered, stmt)?;
+                self.txn
+                    .as_mut()
+                    .expect("transaction is open")
+                    .push(stmt.clone());
+                Ok(output)
+            }
+            Statement::Begin | Statement::Commit | Statement::Rollback => {
+                unreachable!("transaction control is handled in run_parsed")
+            }
+        }
+    }
+
+    /// Replay `buffered` into a fresh write transaction, run `stmt` on top,
+    /// and discard everything. Used for reads and for validating a
+    /// mutation before it joins the buffer.
+    fn dry_run(&self, buffered: &[Statement], stmt: &Statement) -> Result<Output, ExecError> {
+        let mut run = Run {
+            tx: self.db.begin(),
+            mutated: false,
+        };
+        for s in buffered {
+            run.statement(s)?;
+        }
+        run.statement(stmt)
+        // run drops here, discarding the write batch
+    }
+
+    /// Replay `buffered` into a fresh write transaction and commit it. An
+    /// empty or purely no-op transaction commits nothing and burns no
+    /// commit id.
+    fn commit_buffered(&self, buffered: &[Statement]) -> Result<(), ExecError> {
+        let mut run = Run {
+            tx: self.db.begin(),
+            mutated: false,
+        };
+        for s in buffered {
+            run.statement(s)?;
+        }
+        if run.mutated {
+            run.tx.commit()?;
+        }
+        Ok(())
     }
 }
 
@@ -648,8 +769,11 @@ impl<S: Storage> Run<'_, S> {
             | Statement::DropBranch { .. }
             | Statement::ShowBranches
             | Statement::Log
-            | Statement::Gc { .. } => Err(ExecError::exec(
-                "branch or history statement reached the write path, this is a bug",
+            | Statement::Gc { .. }
+            | Statement::Begin
+            | Statement::Commit
+            | Statement::Rollback => Err(ExecError::exec(
+                "control statement reached the write path, this is a bug",
             )),
         }
     }
