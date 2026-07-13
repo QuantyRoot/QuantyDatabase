@@ -189,6 +189,7 @@ const CORPUS: &[&str] = &[
     "END TRANSACTION",
     "ROLLBACK",
     "EXPLAIN QUERY PLAN SELECT * FROM users WHERE id = 7",
+    "SELECT * FROM t WHERE NOT (a = 1) AND (b = 2 OR c = 3)",
     "EXPLAIN EXPLAIN DELETE FROM t",
 ];
 

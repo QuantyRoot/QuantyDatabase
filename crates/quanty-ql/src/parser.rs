@@ -8,6 +8,11 @@ use crate::error::ParseError;
 use crate::lexer::{lex, Spanned, Token};
 
 /// Parse exactly one statement. Trailing input is an error.
+/// The words that are operators inside an expression, and therefore
+/// cannot be table or column names. Everything else stays unreserved:
+/// a column may still be called `limit` or `order`.
+const OPERATOR_WORDS: [&str; 3] = ["not", "and", "or"];
+
 pub fn parse(source: &str) -> Result<Statement, ParseError> {
     let tokens = lex(source)?;
     let mut p = Parser { tokens, pos: 0 };
@@ -81,6 +86,25 @@ impl Parser {
         }
     }
 
+    /// A table or column name. Same as `ident`, minus the three words that
+    /// are operators inside an expression. A column called `not` cannot be
+    /// referenced unambiguously: `a = not * b` reads `not` as a name, but
+    /// the canonical form parenthesizes it into `(not * b)`, where `not`
+    /// is the operator again. The fuzzer found exactly that (ADR-017), so
+    /// these three names are refused where they are written, not left to
+    /// misparse later.
+    fn name(&mut self, what: &str) -> Result<String, ParseError> {
+        let at = self.at();
+        let w = self.ident(what)?;
+        if OPERATOR_WORDS.contains(&w.as_str()) {
+            return Err(ParseError::at(
+                at,
+                format!("'{w}' is an operator and cannot name a table or column"),
+            ));
+        }
+        Ok(w)
+    }
+
     fn ident(&mut self, what: &str) -> Result<String, ParseError> {
         match self.peek().clone() {
             Token::Ident(w) => {
@@ -96,9 +120,9 @@ impl Parser {
 
     /// `name` or `table.name`.
     fn column_ref(&mut self, what: &str) -> Result<ColumnRef, ParseError> {
-        let first = self.ident(what)?;
+        let first = self.name(what)?;
         if self.eat(&Token::Dot) {
-            let column = self.ident("a column name after '.'")?;
+            let column = self.name("a column name after '.'")?;
             Ok(ColumnRef::qualified(first, column))
         } else {
             Ok(ColumnRef::bare(first))
@@ -130,7 +154,7 @@ impl Parser {
             "drop" => {
                 let what_at = self.at();
                 match self.ident("'table' or 'branch' after drop")?.as_str() {
-                    "table" => Ok(Statement::DropTable { name: self.ident("a table name")? }),
+                    "table" => Ok(Statement::DropTable { name: self.name("a table name")? }),
                     "branch" => {
                         Ok(Statement::DropBranch { name: self.ident("a branch name")? })
                     }
@@ -145,9 +169,9 @@ impl Parser {
             "set" => self.set(),
             "del" => self.del(),
             "index" => {
-                let table = self.ident("a table name")?;
+                let table = self.name("a table name")?;
                 self.expect(Token::Dot, "'.' as in index users.name")?;
-                let column = self.ident("a column name")?;
+                let column = self.name("a column name")?;
                 Ok(Statement::IndexDef { table, column })
             }
             "show" => {
@@ -205,7 +229,7 @@ impl Parser {
     }
 
     fn table_def(&mut self) -> Result<Statement, ParseError> {
-        let name = self.ident("a table name")?;
+        let name = self.name("a table name")?;
         self.expect(Token::LBrace, "'{' to open the column list")?;
         let mut columns = Vec::new();
         loop {
@@ -227,7 +251,7 @@ impl Parser {
     }
 
     fn column_def(&mut self) -> Result<ColumnDef, ParseError> {
-        let name = self.ident("a column name")?;
+        let name = self.name("a column name")?;
         self.expect(Token::Colon, "':' between column name and type")?;
         let ty_at = self.at();
         let ty = match self
@@ -283,7 +307,7 @@ impl Parser {
     }
 
     fn put(&mut self) -> Result<Statement, ParseError> {
-        let table = self.ident("a table name")?;
+        let table = self.name("a table name")?;
         let mut rows = Vec::new();
         loop {
             self.expect(Token::LBrace, "'{' to open a row")?;
@@ -292,7 +316,7 @@ impl Parser {
                 if self.eat(&Token::RBrace) {
                     break;
                 }
-                let col = self.ident("a column name")?;
+                let col = self.name("a column name")?;
                 self.expect(Token::Colon, "':' between column and value")?;
                 let expr = self.expr()?;
                 fields.push((col, expr));
@@ -310,7 +334,7 @@ impl Parser {
     }
 
     fn get(&mut self) -> Result<Statement, ParseError> {
-        let table = self.ident("a table name")?;
+        let table = self.name("a table name")?;
         let mut joins = Vec::new();
         loop {
             let kind = if self.eat_kw("left") {
@@ -321,7 +345,7 @@ impl Parser {
             } else {
                 break;
             };
-            let table = self.ident("a table name to join")?;
+            let table = self.name("a table name to join")?;
             self.expect_kw("on")?;
             let on = self.expr()?;
             joins.push(Join { kind, table, on });
@@ -398,7 +422,7 @@ impl Parser {
     }
 
     fn set(&mut self) -> Result<Statement, ParseError> {
-        let table = self.ident("a table name")?;
+        let table = self.name("a table name")?;
         let filter = if self.eat_kw("where") {
             Some(self.expr()?)
         } else {
@@ -410,7 +434,7 @@ impl Parser {
             if self.eat(&Token::RBrace) {
                 break;
             }
-            let column = self.ident("a column name")?;
+            let column = self.name("a column name")?;
             let op_at = self.at();
             let op = self.bump();
             let rhs = self.expr()?;
@@ -444,7 +468,7 @@ impl Parser {
     }
 
     fn del(&mut self) -> Result<Statement, ParseError> {
-        let table = self.ident("a table name")?;
+        let table = self.name("a table name")?;
         let filter = if self.eat_kw("where") {
             Some(self.expr()?)
         } else {
@@ -544,15 +568,7 @@ impl Parser {
             return Ok(Expr::Literal(v));
         }
         match self.peek().clone() {
-            Token::Ident(w) => {
-                self.bump();
-                if self.eat(&Token::Dot) {
-                    let column = self.ident("a column name after '.'")?;
-                    Ok(Expr::Column(ColumnRef::qualified(w, column)))
-                } else {
-                    Ok(Expr::Column(ColumnRef::bare(w)))
-                }
-            }
+            Token::Ident(_) => Ok(Expr::Column(self.column_ref("a column name")?)),
             Token::LParen => {
                 self.bump();
                 let inner = self.expr()?;
@@ -728,5 +744,41 @@ mod tests {
             panic!("expected put")
         };
         assert_eq!(rows.len(), 3);
+    }
+    #[test]
+    fn operator_words_cannot_name_things() {
+        // the fuzzer found this: `not` reads as a name deep in an
+        // expression and as the operator once the canonical form
+        // parenthesizes it, so it can never be a name (ADR-017)
+        for src in [
+            "get t where h = not * (a % 2 = 0)",
+            "get t { not }",
+            "get t order by and",
+            "table not { id: int @key }",
+            "table t { or: int @key }",
+            "get t join not on t.a = not.b",
+            "index t.and",
+        ] {
+            let err = parse(src).expect_err(&format!("must be refused: {src}"));
+            assert!(
+                err.message.contains("cannot name a table or column"),
+                "wrong error for {src}: {err}"
+            );
+        }
+
+        // at the start of an expression `not` is the operator, so this is
+        // refused by the operator path instead; either way it never parses
+        // into something whose canonical form means something else
+        assert!(parse("get t where not = 1").is_err());
+
+        // everything else stays unreserved, operators still parse
+        for src in [
+            "get limit { order }",
+            "get t where not (a = 1)",
+            "get t where a = 1 and b = 2 or c = 3",
+            "table t { limit: int @key, key: text @null }",
+        ] {
+            parse(src).unwrap_or_else(|e| panic!("must parse: {src}\n{e}"));
+        }
     }
 }

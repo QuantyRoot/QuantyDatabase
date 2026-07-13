@@ -159,6 +159,11 @@ const CORPUS: &[&str] = &[
     "commit",
     "rollback",
     "explain get users where id = 7",
+    // the shape that broke the canonical-form invariant once: `not` deep
+    // in an expression is a name, and the canonical parens turn it back
+    // into the operator (ADR-017). refused at the source now.
+    "del users where not (score % 2 = 0)",
+    "get t where a = 1 and not (b = 2 or c = 3)",
     "explain explain del t",
 ];
 

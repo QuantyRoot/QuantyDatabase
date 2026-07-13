@@ -32,6 +32,10 @@ pub fn parse_sql(source: &str) -> Result<Statement, ParseError> {
 /// named order is written "order". The list is longer than the supported
 /// grammar on purpose, so unsupported SQL fails on the keyword with a clear
 /// message instead of misparsing it as a name.
+/// Operators in the canonical language; see the QQL parser. Names that
+/// collide with them cannot round trip, so both front ends refuse them.
+const OPERATOR_WORDS: [&str; 3] = ["not", "and", "or"];
+
 const RESERVED: &[&str] = &[
     "all",
     "and",
@@ -193,6 +197,22 @@ impl Parser {
     /// name in the catalog has to render back into QQL, the canonical
     /// language (see ADR-014).
     fn ident(&mut self, what: &str) -> Result<String, ParseError> {
+        let at = self.at();
+        let name = self.raw_ident(what)?;
+        // these three are operators in the canonical language, so a name
+        // spelled exactly like one could not be rendered back into QQL
+        // (ADR-017). unquoted they are reserved anyway; quoting is what
+        // would otherwise smuggle them through.
+        if OPERATOR_WORDS.contains(&name.as_str()) {
+            return Err(ParseError::at(
+                at,
+                format!("'{name}' is an operator and cannot name a table or column"),
+            ));
+        }
+        Ok(name)
+    }
+
+    fn raw_ident(&mut self, what: &str) -> Result<String, ParseError> {
         let at = self.at();
         match self.peek().clone() {
             Tok::Word(w) => {
@@ -1476,5 +1496,28 @@ mod tests {
     fn a_table_without_a_key_is_rejected_at_parse_time() {
         let err = parse_sql("CREATE TABLE t (a INTEGER, b TEXT)").unwrap_err();
         assert!(err.message.contains("needs a primary key"), "{err}");
+    }
+    #[test]
+    fn quoted_operator_words_are_refused() {
+        // quoting bypasses reserved words, but not these three: they are
+        // operators in the canonical language and could not be rendered
+        // back into it (ADR-017)
+        for src in [
+            r#"SELECT * FROM t WHERE "not" = 1"#,
+            r#"SELECT "and" FROM t"#,
+            r#"CREATE TABLE "or" (a INTEGER PRIMARY KEY)"#,
+            r#"CREATE TABLE t (a INTEGER PRIMARY KEY, "not" INTEGER)"#,
+        ] {
+            let err = parse_sql(src).expect_err(&format!("must be refused: {src}"));
+            assert!(
+                err.message.contains("cannot name a table or column"),
+                "wrong error for {src}: {err}"
+            );
+        }
+
+        // case matters: qql keywords are lowercase, so this still works
+        assert!(parse_sql(r#"SELECT "NOT" FROM t"#).is_ok());
+        // and the operators themselves are untouched
+        assert!(parse_sql("SELECT * FROM t WHERE NOT (a = 1) AND b = 2").is_ok());
     }
 }

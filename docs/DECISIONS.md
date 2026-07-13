@@ -236,3 +236,37 @@ close the transaction: it is validated by the same replay that would run
 it, so a rejected statement simply never joins the list. Branch and history
 statements own their commits and are refused inside a transaction rather
 than silently reordered around it.
+
+## ADR-017: `not`, `and` and `or` cannot be names
+
+QQL was designed without reserved words: context decides, so a column may
+be called `limit` or `order`. The parser fuzzer found the case where that
+does not hold, after ten minutes of hunting in CI:
+
+```
+input:     del users where h=not*(score% 2 = 0)
+canonical: del users where (h = (not * ((score % 2) = 0)))
+```
+
+Deep inside an expression, `not` is not in operator position, so the parser
+reads it as a column name and the statement parses. The canonical form
+parenthesizes the subexpression, which moves `not` to the front of an
+expression, where it is the unary operator again. The canonical form no
+longer parses, and the invariant that holds the two front ends together,
+parse(pretty(ast)) == ast, is broken.
+
+The word is contextually a keyword and contextually a name, and pretty
+printing changes the context. That cannot be patched in the printer; the
+name has to go. So `not`, `and` and `or` are refused as table and column
+names, in both front ends, at the point where they are written rather than
+left to misparse later. Everything else stays unreserved. In SQL the same
+rule applies to quoted names, since quoting is what would otherwise smuggle
+them past the reserved word list, and a quoted `"not"` still has to render
+back into QQL. Case is significant: QQL keywords are lowercase, so `"NOT"`
+remains a legal name.
+
+The bug predates the transaction work and was never a wrong answer, only a
+statement that could not be re-parsed from its own canonical form. It is
+worth recording anyway, because it is the fuzz invariant earning its keep:
+the property that looked like plumbing (a canonical form that survives a
+round trip) is exactly what caught a real ambiguity in the grammar.
