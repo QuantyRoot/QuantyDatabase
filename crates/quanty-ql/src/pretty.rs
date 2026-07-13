@@ -94,6 +94,9 @@ pub fn pretty(stmt: &Statement) -> String {
         Statement::ShowBranches => "show branches".to_string(),
         Statement::Log => "log".to_string(),
         Statement::Gc { keep } => format!("gc keep {keep}"),
+        Statement::Begin => "begin".to_string(),
+        Statement::Commit => "commit".to_string(),
+        Statement::Rollback => "rollback".to_string(),
         Statement::Explain(inner) => format!("explain {}", pretty(inner)),
     }
 }

@@ -183,6 +183,11 @@ const CORPUS: &[&str] = &[
     "CREATE INDEX idx_users_name ON users (name)",
     "DROP TABLE users",
     "show tables",
+    "BEGIN",
+    "BEGIN IMMEDIATE TRANSACTION",
+    "COMMIT",
+    "END TRANSACTION",
+    "ROLLBACK",
     "EXPLAIN QUERY PLAN SELECT * FROM users WHERE id = 7",
     "EXPLAIN EXPLAIN DELETE FROM t",
 ];

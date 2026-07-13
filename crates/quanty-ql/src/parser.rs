@@ -123,7 +123,7 @@ impl Parser {
     fn statement(&mut self) -> Result<Statement, ParseError> {
         let at = self.at();
         let verb = self.ident(
-            "a statement (table, get, put, set, del, drop, index, show, branch, switch, merge, log, gc, explain)",
+            "a statement (table, get, put, set, del, drop, index, show, branch, switch, merge, log, gc, begin, commit, rollback, explain)",
         )?;
         match verb.as_str() {
             "table" => self.table_def(),
@@ -193,6 +193,9 @@ impl Parser {
                     )),
                 }
             }
+            "begin" => Ok(Statement::Begin),
+            "commit" => Ok(Statement::Commit),
+            "rollback" => Ok(Statement::Rollback),
             "explain" => Ok(Statement::Explain(Box::new(self.statement()?))),
             other => Err(ParseError::at(
                 at,

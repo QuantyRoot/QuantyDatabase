@@ -43,6 +43,12 @@ pub enum Statement {
     Log,
     /// `gc keep 10`
     Gc { keep: u64 },
+    /// `begin`, open an explicit transaction spanning statements
+    Begin,
+    /// `commit`, make the open transaction durable
+    Commit,
+    /// `rollback`, discard the open transaction
+    Rollback,
     /// `explain <statement>`
     Explain(Box<Statement>),
 }

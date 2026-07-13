@@ -286,9 +286,29 @@ impl Parser {
                 self.expect_kw("tables", "'tables' after 'show'")?;
                 Ok(Statement::ShowTables)
             }
-            "begin" | "commit" | "rollback" | "end" | "savepoint" | "release" => {
-                Err(self.not_yet("transactions across statements"))
+            "begin" => {
+                self.bump();
+                // optional BEGIN [DEFERRED|IMMEDIATE|EXCLUSIVE] [TRANSACTION]
+                if self.at_kw("deferred") || self.at_kw("immediate") || self.at_kw("exclusive") {
+                    self.bump();
+                }
+                self.eat_kw("transaction");
+                Ok(Statement::Begin)
             }
+            "commit" | "end" => {
+                self.bump();
+                self.eat_kw("transaction");
+                Ok(Statement::Commit)
+            }
+            "rollback" => {
+                self.bump();
+                self.eat_kw("transaction");
+                if self.at_kw("to") {
+                    return Err(self.not_yet("savepoints (rollback to)"));
+                }
+                Ok(Statement::Rollback)
+            }
+            "savepoint" | "release" => Err(self.not_yet("savepoints")),
             "with" => Err(self.not_yet("with (common table expressions)")),
             "values" => Err(self.not_yet("values as a bare statement")),
             "replace" => Err(self.not_yet("replace")),
@@ -1422,7 +1442,7 @@ mod tests {
             ("SELECT DISTINCT a FROM t", "distinct"),
             ("SELECT * FROM t LIMIT 5 OFFSET 2", "offset"),
             ("INSERT INTO t VALUES (1)", "column list"),
-            ("BEGIN", "transactions"),
+            ("SAVEPOINT sp1", "savepoints"),
             ("SELECT * FROM t WHERE a LIKE 'x%'", "pattern matching"),
             ("SELECT * FROM t WHERE a IN (1, 2)", "in (...)"),
             ("SELECT * FROM t WHERE a BETWEEN 1 AND 2", "between"),
