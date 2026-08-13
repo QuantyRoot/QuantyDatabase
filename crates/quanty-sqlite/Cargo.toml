@@ -1,0 +1,10 @@
+[package]
+name = "quanty-sqlite"
+description = "Reader for the SQLite 3 file format, used to import .sqlite files into QuantyDB"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
