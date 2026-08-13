@@ -270,3 +270,69 @@ statement that could not be re-parsed from its own canonical form. It is
 worth recording anyway, because it is the fuzz invariant earning its keep:
 the property that looked like plumbing (a canonical form that survives a
 round trip) is exactly what caught a real ambiguity in the grammar.
+
+## ADR-018: Extensions are Rust code linked at build time
+
+An outside developer asked about building on QuantyDB, which is the first
+time the question has come from someone who is not us. It put an extension
+API on the roadmap, and it immediately split into two things that share the
+word plugin.
+
+One is code that runs *inside* the database: a function the query language
+can call, a hook that sees commits, a table backed by something other than
+our own storage. That is an extension API. The other is an application that
+*uses* the database, which needs the embedded crate if it is written in Rust
+and the phase 5 protocol if it is not. No extension API substitutes for
+either, and the two get conflated constantly, so this record starts by
+separating them. The developer in question writes Java, so what he actually
+needs is phase 5, and saying that plainly is more useful than handing him
+something adjacent.
+
+**Extensions are Rust, compiled into the binary that embeds Quanty**, and
+registered on a builder before any statement runs. No `dlopen`, no C ABI, no
+stable symbol level interface. Rust has no stable ABI, so a loadable object
+interface means an `extern "C"` boundary plus unsafe code sitting directly
+under the executor, which is the second most safety critical thing in the
+project after the pager. ADR-016 already refused unsafe and a self
+referential dependency to save work in a path nobody had benchmarked; this
+is the same trade with a bigger blast radius. The price is real and worth
+stating: an extension cannot be dropped next to a running binary, and
+anyone who wants one has to rebuild. Keeping unsafe out of the query path
+is worth that.
+
+**Other languages get the wire protocol, not an ABI.** Java, Python and
+everything else talk to the phase 5 server. A JNI bridge would need its own
+memory safety story across a boundary we do not control, to reach a place
+the protocol reaches anyway.
+
+Two constraints on the surface are already fixed, before any of it is
+designed, because both fall out of invariants that already exist.
+
+QQL has no call syntax at all today: an expression is a literal, a column, a
+unary operator or a binary operator. So a user defined function is a
+language change before it is an API, touching `ast.rs`, the QQL parser,
+`pretty.rs`, the SQL parser and both fuzz corpora, and
+`parse(pretty(ast)) == ast` has to keep holding for names the engine did not
+choose. ADR-017 is what that failure mode looks like when the names are
+ours. With third party names it arrives with a second question attached, so
+the rules for which names an extension may claim get decided together with
+the syntax rather than after it.
+
+ADR-015 says a probe is a pure accelerator, planned only where coercion
+cannot fail. A call into extension code is not known to be total,
+deterministic or side effect free, so the planner must refuse to build a
+probe from any condition containing one, and must not reorder, skip or
+repeat calls in ways a nested loop would not. Until that is enforced by a
+model test in the shape of the join model test, an extension call has no
+business in an `on` condition at all.
+
+**Before 1.0 the extension surface is explicitly unstable.** Breaking
+changes are allowed in minor releases and go in the changelog. Per ADR-009,
+the honest position is that we do not yet have the users to know which
+surface is the right one, and freezing the wrong one early is worse than
+saying so.
+
+Scheduling: phase 9. That is dependency order, not importance. It needs the
+public embedded crate and the call syntax before it can start. The roadmap
+allows pulling a later phase forward with a written reason, and this record
+is that reason if a real extension user shows up before phase 8 is green.

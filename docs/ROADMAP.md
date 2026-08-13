@@ -131,6 +131,32 @@ Acceptance:
 - [ ] suggestions demonstrably improve a benchmark workload when applied
 - [ ] tiering round-trips blobs bit-perfectly, survives network failpoints
 
+## Phase 9: Extension API
+
+Third party code running inside the database: scalar functions the query
+language can call, hooks that see commits, tables backed by something other
+than our storage. Rust only, registered on a builder at build time, no
+loadable objects (ADR-018). Two prerequisites are the reason this sits last
+rather than the size of the job: the public embedded crate has to exist, and
+QQL needs call syntax, which is a language change through both front ends
+and both fuzz corpora.
+
+Candidates in order of how far they reach into the engine: scalar functions,
+then commit hooks and a change feed, then tables not backed by our storage.
+Each one gets scoped when it is scheduled, not now.
+
+Acceptance:
+- [ ] a registered scalar function parses, pretty prints and round trips in
+      both front ends, with extension supplied names in both fuzz corpora
+- [ ] the planner never builds a probe from a condition containing an
+      extension call, proven by a model test in the shape of join_model
+- [ ] an extension that errors or panics fails the statement cleanly:
+      nothing partial is written and the session stays usable
+- [ ] verify_indexes and the crash harness stay green under randomized
+      workloads that call extension code
+- [ ] docs/EXTENSIONS.md documents the surface and states plainly that it is
+      unstable before 1.0
+
 ## Later / unscheduled
 
 Live query subscriptions, Postgres wire protocol, vector index, real merge
