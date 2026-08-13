@@ -23,7 +23,9 @@ mod error;
 mod header;
 mod page;
 mod record;
+mod schema;
 mod source;
+mod tree;
 mod varint;
 
 pub use cell::Cell;
@@ -31,7 +33,9 @@ pub use error::{Result, SqliteError};
 pub use header::{Header, TextEncoding};
 pub use page::{BtreePage, PageKind};
 pub use record::{decode as decode_record, SqliteValue};
+pub use schema::{ObjectKind, Schema, SchemaObject};
 pub use source::{FileSource, SliceSource, Source};
+pub use tree::{TableRow, TableScan};
 
 /// A SQLite database file, opened for reading.
 pub struct Reader<S: Source> {
@@ -151,6 +155,28 @@ impl<S: Source> Reader<S> {
                 payload: self.assemble(payload)?,
             },
         })
+    }
+
+    /// Read the database's own description of itself.
+    ///
+    /// The schema lives in a table rooted at page 1, so this is an ordinary
+    /// scan; it is separate only because everything else in the file is
+    /// found through it.
+    pub fn schema(&self) -> Result<Schema> {
+        let mut rows = Vec::new();
+        for row in self.table_scan(1)? {
+            rows.push(row?.values);
+        }
+        Schema::from_rows(rows, self.page_count)
+    }
+
+    /// Walk the table b-tree rooted at `root`, yielding rows in rowid order.
+    ///
+    /// The walk is lazy: a table larger than memory is read a page at a
+    /// time, and a caller that only wants the first row only pays for the
+    /// pages down to it.
+    pub fn table_scan(&self, root: u32) -> Result<TableScan<'_, S>> {
+        TableScan::new(self, root)
     }
 
     /// The largest payload the file could hold, used to reject length
