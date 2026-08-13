@@ -108,3 +108,70 @@ con.commit()
 con.execute("vacuum")
 con.close()
 ```
+
+## chinook.oracle
+
+One line per table, `<name> <row count> <sha256>`, plus a total. The digest
+covers every row of that table in rowid order, and it was produced by the
+real SQLite library rather than by this crate, so a reader that is wrong in
+the same way as its expectations is not a failure mode that exists here.
+
+Each row is rendered as the rowid, then the columns as they are physically
+stored, fields separated by byte 0x1f and the row terminated by 0x0a:
+
+- rowid: `r:` then the decimal value
+- SQL NULL: `null`
+- integer: `i:` then the decimal value
+- real: `f:` then 16 lowercase hex digits of the big endian IEEE 754 bits,
+  because no float formatting rule then has to agree across two languages
+- text: `t:` then the raw UTF-8 bytes
+- blob: `b:` then lowercase hex
+
+A column declared `integer primary key` is an alias for the rowid, and
+SQLite stores NULL in its place in the record. The oracle renders NULL there
+too and carries the rowid separately, so this compares the physical layout.
+Turning that NULL back into the value a user would see is a decision about
+what a row means, and it belongs to the importer.
+
+To regenerate:
+
+```python
+import hashlib, sqlite3, struct
+DB = "chinook.sqlite"
+con = sqlite3.connect(DB)
+
+def alias_column(table):
+    cols = con.execute(f'pragma table_info("{table}")').fetchall()
+    pks = [c for c in cols if c[5] != 0]
+    if len(pks) != 1:
+        return None
+    return pks[0][1] if (pks[0][2] or "").strip().upper() == "INTEGER" else None
+
+def render(v):
+    if v is None: return b"null"
+    if isinstance(v, int): return b"i:" + str(v).encode()
+    if isinstance(v, float): return b"f:" + struct.pack(">d", v).hex().encode()
+    if isinstance(v, str): return b"t:" + v.encode("utf-8")
+    if isinstance(v, bytes): return b"b:" + v.hex().encode()
+    raise TypeError(type(v))
+
+tables = sorted(t for (t,) in con.execute(
+    "select name from sqlite_master where type='table'").fetchall())
+lines, total = [], 0
+for table in tables:
+    cols = [c[1] for c in con.execute(f'pragma table_info("{table}")').fetchall()]
+    alias = alias_column(table)
+    quoted = ", ".join(f'"{c}"' for c in cols)
+    rows = con.execute(f'select rowid, {quoted} from "{table}" order by rowid').fetchall()
+    digest = hashlib.sha256()
+    for row in rows:
+        values = list(row[1:])
+        if alias is not None:
+            values[cols.index(alias)] = None
+        parts = [b"r:" + str(row[0]).encode()] + [render(v) for v in values]
+        digest.update(b"\x1f".join(parts) + b"\n")
+    lines.append(f"{table} {len(rows)} {digest.hexdigest()}")
+    total += len(rows)
+lines.append(f"# total rows {total}")
+open("chinook.oracle", "w").write("\n".join(lines) + "\n")
+```
