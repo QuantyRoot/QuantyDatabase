@@ -18,14 +18,19 @@
 //! # Ok::<(), quanty_sqlite::SqliteError>(())
 //! ```
 
+mod cell;
 mod error;
 mod header;
 mod page;
+mod record;
 mod source;
+mod varint;
 
+pub use cell::Cell;
 pub use error::{Result, SqliteError};
 pub use header::{Header, TextEncoding};
 pub use page::{BtreePage, PageKind};
+pub use record::{decode as decode_record, SqliteValue};
 pub use source::{FileSource, SliceSource, Source};
 
 /// A SQLite database file, opened for reading.
@@ -123,5 +128,76 @@ impl<S: Source> Reader<S> {
             self.header.usable_size() as usize,
             body_offset,
         )
+    }
+
+    /// Parse one cell of a b-tree page, following overflow pages so the
+    /// payload comes back whole.
+    pub fn cell(&self, page: &BtreePage, index: usize) -> Result<Cell> {
+        let usable = self.header.usable_size() as usize;
+        let layout = cell::parse(page, index, usable, self.payload_limit())?;
+        Ok(match layout {
+            cell::CellLayout::TableInterior { child, rowid } => {
+                Cell::TableInterior { child, rowid }
+            }
+            cell::CellLayout::TableLeaf { rowid, payload } => Cell::TableLeaf {
+                rowid,
+                payload: self.assemble(payload)?,
+            },
+            cell::CellLayout::IndexInterior { child, payload } => Cell::IndexInterior {
+                child,
+                payload: self.assemble(payload)?,
+            },
+            cell::CellLayout::IndexLeaf { payload } => Cell::IndexLeaf {
+                payload: self.assemble(payload)?,
+            },
+        })
+    }
+
+    /// The largest payload the file could hold, used to reject length
+    /// varints that ask for more memory than the file could ever supply.
+    fn payload_limit(&self) -> u64 {
+        self.page_count as u64 * self.header.page_size as u64
+    }
+
+    /// Stitch a payload back together across its overflow chain.
+    ///
+    /// Every overflow page spends its first four bytes on the next page
+    /// number and the rest on payload. The loop is bounded by the payload
+    /// length rather than by the chain, so a chain that loops back on
+    /// itself terminates instead of hanging; it then fails the check below
+    /// because the file is malformed either way.
+    fn assemble(&self, payload: cell::PayloadRef<'_>) -> Result<Vec<u8>> {
+        if payload.overflow.is_none() {
+            return Ok(payload.local.to_vec());
+        }
+        let usable = self.header.usable_size() as usize;
+        let per_page = usable - 4;
+
+        let mut out = Vec::with_capacity(payload.total);
+        out.extend_from_slice(payload.local);
+        let mut next = payload.overflow.unwrap_or(0);
+        while out.len() < payload.total {
+            if next == 0 {
+                return Err(SqliteError::malformed(
+                    None,
+                    format!(
+                        "an overflow chain ended after {} of {} payload bytes",
+                        out.len(),
+                        payload.total
+                    ),
+                ));
+            }
+            let page = self.read_page(next)?;
+            next = u32::from_be_bytes([page[0], page[1], page[2], page[3]]);
+            let take = per_page.min(payload.total - out.len());
+            out.extend_from_slice(&page[4..4 + take]);
+        }
+        if next != 0 {
+            return Err(SqliteError::malformed(
+                None,
+                "an overflow chain continues past the end of its payload",
+            ));
+        }
+        Ok(out)
     }
 }
