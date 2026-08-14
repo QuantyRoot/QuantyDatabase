@@ -454,3 +454,18 @@ con.close()
 os.replace("copy.sqlite", "wal_mode.sqlite")
 os.replace("copy.sqlite-wal", "wal_mode.sqlite-wal")
 ```
+
+## wal_checkpointed.sqlite
+
+The same shape as the pair above, but checkpointed and closed cleanly, so
+there is no `-wal` file next to it at all. The header still says wal mode,
+because that is a property of the database rather than of the moment.
+
+This is the common case in the wild, and it is here to hold the line
+against over-refusing: a database in this state is complete in its main
+file, and a reader that turns it away on the strength of the flag rejects a
+large share of the sqlite files anyone actually has. Firefox's places.sqlite
+looks exactly like this between sessions.
+
+Generated with page size 512, one table of 50 rows, then
+`pragma wal_checkpoint(truncate)` and a close.
