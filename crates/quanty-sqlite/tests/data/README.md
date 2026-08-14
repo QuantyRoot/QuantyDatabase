@@ -289,3 +289,100 @@ con.execute("insert into nullable_pk values (NULL, 'auch nix')")
 con.commit()
 con.execute("vacuum")
 ```
+
+## without_rowid.sqlite and without_rowid.oracle
+
+Six tables, all `without rowid`, which means each one is stored as an index
+b-tree keyed by its primary key rather than as a table b-tree. The record of
+such a table holds the key columns first in key order, then the rest in
+declared order, and nothing in the bytes says so. That permutation is the
+reason a reader has to parse the create statement before it can read one of
+these at all, and this fixture is what proves it undoes it.
+
+Page size 512, so `kv` needs interior index pages and the walk is a real
+in-order traversal rather than one leaf.
+
+- `kv (k text primary key, v integer not null)`: 500 rows, key `key-%04d`
+  for 0 to 499 and value three times the number.
+- `two (a text, b integer, c text, d text, primary key (c, a))`: 5 rows of
+  `aN, N, cN, dN`. Declared a, b, c, d and keyed (c, a), so the record holds
+  c, a, b, d, and a reader that ignores the permutation returns the columns
+  shuffled while looking perfectly healthy.
+- `grown_wr`: two rows written, then `alter table add column extra text
+  default 'spaeter'`, then two more. The first two have records that end
+  early, so the column reads as missing rather than as its default; turning
+  that into the default is the importer's job.
+- `uni`: keys outside ASCII, ordered by their UTF-8 bytes.
+- `desc_key (k integer primary key desc)`: the tree is in descending order,
+  and a scan reports the order that is there rather than one it prefers.
+- `int_pk (k integer primary key)`: in a rowid table this column would alias
+  the rowid and be stored as NULL. In a without rowid table there is no
+  rowid to alias, so the value really is in the record.
+
+The oracle has the same shape as chinook.oracle, `<table> <rows> <sha256>`,
+with rows rendered in *declared* order and each value rendered as described
+above. A column that a record ends before is rendered as the six bytes
+`missing`. Rows are hashed in the order the tree holds them, which is the
+`order by` given in the generator below.
+
+To regenerate both files:
+
+```python
+import hashlib, os, sqlite3, struct
+OUT = "without_rowid.sqlite"
+if os.path.exists(OUT):
+    os.remove(OUT)
+con = sqlite3.connect(OUT)
+con.execute("pragma page_size = 512")
+con.execute("pragma journal_mode = delete")
+con.execute("create table kv (k text primary key, v integer not null) without rowid")
+for i in range(500):
+    con.execute("insert into kv values (?, ?)", ("key-%04d" % i, i * 3))
+con.execute("""create table two (
+    a text, b integer, c text, d text, primary key (c, a)) without rowid""")
+for i in range(5):
+    con.execute("insert into two values (?, ?, ?, ?)", ("a%d" % i, i, "c%d" % i, "d%d" % i))
+con.execute("create table grown_wr (k text primary key, v text) without rowid")
+con.execute("insert into grown_wr values ('k0', 'v0')")
+con.execute("insert into grown_wr values ('k1', 'v1')")
+con.execute("alter table grown_wr add column extra text default 'spaeter'")
+con.execute("insert into grown_wr values ('k8', 'v8', 'direkt')")
+con.execute("insert into grown_wr values ('k9', 'v9', 'direkt')")
+short_rows = {"k0", "k1"}
+con.execute("create table uni (k text primary key, v text) without rowid")
+for k, v in [("z", "drei"), ("\u00e4pfel", "eins"), ("\u65e5\u672c", "zwei")]:
+    con.execute("insert into uni values (?, ?)", (k, v))
+con.execute("create table desc_key (k integer primary key desc, v text) without rowid")
+for i in range(6):
+    con.execute("insert into desc_key values (?, ?)", (i, "v%d" % i))
+con.execute("create table int_pk (k integer primary key, v text) without rowid")
+for i in [1, 2, 100]:
+    con.execute("insert into int_pk values (?, ?)", (i, "v%d" % i))
+con.commit()
+con.close()
+
+con = sqlite3.connect(OUT)
+def render(v):
+    if v is None: return b"null"
+    if isinstance(v, int): return b"i:" + str(v).encode()
+    if isinstance(v, float): return b"f:" + struct.pack(">d", v).hex().encode()
+    if isinstance(v, str): return b"t:" + v.encode("utf-8")
+    if isinstance(v, bytes): return b"b:" + v.hex().encode()
+    raise TypeError(type(v))
+plan = {"kv": ("k", set()), "two": ("c, a", set()), "grown_wr": ("k", short_rows),
+        "uni": ("k", set()), "desc_key": ("k desc", set()), "int_pk": ("k", set())}
+lines, total = [], 0
+for table, (order, short) in sorted(plan.items()):
+    cols = [c[1] for c in con.execute('pragma table_info("%s")' % table).fetchall()]
+    quoted = ", ".join('"%s"' % c for c in cols)
+    rows = con.execute('select %s from "%s" order by %s' % (quoted, table, order)).fetchall()
+    digest = hashlib.sha256()
+    for row in rows:
+        parts = [b"missing" if (name == "extra" and row[0] in short) else render(value)
+                 for name, value in zip(cols, row)]
+        digest.update(b"\x1f".join(parts) + b"\n")
+    lines.append("%s %d %s" % (table, len(rows), digest.hexdigest()))
+    total += len(rows)
+lines.append("# total rows %d" % total)
+open("without_rowid.oracle", "w").write("\n".join(lines) + "\n")
+```
