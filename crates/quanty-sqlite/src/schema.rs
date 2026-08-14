@@ -209,3 +209,27 @@ fn text_column(value: &SqliteValue, column: &str) -> Result<String> {
         )),
     }
 }
+
+impl SchemaObject {
+    /// Parse this object's create statement into the shape of the table it
+    /// makes.
+    ///
+    /// Fails for anything that is not a table, and for a table whose
+    /// statement SQLite kept but this parser cannot read.
+    pub fn table_def(&self) -> Result<crate::ddl::TableDef> {
+        if self.kind != ObjectKind::Table {
+            return Err(SqliteError::unsupported(format!(
+                "{} is a {}, not a table",
+                self.name,
+                self.kind.as_str()
+            )));
+        }
+        match &self.sql {
+            Some(sql) => crate::ddl::parse_create_table(sql),
+            None => Err(SqliteError::malformed(
+                1,
+                format!("the table {} has no create statement", self.name),
+            )),
+        }
+    }
+}

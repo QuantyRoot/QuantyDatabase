@@ -19,6 +19,7 @@
 //! ```
 
 mod cell;
+mod ddl;
 mod error;
 mod header;
 mod page;
@@ -29,6 +30,7 @@ mod tree;
 mod varint;
 
 pub use cell::Cell;
+pub use ddl::{parse_create_table, ColumnDef, KeyColumn, TableDef};
 pub use error::{Result, SqliteError};
 pub use header::{Header, TextEncoding};
 pub use page::{BtreePage, PageKind};
