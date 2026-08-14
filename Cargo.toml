@@ -1,5 +1,11 @@
 [workspace]
-members = ["crates/quanty-core", "crates/quanty-ql", "crates/quanty-exec", "crates/quanty-sqlite"]
+members = [
+    "crates/quanty-core",
+    "crates/quanty-ql",
+    "crates/quanty-exec",
+    "crates/quanty-sqlite",
+    "crates/quanty-import",
+]
 resolver = "2"
 
 [workspace.package]

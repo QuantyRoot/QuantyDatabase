@@ -1,0 +1,17 @@
+[package]
+name = "quanty-import"
+description = "Turns a SQLite database into a QuantyDB one"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+quanty-core = { path = "../quanty-core" }
+quanty-ql = { path = "../quanty-ql" }
+quanty-sqlite = { path = "../quanty-sqlite" }
+
+[dev-dependencies]
+quanty-ql = { path = "../quanty-ql" }
+quanty-core = { path = "../quanty-core" }

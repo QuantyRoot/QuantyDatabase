@@ -183,6 +183,13 @@ impl Schema {
         self.tables().filter(|o| !o.is_internal())
     }
 
+    /// Every index in the schema, the ones SQLite made for itself included.
+    /// Those have no statement of their own, which is how they are told
+    /// apart.
+    pub fn indexes(&self) -> impl Iterator<Item = &SchemaObject> {
+        self.objects.iter().filter(|o| o.kind == ObjectKind::Index)
+    }
+
     /// Look an object up by name. SQLite compares identifiers without
     /// regard to ASCII case, so `track` finds `Track`.
     pub fn object(&self, name: &str) -> Option<&SchemaObject> {
