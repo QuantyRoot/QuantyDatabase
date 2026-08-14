@@ -30,6 +30,7 @@ mod source;
 mod survey;
 mod tree;
 mod varint;
+mod wal;
 
 pub use affinity::{Affinity, StorageClass};
 pub use cell::Cell;
@@ -42,6 +43,7 @@ pub use schema::{ObjectKind, Schema, SchemaObject};
 pub use source::{FileSource, SliceSource, Source};
 pub use survey::{Cell as MappedCell, ColumnSurvey, RowLayout, TableSurvey};
 pub use tree::{IndexScan, Row, Rows, TableRow, TableScan};
+pub use wal::Wal;
 
 /// A SQLite database file, opened for reading.
 pub struct Reader<S: Source> {
