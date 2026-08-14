@@ -60,6 +60,10 @@ pub struct TableScan<'a, S: Source> {
     /// row almost always comes from the same page as the last one, so one
     /// slot of cache turns a page read per row into a page read per page.
     current: Option<BtreePage>,
+    /// The last rowid handed out. A table b-tree is ordered by rowid, so a
+    /// scan of one is strictly ascending; anything else means the tree
+    /// contradicts its own shape and the file is corrupt.
+    last_rowid: Option<i64>,
     finished: bool,
 }
 
@@ -83,6 +87,7 @@ impl<'a, S: Source> TableScan<'a, S> {
             }],
             visited,
             current: Some(page),
+            last_rowid: None,
             finished: false,
         })
     }
@@ -146,10 +151,28 @@ impl<'a, S: Source> TableScan<'a, S> {
             let cell = self.reader.cell(self.page_in_hand(), next)?;
             self.bump();
             return match cell {
-                Cell::TableLeaf { rowid, payload } => Ok(Some(TableRow {
-                    rowid,
-                    values: record::decode(&payload)?,
-                })),
+                Cell::TableLeaf { rowid, payload } => {
+                    // the tree is ordered by rowid, so a scan of it is
+                    // strictly ascending. a file where it is not has a
+                    // b-tree that is not one, and passing those rows on
+                    // would mean handing a caller an order it cannot trust.
+                    if let Some(previous) = self.last_rowid {
+                        if rowid <= previous {
+                            return Err(SqliteError::malformed(
+                                number,
+                                format!(
+                                    "rowid {rowid} follows {previous}, so the table b-tree \
+                                     is not in key order"
+                                ),
+                            ));
+                        }
+                    }
+                    self.last_rowid = Some(rowid);
+                    Ok(Some(TableRow {
+                        rowid,
+                        values: record::decode(&payload)?,
+                    }))
+                }
                 other => Err(SqliteError::malformed(
                     number,
                     format!("a table leaf page holds {other:?}"),

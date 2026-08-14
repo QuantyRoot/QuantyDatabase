@@ -17,6 +17,13 @@ use crate::error::{Result, SqliteError};
 use crate::varint;
 
 /// One of SQLite's five storage classes.
+///
+/// `PartialEq` is the derived one, so `Real` values follow IEEE rules and a
+/// NaN is not equal to itself. That matters because a file can hold any 64
+/// bit pattern in a float field: SQLite's own API turns a NaN into NULL on
+/// the way in, but a corrupted or hand written file is under no such
+/// obligation. Code asking whether two reads produced the same bytes should
+/// compare `to_bits` rather than the values.
 #[derive(Debug, Clone, PartialEq)]
 pub enum SqliteValue {
     Null,

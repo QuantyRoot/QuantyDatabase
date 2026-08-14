@@ -325,3 +325,44 @@ fn a_schema_row_of_the_wrong_shape_is_refused() {
         "rows that are not schema rows were accepted as a schema"
     );
 }
+
+#[test]
+fn rows_out_of_key_order_are_refused_rather_than_handed_on() {
+    // swapping two cell pointers on a leaf page leaves every cell intact
+    // and only changes the order they are visited in, which is the cheapest
+    // way to produce a table b-tree that is not in key order
+    let original = fixture("records.sqlite");
+    let (leaf, page_size) = {
+        let reader = Reader::open(SliceSource::new(&original)).unwrap();
+        let root = reader
+            .schema()
+            .unwrap()
+            .object("kinds")
+            .unwrap()
+            .root_page
+            .unwrap();
+        (root, reader.header().page_size as usize)
+    };
+
+    // the kinds table is small enough to be a single leaf page, so its root
+    // is where the rows are
+    let mut bytes = original.clone();
+    let base = (leaf as usize - 1) * page_size;
+    assert_eq!(bytes[base], 13, "the kinds table should be one leaf page");
+    let first = base + 8;
+    let second = base + 10;
+    for offset in 0..2 {
+        bytes.swap(first + offset, second + offset);
+    }
+
+    let reader = Reader::open(SliceSource::new(&bytes)).unwrap();
+    let rows: Vec<_> = reader.table_scan(leaf).unwrap().collect();
+
+    // the first row still reads; the second one is where the order breaks
+    assert!(rows[0].is_ok());
+    let err = rows
+        .iter()
+        .find_map(|r| r.as_ref().err())
+        .expect("rows in the wrong key order were accepted");
+    assert!(err.to_string().contains("key order"), "message was: {err}");
+}
