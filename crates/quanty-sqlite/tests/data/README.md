@@ -386,3 +386,71 @@ for table, (order, short) in sorted(plan.items()):
 lines.append("# total rows %d" % total)
 open("without_rowid.oracle", "w").write("\n".join(lines) + "\n")
 ```
+
+## wal_mode.sqlite and wal_mode.sqlite-wal
+
+A pair, written by a real SQLite and never checkpointed. The main file holds
+two pages; everything else, the `grown` table and its schema included, lives
+only in the log. A reader that ignores the log therefore does not see a
+slightly older database, it sees half of one.
+
+The log holds 38 frames, written in this order:
+
+- three commits, one per rewrite of the same row, so page 2 appears three
+  times and only the newest version counts (frames 1, 2, 3)
+- a commit that adds a table and grows the database to 3 pages (frame 5)
+- a commit that fills it with 200 rows, growing it to 11 pages (frame 15)
+- a transaction that inserted a row, changed another, added 400 more rows,
+  and was then rolled back (frames 16 to 38)
+
+That last part is the point of the fixture. An open transaction only reaches
+the log if the page cache spills, which two small statements never do, so
+the generator sets `cache_size = 1` and writes enough rows to force it. The
+frames are well formed and correctly checksummed, and every row in them was
+rolled back. Nothing but the commit boundary tells them apart.
+
+Do not open this pair with sqlite to inspect it: closing the last connection
+checkpoints the log and deletes the -wal file, which destroys the fixture.
+Copy both files somewhere else and open the copy.
+
+To regenerate:
+
+```python
+import os, shutil, sqlite3
+for name in ["wal_mode.sqlite", "wal_mode.sqlite-wal", "wal_mode.sqlite-shm",
+             "copy.sqlite", "copy.sqlite-wal"]:
+    if os.path.exists(name):
+        os.remove(name)
+con = sqlite3.connect("wal_mode.sqlite")
+con.execute("pragma page_size = 512")
+con.execute("pragma journal_mode = delete")
+con.execute("create table t (id integer primary key, v text)")
+for i in range(1, 21):
+    con.execute("insert into t values (?, ?)", (i, "original-%02d" % i))
+con.commit()
+con.close()
+
+con = sqlite3.connect("wal_mode.sqlite")
+con.execute("pragma journal_mode = wal")
+con.execute("pragma wal_autocheckpoint = 0")
+for round_ in range(3):
+    con.execute("update t set v = ? where id = 1", ("rewritten-%d" % round_,))
+    con.commit()
+con.execute("create table grown (id integer primary key, v text)")
+for i in range(1, 201):
+    con.execute("insert into grown values (?, ?)", (i, "wal-only-%03d" % i))
+con.commit()
+
+con.execute("pragma cache_size = 1")
+con.execute("begin")
+con.execute("insert into t values (999, 'never-committed')")
+con.execute("update t set v = 'never-committed' where id = 2")
+for i in range(1000, 1400):
+    con.execute("insert into grown values (?, ?)", (i, "never-committed-%04d" % i))
+shutil.copy("wal_mode.sqlite", "copy.sqlite")
+shutil.copy("wal_mode.sqlite-wal", "copy.sqlite-wal")
+con.rollback()
+con.close()
+os.replace("copy.sqlite", "wal_mode.sqlite")
+os.replace("copy.sqlite-wal", "wal_mode.sqlite-wal")
+```
