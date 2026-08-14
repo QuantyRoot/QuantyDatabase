@@ -33,7 +33,7 @@ mod varint;
 
 pub use affinity::{Affinity, StorageClass};
 pub use cell::Cell;
-pub use ddl::{parse_create_table, ColumnDef, Generated, KeyColumn, TableDef};
+pub use ddl::{parse_create_table, ColumnDef, Constraint, Generated, KeyColumn, TableDef};
 pub use error::{Result, SqliteError};
 pub use header::{Header, TextEncoding};
 pub use page::{BtreePage, PageKind};

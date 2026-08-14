@@ -347,3 +347,46 @@ fn nullability_matches_column_for_column_what_sqlite_reports() {
          and one marked null that never is loses a guarantee"
     );
 }
+
+#[test]
+fn every_rule_the_source_enforces_and_we_cannot_is_named() {
+    // chinook declares eleven foreign keys, counted with sqlite's own
+    // `pragma foreign_key_list`: Album 1, Customer 1, Employee 1, Invoice 1,
+    // InvoiceLine 2, PlaylistTrack 2, Track 3. after an import nothing
+    // enforces any of them, and a developer who is not told that believes
+    // their data is still guarded.
+    let plan = plan_for("chinook.sqlite", &Options::default());
+    let carried: Vec<&Note> = plan
+        .notes
+        .iter()
+        .filter(|n| matches!(n, Note::ConstraintNotCarried { .. }))
+        .collect();
+
+    let foreign_keys = carried
+        .iter()
+        .filter(|n| matches!(n, Note::ConstraintNotCarried { what, .. } if what.contains("foreign key")))
+        .count();
+    assert_eq!(foreign_keys, 11, "one note per foreign key in the source");
+
+    // the note says what it costs, not only that something was lost
+    let text = plan.report();
+    assert!(text.contains("nothing will stop a row pointing at something that is not there"));
+}
+
+#[test]
+fn a_lost_constraint_is_a_note_and_never_a_refusal() {
+    // --strict refuses judgement calls, where another answer was available.
+    // a foreign key has no other answer: our language cannot hold one, so
+    // refusing would leave the developer without an import and without the
+    // foreign key either.
+    let strict = plan_for("chinook.sqlite", &Options { strict: true });
+    assert!(strict.is_runnable());
+    assert!(strict
+        .notes
+        .iter()
+        .any(|n| matches!(n, Note::ConstraintNotCarried { .. })));
+    assert!(!strict
+        .problems
+        .iter()
+        .any(|p| format!("{p:?}").contains("foreign")));
+}

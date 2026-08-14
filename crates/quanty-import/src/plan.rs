@@ -103,6 +103,19 @@ pub enum Note {
         what: String,
         reason: String,
     },
+    /// A rule the source enforced that we have no equivalent for.
+    ///
+    /// This is not a `--strict` matter. That switch refuses judgement
+    /// calls, where a different answer was available; there is no other
+    /// answer here, because our language has nowhere to put a foreign key.
+    /// Refusing would leave the developer with no import and no foreign key
+    /// either, so the import happens and the note says what is no longer
+    /// being enforced.
+    ConstraintNotCarried {
+        table: String,
+        what: String,
+        consequence: String,
+    },
 }
 
 /// Something that stops the import.
@@ -217,6 +230,7 @@ fn describe_note(note: &Note) -> String {
         Note::Renamed { what, from, to } => {
             format!("{what} {from:?} is not a name our language allows, imported as {to}")
         }
+
         Note::Widened {
             column,
             classes,
@@ -249,6 +263,11 @@ fn describe_note(note: &Note) -> String {
              column is nullable instead"
         ),
         Note::Skipped { what, reason } => format!("{what} was skipped: {reason}"),
+        Note::ConstraintNotCarried {
+            table,
+            what,
+            consequence,
+        } => format!("{table} {what}, which we cannot enforce: {consequence}"),
     }
 }
 
@@ -340,6 +359,8 @@ fn plan_table<S: Source>(
         return Ok(());
     }
 
+    note_constraints(&def, &object.name, plan);
+
     let survey = reader.survey_table(object)?;
     let (table_name, renamed) = table_names.assign(&object.name);
     if renamed {
@@ -394,7 +415,7 @@ fn plan_table<S: Source>(
         let (name, renamed) = column_names.assign(&column.name);
         if renamed {
             plan.notes.push(Note::Renamed {
-                what: format!("the column {}.{}", object.name, column.name),
+                what: format!("the column in {}", object.name),
                 from: column.name.clone(),
                 to: name.clone(),
             });
@@ -449,6 +470,47 @@ fn plan_table<S: Source>(
         columns,
     });
     Ok(())
+}
+
+/// Say out loud what the source enforced and we will not.
+fn note_constraints(def: &quanty_sqlite::TableDef, table: &str, plan: &mut ImportPlan) {
+    use quanty_sqlite::Constraint;
+    for constraint in &def.unsupported_constraints {
+        let (what, consequence) = match constraint {
+            Constraint::Unique { columns } => (
+                format!("requires {} to be unique", columns.join(" and ")),
+                "duplicates can be written after the import".to_string(),
+            ),
+            Constraint::Check { expression } => (
+                format!("checks {expression}"),
+                "rows that would fail it can be written after the import".to_string(),
+            ),
+            Constraint::ForeignKey {
+                columns,
+                references,
+            } => (
+                format!(
+                    "has a foreign key on {} referencing {}",
+                    columns.join(" and "),
+                    if references.is_empty() {
+                        "another table"
+                    } else {
+                        references
+                    }
+                ),
+                "nothing will stop a row pointing at something that is not there".to_string(),
+            ),
+            Constraint::Collation { column, name } => (
+                format!("compares {column} using the {name} collation"),
+                "comparisons and ordering on it will differ from the source".to_string(),
+            ),
+        };
+        plan.notes.push(Note::ConstraintNotCarried {
+            table: table.to_string(),
+            what,
+            consequence,
+        });
+    }
 }
 
 enum KeyChoice {

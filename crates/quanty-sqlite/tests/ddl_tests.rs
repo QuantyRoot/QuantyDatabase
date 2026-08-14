@@ -330,3 +330,66 @@ fn if_not_exists_and_temp_are_accepted() {
         assert_eq!(def.name, "t", "{prefix}");
     }
 }
+
+#[test]
+fn rules_we_cannot_enforce_are_recorded_rather_than_dropped() {
+    use quanty_sqlite::Constraint;
+
+    let def = parse_create_table(
+        "create table t (
+             id integer primary key,
+             email text unique not null,
+             name text collate nocase,
+             plain text collate binary,
+             owner integer references people (id) on delete cascade,
+             price real check (price >= 0),
+             a integer,
+             b integer,
+             unique (a, b),
+             check (a <> b),
+             foreign key (a, b) references other (x, y)
+         )",
+    )
+    .unwrap();
+
+    let found = &def.unsupported_constraints;
+    assert!(found.contains(&Constraint::Unique {
+        columns: vec!["email".to_string()]
+    }));
+    assert!(found.contains(&Constraint::Unique {
+        columns: vec!["a".to_string(), "b".to_string()]
+    }));
+    assert!(found.contains(&Constraint::Check {
+        expression: "(price >= 0)".to_string()
+    }));
+    assert!(found.contains(&Constraint::Check {
+        expression: "(a <> b)".to_string()
+    }));
+    assert!(found.contains(&Constraint::ForeignKey {
+        columns: vec!["owner".to_string()],
+        references: "people".to_string()
+    }));
+    assert!(found.contains(&Constraint::ForeignKey {
+        columns: vec!["a".to_string(), "b".to_string()],
+        references: "other".to_string()
+    }));
+    assert!(found.contains(&Constraint::Collation {
+        column: "name".to_string(),
+        name: "nocase".to_string()
+    }));
+    // binary is sqlite's default and changes nothing, so it is not a loss
+    assert!(!found
+        .iter()
+        .any(|c| matches!(c, Constraint::Collation { column, .. } if column == "plain")));
+
+    // the primary key is not in this list: it does come across
+    assert_eq!(def.primary_key.len(), 1);
+    assert_eq!(found.len(), 7);
+}
+
+#[test]
+fn a_table_with_nothing_to_lose_records_nothing() {
+    let def =
+        parse_create_table("create table t (a integer primary key, b text not null)").unwrap();
+    assert!(def.unsupported_constraints.is_empty());
+}

@@ -71,6 +71,29 @@ pub struct KeyColumn {
     pub descending: bool,
 }
 
+/// A rule the source enforces that we have no equivalent for.
+///
+/// These are recorded, not applied. QuantyDB has keys, indexes and
+/// nullability, and nothing else from this list, so a foreign key or a
+/// check constraint cannot come across. That is a limitation rather than a
+/// choice, and the reason to carry them here at all is that an importer
+/// which does not mention them lets a developer believe their data is still
+/// guarded when it is not.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Constraint {
+    /// `unique (a, b)`, or a column declared `unique`.
+    Unique { columns: Vec<String> },
+    /// `check (...)`, kept as written.
+    Check { expression: String },
+    /// `foreign key (a) references other (b)`.
+    ForeignKey {
+        columns: Vec<String>,
+        references: String,
+    },
+    /// `collate nocase` on a column, which changes how text compares.
+    Collation { column: String, name: String },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TableDef {
     pub name: String,
@@ -79,6 +102,9 @@ pub struct TableDef {
     pub primary_key: Vec<KeyColumn>,
     pub without_rowid: bool,
     pub strict: bool,
+    /// Rules the source enforces that we cannot: unique constraints beyond
+    /// the key, check constraints, foreign keys and collations.
+    pub unsupported_constraints: Vec<Constraint>,
     /// Whether the primary key was written as a column constraint that
     /// spelled out `desc`. See `rowid_alias` for why that is worth keeping.
     inline_pk_desc: bool,
@@ -522,6 +548,25 @@ impl<'a> Parser<'a> {
         Ok(self.text_since(from))
     }
 
+    /// A parenthesised list of column names, with the per column extras
+    /// (`collate x`, `asc`, `desc`) stepped over.
+    fn column_list(&mut self) -> Result<Vec<String>> {
+        self.expect_punct('(')?;
+        let mut names = Vec::new();
+        loop {
+            names.push(self.identifier()?);
+            if self.eat_word("collate") {
+                self.identifier()?;
+            }
+            let _ = self.eat_word("asc") || self.eat_word("desc");
+            if self.eat_punct(',') {
+                continue;
+            }
+            self.expect_punct(')')?;
+            return Ok(names);
+        }
+    }
+
     /// Skip to the next comma or closing paren at the top level, which is
     /// how clauses we do not interpret are stepped over.
     fn skip_to_end_of_item(&mut self) -> Result<()> {
@@ -593,6 +638,7 @@ pub fn parse_create_table(sql: &str) -> Result<TableDef> {
 
     let mut columns: Vec<ColumnDef> = Vec::new();
     let mut primary_key: Vec<KeyColumn> = Vec::new();
+    let mut constraints: Vec<Constraint> = Vec::new();
     let mut inline_pk_desc = false;
 
     loop {
@@ -652,9 +698,29 @@ pub fn parse_create_table(sql: &str) -> Result<TableDef> {
                     break;
                 }
                 parser.eat_conflict_clause();
+            } else if parser.eat_word("unique") {
+                let columns = parser.column_list()?;
+                constraints.push(Constraint::Unique { columns });
+                parser.eat_conflict_clause();
+                parser.skip_to_end_of_item()?;
+            } else if parser.eat_word("check") {
+                let expression = parser.balanced()?;
+                constraints.push(Constraint::Check { expression });
+                parser.skip_to_end_of_item()?;
+            } else if parser.eat_word("foreign") {
+                parser.expect_word("key")?;
+                let columns = parser.column_list()?;
+                let references = if parser.eat_word("references") {
+                    parser.identifier()?
+                } else {
+                    String::new()
+                };
+                constraints.push(Constraint::ForeignKey {
+                    columns,
+                    references,
+                });
+                parser.skip_to_end_of_item()?;
             } else {
-                // unique, check and foreign key say nothing about the shape
-                // of a row, so they are stepped over
                 parser.skip_to_end_of_item()?;
             }
         } else {
@@ -725,11 +791,15 @@ pub fn parse_create_table(sql: &str) -> Result<TableDef> {
                     continue;
                 }
                 if parser.eat_word("unique") {
+                    constraints.push(Constraint::Unique {
+                        columns: vec![column.name.clone()],
+                    });
                     parser.eat_conflict_clause();
                     continue;
                 }
                 if parser.eat_word("check") {
-                    parser.balanced()?;
+                    let expression = parser.balanced()?;
+                    constraints.push(Constraint::Check { expression });
                     continue;
                 }
                 if parser.eat_word("default") {
@@ -748,10 +818,22 @@ pub fn parse_create_table(sql: &str) -> Result<TableDef> {
                     continue;
                 }
                 if parser.eat_word("collate") {
-                    parser.identifier()?;
+                    let name = parser.identifier()?;
+                    // binary is sqlite's default and changes nothing
+                    if !name.eq_ignore_ascii_case("binary") {
+                        constraints.push(Constraint::Collation {
+                            column: column.name.clone(),
+                            name,
+                        });
+                    }
                     continue;
                 }
                 if parser.eat_word("references") {
+                    let references = parser.identifier().unwrap_or_default();
+                    constraints.push(Constraint::ForeignKey {
+                        columns: vec![column.name.clone()],
+                        references,
+                    });
                     parser.skip_to_end_of_item()?;
                     continue;
                 }
@@ -825,6 +907,7 @@ pub fn parse_create_table(sql: &str) -> Result<TableDef> {
         primary_key,
         without_rowid,
         strict,
+        unsupported_constraints: constraints,
         inline_pk_desc,
     })
 }
