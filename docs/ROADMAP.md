@@ -91,6 +91,27 @@ Acceptance:
       reader)
 - [ ] unsupported SQL returns a clear error, wrong results count as P0 bugs
 
+Three things the reader refuses today rather than reads. Each refusal is a
+loud error naming the reason, and each is a stopping point rather than a
+decision, in this order:
+
+- WITHOUT ROWID tables. These live in an index b-tree, and the record
+  reorders the columns: the primary key columns come first in key order,
+  then the rest in declared order. Nothing in the bytes says which is which,
+  so this waits on the create-table parser the importer needs anyway. Once
+  that exists, the walk generalises to index trees and the columns get put
+  back in declared order.
+- WAL mode. The most recent committed data can sit in a `-wal` file that has
+  not been checkpointed, so reading the main file alone returns an older
+  database with no sign that anything is missing. Reading it properly means
+  parsing the wal's frames, validating salts and checksums, finding the last
+  committed frame, and preferring wal pages over main file pages, plus a
+  reader that takes two sources instead of one. Many applications default to
+  wal mode, so this is a real gap and not an exotic one.
+- UTF-16 text encodings. The smallest of the three. Unpaired surrogates must
+  come back as an error rather than a replacement character, otherwise it
+  produces the almost-right text that the refusal exists to prevent.
+
 ## Phase 5: Server mode
 
 Binary protocol, tokio server, auth tokens, quanty-cli `serve` and remote
