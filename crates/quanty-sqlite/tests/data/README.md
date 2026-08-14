@@ -175,3 +175,48 @@ for table in tables:
 lines.append(f"# total rows {total}")
 open("chinook.oracle", "w").write("\n".join(lines) + "\n")
 ```
+
+## rowid_alias.sqlite
+
+Seven tables, one per way of declaring a single column integer primary key,
+each holding one row whose key is 7. Whether that column is an alias for the
+rowid decides where the 7 is: an alias means the record stores NULL and the
+cell's rowid holds 7, no alias means the record holds 7 and the rowid is 1.
+So the file itself answers the question, and the parser's rule can be
+checked against it rather than against a reading of the documentation.
+
+| table               | declaration                       | alias |
+|---------------------|-----------------------------------|-------|
+| a_col_pk            | `x integer primary key`           | yes   |
+| b_col_pk_desc       | `x integer primary key desc`      | no    |
+| c_tbl_pk            | `x integer, primary key (x)`      | yes   |
+| d_tbl_pk_desc       | `x integer, primary key (x desc)` | yes   |
+| e_int_not_integer   | `x int primary key`               | no    |
+| f_autoinc           | `x integer primary key autoincrement` | yes |
+| g_mixed_case        | `x InTeGeR primary key`           | yes   |
+
+The two `desc` rows disagreeing is the point of the fixture. Written as a
+column constraint, `desc` suppresses the alias; written as a table
+constraint it does not. SQLite documents that as a quirk kept for backwards
+compatibility, and a reader that gets it backwards reads the primary key of
+a whole table wrongly without anything failing.
+
+Generated with any sqlite3:
+
+```python
+import sqlite3
+con = sqlite3.connect("rowid_alias.sqlite")
+con.execute("pragma page_size=512")
+for name, ddl in {
+    "a_col_pk": "create table a_col_pk (x integer primary key, y text)",
+    "b_col_pk_desc": "create table b_col_pk_desc (x integer primary key desc, y text)",
+    "c_tbl_pk": "create table c_tbl_pk (x integer, y text, primary key (x))",
+    "d_tbl_pk_desc": "create table d_tbl_pk_desc (x integer, y text, primary key (x desc))",
+    "e_int_not_integer": "create table e_int_not_integer (x int primary key, y text)",
+    "f_autoinc": "create table f_autoinc (x integer primary key autoincrement, y text)",
+    "g_mixed_case": "create table g_mixed_case (x InTeGeR primary key, y text)",
+}.items():
+    con.execute(ddl)
+    con.execute(f"insert into {name} values (7, 'hi')")
+con.commit()
+```
