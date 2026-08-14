@@ -220,3 +220,72 @@ for name, ddl in {
     con.execute(f"insert into {name} values (7, 'hi')")
 con.commit()
 ```
+
+## shapes.sqlite
+
+Five tables, each one a shape that breaks a naive importer. None of them is
+exotic; every one of these turns up in databases people actually have.
+
+`generated (id, a, v virtual, s stored, z)`: a virtual generated column
+between real ones. The record holds four values for five declared columns,
+because a virtual column is computed on demand and never written. Zipping
+the declaration against the record puts `s`'s value into `v`, `z`'s into
+`s`, and leaves `z` empty, and every one of those looks like a plausible
+row. A generated column with neither `stored` nor `virtual` written out is
+virtual, which the file confirms rather than the documentation.
+
+`grown (id, a, b default 'fallback', c)`: two rows written before two
+columns were added with `alter table add column`. SQLite does not rewrite
+existing rows, so those records hold two values while the table has four
+columns, and the missing ones take their default from the declaration.
+SQLite does rewrite the stored create statement, so the defaults are there
+to be read.
+
+`affinity (id, r real, n numeric, i integer, u)`: the same values, 1.0, 2.5,
+3.0 and 4.0, in columns of four different affinities, plus one text value in
+the untyped column. In `r` the whole numbers are stored as integers and are
+floats on the way out. In `n` the conversion is permanent and the column
+really does hold both integers and reals. In `u` nothing was converted at
+all. One set of values, three different answers, all decided by the
+declared type.
+
+`nopk (a, b)`: no primary key. The rows are still identified by their
+rowids, which is what has to become the key when nothing else can.
+
+`nullable_pk (k text primary key, v)`: two rows whose primary key is NULL.
+A primary key that is not an alias for the rowid may hold NULL in SQLite, a
+backwards compatibility quirk it still honours, and our key columns may
+not. Without this fixture that case is only ever found by a user.
+
+Generated with any sqlite3:
+
+```python
+import sqlite3
+con = sqlite3.connect("shapes.sqlite")
+con.execute("pragma page_size = 512")
+con.execute("pragma journal_mode = delete")
+con.execute("""create table generated (
+    id integer primary key, a integer,
+    v integer as (a * 2) virtual, s integer as (a * 3) stored, z text)""")
+for a in (1, 2, 3):
+    con.execute("insert into generated (id, a, z) values (?, ?, ?)", (a, a * 10, f"z{a}"))
+con.execute("create table grown (id integer primary key, a integer)")
+for i in (1, 2):
+    con.execute("insert into grown values (?, ?)", (i, i * 100))
+con.execute("alter table grown add column b text default 'fallback'")
+con.execute("alter table grown add column c integer")
+con.execute("insert into grown values (3, 300, 'echt', 42)")
+con.execute("create table affinity (id integer primary key, r real, n numeric, i integer, u)")
+for k, v in enumerate([1.0, 2.5, 3.0], start=1):
+    con.execute("insert into affinity values (?,?,?,?,?)", (k, v, v, int(v), v))
+con.execute("insert into affinity values (4, 4.0, 4.0, 4, 'text statt zahl')")
+con.execute("create table nopk (a text, b integer)")
+con.execute("insert into nopk values ('p', 1)")
+con.execute("insert into nopk values ('q', 2)")
+con.execute("create table nullable_pk (k text primary key, v text)")
+con.execute("insert into nullable_pk values ('a', 'eins')")
+con.execute("insert into nullable_pk values (NULL, 'nix')")
+con.execute("insert into nullable_pk values (NULL, 'auch nix')")
+con.commit()
+con.execute("vacuum")
+```
