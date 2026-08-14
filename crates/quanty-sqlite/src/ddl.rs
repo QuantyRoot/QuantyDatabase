@@ -23,6 +23,31 @@
 
 use crate::error::{Result, SqliteError};
 
+/// Whether a column is computed, and if so whether the file holds it.
+///
+/// The distinction decides where every later column's value sits in the
+/// record, so it is a variant rather than a flag: a stored generated column
+/// occupies a slot like any other column, a virtual one occupies none. A
+/// generated column with neither keyword written out is virtual, which was
+/// checked against a file rather than assumed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Generated {
+    No,
+    Virtual,
+    Stored,
+}
+
+impl Generated {
+    pub fn is_generated(self) -> bool {
+        !matches!(self, Generated::No)
+    }
+
+    /// Whether the file holds no value for this column at all.
+    pub fn is_virtual(self) -> bool {
+        matches!(self, Generated::Virtual)
+    }
+}
+
 /// A column as the create statement declared it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ColumnDef {
@@ -36,8 +61,7 @@ pub struct ColumnDef {
     /// expression, and deciding what a given expression means is a question
     /// for whoever imports it.
     pub default: Option<String>,
-    /// A generated column holds no data of its own in the file.
-    pub generated: bool,
+    pub generated: Generated,
 }
 
 /// One column of a primary key, in key order.
@@ -515,6 +539,17 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// The keyword after a generated column's expression. Absent means
+    /// virtual, which is sqlite's default and not a guess.
+    fn eat_generated_kind(&mut self) -> Generated {
+        if self.eat_word("stored") {
+            Generated::Stored
+        } else {
+            self.eat_word("virtual");
+            Generated::Virtual
+        }
+    }
+
     /// `on conflict <action>`, which may follow several constraints.
     fn eat_conflict_clause(&mut self) {
         if self.at_word(0, "on") && self.at_word(1, "conflict") {
@@ -648,7 +683,7 @@ pub fn parse_create_table(sql: &str) -> Result<TableDef> {
                 },
                 not_null: false,
                 default: None,
-                generated: false,
+                generated: Generated::No,
             };
 
             // column constraints, in any order and any number
@@ -720,19 +755,20 @@ pub fn parse_create_table(sql: &str) -> Result<TableDef> {
                     parser.skip_to_end_of_item()?;
                     continue;
                 }
+                // `generated always as (...)` and the shorthand `as (...)`
+                // mean the same thing, and neither keyword after the
+                // expression means virtual
                 if parser.eat_word("generated") {
                     parser.expect_word("always")?;
                     parser.expect_word("as")?;
                     parser.balanced()?;
-                    let _ = parser.eat_word("stored") || parser.eat_word("virtual");
-                    column.generated = true;
+                    column.generated = parser.eat_generated_kind();
                     continue;
                 }
                 if parser.peek().is_some_and(|t| t.is_word("as")) {
                     parser.at += 1;
                     parser.balanced()?;
-                    let _ = parser.eat_word("stored") || parser.eat_word("virtual");
-                    column.generated = true;
+                    column.generated = parser.eat_generated_kind();
                     continue;
                 }
                 break;

@@ -18,6 +18,7 @@
 //! # Ok::<(), quanty_sqlite::SqliteError>(())
 //! ```
 
+mod affinity;
 mod cell;
 mod ddl;
 mod error;
@@ -26,17 +27,20 @@ mod page;
 mod record;
 mod schema;
 mod source;
+mod survey;
 mod tree;
 mod varint;
 
+pub use affinity::{Affinity, StorageClass};
 pub use cell::Cell;
-pub use ddl::{parse_create_table, ColumnDef, KeyColumn, TableDef};
+pub use ddl::{parse_create_table, ColumnDef, Generated, KeyColumn, TableDef};
 pub use error::{Result, SqliteError};
 pub use header::{Header, TextEncoding};
 pub use page::{BtreePage, PageKind};
 pub use record::{decode as decode_record, SqliteValue};
 pub use schema::{ObjectKind, Schema, SchemaObject};
 pub use source::{FileSource, SliceSource, Source};
+pub use survey::{Cell as MappedCell, ColumnSurvey, RowLayout, TableSurvey};
 pub use tree::{TableRow, TableScan};
 
 /// A SQLite database file, opened for reading.

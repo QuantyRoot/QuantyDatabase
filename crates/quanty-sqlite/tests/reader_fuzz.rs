@@ -32,7 +32,7 @@
 
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use quanty_sqlite::{decode_record, Cell, Reader, SliceSource, SqliteValue};
+use quanty_sqlite::{decode_record, Cell, MappedCell, Reader, RowLayout, SliceSource, SqliteValue};
 
 struct Rng(u64);
 
@@ -78,6 +78,20 @@ fn same_values(left: &[SqliteValue], right: &[SqliteValue]) -> bool {
             (SqliteValue::Real(x), SqliteValue::Real(y)) => x.to_bits() == y.to_bits(),
             _ => a == b,
         })
+}
+
+/// A definition and the layout built from it have to agree: every column is
+/// either virtual or occupies exactly one slot, and the slots are the first
+/// n positions of a record with nothing skipped.
+fn layout_is_consistent(def: &quanty_sqlite::TableDef) -> bool {
+    let layout = RowLayout::new(def);
+    let virtuals = def
+        .columns
+        .iter()
+        .filter(|c| c.generated.is_virtual())
+        .count();
+    layout.declared_columns() == def.columns.len()
+        && layout.stored_columns() + virtuals == def.columns.len()
 }
 
 fn fixture(name: &str) -> Vec<u8> {
@@ -175,6 +189,25 @@ fn exercise(bytes: &[u8]) -> Progress {
     progress.schema = true;
 
     for object in schema.objects() {
+        // a mutated schema row hands the create-table parser arbitrary
+        // text, which is a fuzz target in its own right: it must answer,
+        // and a definition it accepts must line up with the rows it maps
+        let layout = match object.table_def() {
+            Ok(def) => {
+                assert!(
+                    !def.columns.is_empty(),
+                    "a parsed definition with no columns was accepted"
+                );
+                assert!(
+                    layout_is_consistent(&def),
+                    "{}: the layout disagrees with the definition",
+                    object.name
+                );
+                Some(RowLayout::new(&def))
+            }
+            Err(_) => None,
+        };
+
         let Some(root) = object.root_page else {
             continue;
         };
@@ -215,6 +248,21 @@ fn exercise(bytes: &[u8]) -> Progress {
                 row.values.len(),
                 bytes.len()
             );
+
+            // every declared column has to answer for this row, and a
+            // stored value it points at has to exist
+            if let Some(layout) = &layout {
+                for index in 0..layout.declared_columns() {
+                    match layout.cell(&row, index) {
+                        MappedCell::Value(_) | MappedCell::Rowid(_) => {}
+                        MappedCell::Missing | MappedCell::Virtual => {}
+                    }
+                }
+                assert!(
+                    layout.stored_columns() <= layout.declared_columns(),
+                    "more stored slots than declared columns"
+                );
+            }
 
             // a scan cannot produce more rows than the file has cells; if
             // it does, the walk is reading something twice

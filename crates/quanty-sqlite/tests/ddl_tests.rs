@@ -5,7 +5,7 @@
 //! built specifically from the rowid alias cases, and hand written
 //! statements for the shapes no fixture happens to contain.
 
-use quanty_sqlite::{parse_create_table, Reader, SliceSource, SqliteValue};
+use quanty_sqlite::{parse_create_table, Generated, Reader, SliceSource, SqliteValue};
 
 fn fixture(name: &str) -> Vec<u8> {
     let path = format!("{}/tests/data/{name}", env!("CARGO_MANIFEST_DIR"));
@@ -269,14 +269,23 @@ fn without_rowid_and_strict_are_recognised_in_any_order() {
 }
 
 #[test]
-fn generated_columns_are_marked() {
+fn generated_columns_say_whether_the_file_holds_them() {
     let def = parse_create_table(
-        "create table t (a int, b int generated always as (a * 2) stored, c int as (a + 1))",
+        "create table t (
+             a int,
+             b int generated always as (a * 2) stored,
+             c int as (a + 1) virtual,
+             d int as (a + 2)
+         )",
     )
     .unwrap();
-    assert!(!def.columns[0].generated);
-    assert!(def.columns[1].generated);
-    assert!(def.columns[2].generated);
+    assert_eq!(def.columns[0].generated, Generated::No);
+    assert_eq!(def.columns[1].generated, Generated::Stored);
+    assert_eq!(def.columns[2].generated, Generated::Virtual);
+    // no keyword at all means virtual, which is sqlite's default
+    assert_eq!(def.columns[3].generated, Generated::Virtual);
+    assert!(def.columns[3].generated.is_virtual());
+    assert!(!def.columns[1].generated.is_virtual());
 }
 
 #[test]
