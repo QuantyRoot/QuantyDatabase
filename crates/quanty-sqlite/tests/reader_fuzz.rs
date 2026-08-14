@@ -211,7 +211,9 @@ fn exercise(bytes: &[u8]) -> Progress {
         let Some(root) = object.root_page else {
             continue;
         };
-        let Ok(scan) = reader.table_scan(root) else {
+        // rows() covers both walks, so a mutated file exercises the index
+        // b-tree path as well as the table one
+        let Ok(scan) = reader.rows(root) else {
             continue;
         };
         let mut rows = 0u64;
@@ -223,16 +225,19 @@ fn exercise(bytes: &[u8]) -> Progress {
             progress.rows += 1;
 
             // a table b-tree is ordered, so a scan that goes backwards means
-            // the walk lost its place
-            if let Some(previous) = last_rowid {
-                assert!(
-                    row.rowid > previous,
-                    "{}: rowid {} came after {previous}",
-                    object.name,
-                    row.rowid
-                );
+            // the walk lost its place. rows out of an index b-tree have no
+            // rowid, and their key order is a question of collation, so
+            // nothing is claimed about them here.
+            if let Some(rowid) = row.rowid {
+                if let Some(previous) = last_rowid {
+                    assert!(
+                        rowid > previous,
+                        "{}: rowid {rowid} came after {previous}",
+                        object.name
+                    );
+                }
+                last_rowid = Some(rowid);
             }
-            last_rowid = Some(row.rowid);
 
             // rows of one table may hold different numbers of values, and
             // that is not corruption: after `alter table add column` the

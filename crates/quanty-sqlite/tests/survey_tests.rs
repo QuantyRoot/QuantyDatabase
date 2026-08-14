@@ -32,7 +32,7 @@ fn a_virtual_column_takes_no_slot_and_shifts_nothing_after_it() {
     assert_eq!(layout.stored_columns(), 4);
 
     let rows: Vec<_> = reader
-        .table_scan(object.root_page.unwrap())
+        .rows(object.root_page.unwrap())
         .unwrap()
         .map(|r| r.unwrap())
         .collect();
@@ -75,7 +75,7 @@ fn a_record_that_ends_early_reports_missing_rather_than_wrong() {
     assert_eq!(def.columns[3].default, None);
 
     let rows: Vec<_> = reader
-        .table_scan(object.root_page.unwrap())
+        .rows(object.root_page.unwrap())
         .unwrap()
         .map(|r| r.unwrap())
         .collect();
@@ -107,7 +107,7 @@ fn a_rowid_alias_reads_as_the_rowid_and_not_as_the_stored_null() {
         let def = object.table_def().unwrap();
         let layout = RowLayout::new(&def);
         let row = reader
-            .table_scan(object.root_page.unwrap())
+            .rows(object.root_page.unwrap())
             .unwrap()
             .next()
             .unwrap()

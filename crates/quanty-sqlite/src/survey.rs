@@ -27,7 +27,7 @@ use crate::error::Result;
 use crate::record::SqliteValue;
 use crate::schema::SchemaObject;
 use crate::source::Source;
-use crate::tree::TableRow;
+use crate::tree::Row;
 use crate::Reader;
 
 /// Where a declared column's value comes from.
@@ -65,6 +65,9 @@ pub struct RowLayout {
 
 impl RowLayout {
     pub fn new(def: &TableDef) -> RowLayout {
+        if def.without_rowid {
+            return RowLayout::keyed(def);
+        }
         let alias = def.rowid_alias().map(|c| c.name.clone());
         let mut slots = Vec::with_capacity(def.columns.len());
         let mut position = 0usize;
@@ -86,6 +89,48 @@ impl RowLayout {
         RowLayout { slots }
     }
 
+    /// The layout of a without rowid table, where the record is permuted.
+    ///
+    /// Such a table is stored as an index b-tree keyed by its primary key,
+    /// and the entry holds the key columns first, in key order, then the
+    /// remaining columns in declared order. Nothing in the bytes says which
+    /// arrangement is in force, so this is read off the declaration and is
+    /// the whole reason the create statement has to be parsed before such a
+    /// table can be read at all.
+    ///
+    /// A key column named in the primary key but missing from the column
+    /// list cannot happen in a database sqlite accepted, and if it does the
+    /// column simply takes the next position, which keeps the mapping
+    /// total rather than panicking on a file we did not write.
+    fn keyed(def: &TableDef) -> RowLayout {
+        let mut order: Vec<usize> = Vec::with_capacity(def.columns.len());
+        for key in &def.primary_key {
+            if let Some(index) = def.column_index(&key.name) {
+                if !order.contains(&index) {
+                    order.push(index);
+                }
+            }
+        }
+        for index in 0..def.columns.len() {
+            if !order.contains(&index) {
+                order.push(index);
+            }
+        }
+
+        // walk the record order, handing out positions, then put the slots
+        // back into declared order for the caller
+        let mut slots = vec![Slot::Virtual; def.columns.len()];
+        let mut position = 0usize;
+        for index in order {
+            if def.columns[index].generated.is_virtual() {
+                continue;
+            }
+            slots[index] = Slot::Stored(position);
+            position += 1;
+        }
+        RowLayout { slots }
+    }
+
     /// How many columns the declaration has, virtual ones included.
     pub fn declared_columns(&self) -> usize {
         self.slots.len()
@@ -100,18 +145,28 @@ impl RowLayout {
     }
 
     /// The value of declared column `index` in `row`.
-    pub fn cell<'a>(&self, row: &'a TableRow, index: usize) -> Cell<'a> {
+    ///
+    /// Takes the unified row, so the same layout serves both kinds of
+    /// table: one call site, one set of rules, and no way for the two paths
+    /// to drift apart.
+    pub fn cell<'a>(&self, row: &'a Row, index: usize) -> Cell<'a> {
         match self.slots.get(index) {
             None => Cell::Missing,
             Some(Slot::Virtual) => Cell::Virtual,
-            Some(Slot::RowidAlias(at)) => {
+            Some(Slot::RowidAlias(at)) => match row.rowid {
                 // the slot exists and holds NULL; the value is the rowid.
                 // if a file ever stored something else there, the rowid is
                 // still the authority, because that is what sqlite indexes
                 // and what other tables reference.
-                let _ = at;
-                Cell::Rowid(row.rowid)
-            }
+                Some(rowid) => Cell::Rowid(rowid),
+                // a row without a rowid cannot have a column aliasing one,
+                // so this is a file disagreeing with itself. report what is
+                // actually stored rather than inventing a number.
+                None => match row.values.get(*at) {
+                    Some(value) => Cell::Value(value),
+                    None => Cell::Missing,
+                },
+            },
             Some(Slot::Stored(at)) => match row.values.get(*at) {
                 Some(value) => Cell::Value(value),
                 None => Cell::Missing,
@@ -220,10 +275,12 @@ impl<S: Source> Reader<S> {
             )
         })?;
 
-        for row in self.table_scan(root)? {
+        // rows() picks the walk from the root page, so a without rowid
+        // table is surveyed the same way as any other
+        for row in self.rows(root)? {
             let row = row?;
             rows += 1;
-            largest_rowid = largest_rowid.max(row.rowid);
+            largest_rowid = largest_rowid.max(row.rowid.unwrap_or(0));
 
             for (index, survey) in columns.iter_mut().enumerate() {
                 match layout.cell(&row, index) {

@@ -41,7 +41,7 @@ pub use record::{decode as decode_record, SqliteValue};
 pub use schema::{ObjectKind, Schema, SchemaObject};
 pub use source::{FileSource, SliceSource, Source};
 pub use survey::{Cell as MappedCell, ColumnSurvey, RowLayout, TableSurvey};
-pub use tree::{TableRow, TableScan};
+pub use tree::{IndexScan, Row, Rows, TableRow, TableScan};
 
 /// A SQLite database file, opened for reading.
 pub struct Reader<S: Source> {
@@ -183,6 +183,31 @@ impl<S: Source> Reader<S> {
     /// pages down to it.
     pub fn table_scan(&self, root: u32) -> Result<TableScan<'_, S>> {
         TableScan::new(self, root)
+    }
+
+    /// Walk the index b-tree rooted at `root`, yielding entries in key
+    /// order.
+    ///
+    /// This reads real indexes and, because a without rowid table is an
+    /// index b-tree holding whole rows, those tables too.
+    pub fn index_scan(&self, root: u32) -> Result<IndexScan<'_, S>> {
+        IndexScan::new(self, root)
+    }
+
+    /// Rows of a table, whichever kind of table it is.
+    ///
+    /// Which walk applies is not a matter of taste: a rowid table is a
+    /// table b-tree and a without rowid table is an index b-tree, and the
+    /// root page says which one it is. Reading that off the page rather
+    /// than off the create statement means this works before any sql has
+    /// been parsed, and cannot disagree with the file.
+    pub fn rows(&self, root: u32) -> Result<Rows<'_, S>> {
+        let kind = self.btree_page(root)?.kind;
+        if kind.is_table() {
+            Ok(Rows::Rowid(self.table_scan(root)?))
+        } else {
+            Ok(Rows::Keyed(self.index_scan(root)?))
+        }
     }
 
     /// The largest payload the file could hold, used to reject length
