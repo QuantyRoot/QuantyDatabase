@@ -256,3 +256,130 @@ fn checksum(big_endian: bool, start: (u32, u32), data: &[u8]) -> (u32, u32) {
 fn be32(bytes: &[u8], at: usize) -> u32 {
     u32::from_be_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]])
 }
+
+/// A database file with its log read on top of it.
+///
+/// This is a `Source`, not a special case inside the reader: a page that
+/// the log holds a committed version of is served from there, everything
+/// else from the main file, and nothing above this line has to know that a
+/// log exists at all. The reader that walks b-trees is the same code
+/// either way.
+///
+/// Reads are split at page boundaries before being served, so a caller
+/// that asks for a range spanning two pages gets each half from wherever
+/// that page currently lives.
+pub struct WalSource<S: Source, W: Source> {
+    main: S,
+    log: Option<Wal<W>>,
+    page_size: u32,
+    /// Database size in pages, which the log's last commit can change: a
+    /// transaction may grow the database, and may shrink it.
+    page_count: u32,
+}
+
+impl<S: Source, W: Source> WalSource<S, W> {
+    /// Put `log` on top of `main`. Pass `None` when there is no log file,
+    /// which is the state sqlite leaves behind after a checkpoint.
+    pub fn new(main: S, log: Option<W>) -> Result<WalSource<S, W>> {
+        let mut header = [0u8; crate::header::HEADER_LEN];
+        if main.len()? < header.len() as u64 {
+            return Err(SqliteError::not_sqlite(
+                "the file is shorter than a database header",
+            ));
+        }
+        main.read_at(0, &mut header)?;
+        let page_size = crate::header::Header::parse(&header)?.page_size;
+
+        let log = match log {
+            Some(source) => {
+                let wal = Wal::open(source)?;
+                // this check comes before the empty case on purpose. a log
+                // whose page size disagrees with the database is one we
+                // have misread, and misreading it makes it look empty:
+                // frames land at the wrong offsets and fail their salt
+                // check. treating that as "no log" would drop real commits
+                // and then report the database as complete, which is the
+                // exact outcome this whole path exists to prevent. a page
+                // size of zero is the one honest empty case, a file with no
+                // header in it at all.
+                if wal.page_size() != 0 && wal.page_size() != page_size {
+                    return Err(SqliteError::malformed(
+                        None,
+                        format!(
+                            "the log is written in {} byte pages and the database in {page_size}",
+                            wal.page_size()
+                        ),
+                    ));
+                }
+                if wal.is_empty() {
+                    None
+                } else {
+                    Some(wal)
+                }
+            }
+            None => None,
+        };
+
+        let page_count = match &log {
+            Some(wal) => wal.page_count(),
+            None => u32::try_from(main.len()? / page_size as u64).unwrap_or(u32::MAX),
+        };
+
+        Ok(WalSource {
+            main,
+            log,
+            page_size,
+            page_count,
+        })
+    }
+
+    /// Whether any page is actually being served from the log.
+    pub fn has_log(&self) -> bool {
+        self.log.is_some()
+    }
+}
+
+impl<S: Source, W: Source> Source for WalSource<S, W> {
+    fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<()> {
+        let Some(log) = &self.log else {
+            return self.main.read_at(offset, buf);
+        };
+
+        let page_size = self.page_size as u64;
+        let mut done = 0usize;
+        while done < buf.len() {
+            let at = offset + done as u64;
+            let page = (at / page_size) + 1;
+            let within = (at % page_size) as u32;
+            let take = ((page_size - within as u64) as usize).min(buf.len() - done);
+            let slice = &mut buf[done..done + take];
+
+            // a page number past u32 cannot be in the log, so such a read
+            // goes to the main file and fails there if it is out of range
+            let served = match u32::try_from(page) {
+                Ok(number) => log.read_page_part(number, within, slice)?,
+                Err(_) => false,
+            };
+            if !served {
+                self.main.read_at(at, slice)?;
+            }
+            done += take;
+        }
+        Ok(())
+    }
+
+    fn len(&self) -> Result<u64> {
+        match &self.log {
+            // the log's last commit is what says how large the database is
+            // now; the main file may be shorter, and may be longer
+            Some(_) => Ok(self.page_count as u64 * self.page_size as u64),
+            None => self.main.len(),
+        }
+    }
+
+    /// This source reads the log, so a wal mode database read through it is
+    /// complete by construction.
+    fn accounts_for_wal(&self) -> bool {
+        true
+    }
+}

@@ -9,12 +9,14 @@
 //! Two rejections are worth explaining because they refuse files that other
 //! tools would happily open.
 //!
-//! A database in wal mode is refused. Its most recent committed data can
-//! live in a companion `-wal` file that has not been checkpointed into the
-//! main file yet, so reading the main file alone returns an older version of
-//! the database with no indication that anything is missing. Silently
-//! importing stale data is worse than refusing, and the fix is one command
-//! for the user.
+//! Wal mode is recorded here rather than judged here. Whether a wal mode
+//! database can be read from its main file alone depends on something this
+//! parser cannot see: whether a `-wal` file exists next to it with commits
+//! in it. A database that was checkpointed and closed cleanly is complete
+//! and perfectly readable, and refusing it on the strength of a flag would
+//! turn away a large share of the databases in the world. The decision
+//! belongs to `Reader::open`, which can ask the source what it accounts
+//! for.
 //!
 //! A database whose text encoding is not utf-8 is refused rather than
 //! transcoded. Getting utf-16 wrong produces text that looks almost right,
@@ -40,6 +42,10 @@ pub struct Header {
     /// Unused bytes at the end of every page. Usually zero; extensions use
     /// it for per page trailers.
     pub reserved_space: u8,
+    /// Whether the database uses a write-ahead log. On its own this says
+    /// nothing about whether the main file is complete: see the note at the
+    /// top of this file.
+    pub wal_mode: bool,
     pub file_change_counter: u32,
     /// Page count as stated in the header, only present when the header
     /// says it is current. Callers should prefer `Reader::page_count`.
@@ -99,12 +105,7 @@ impl Header {
                 "file format versions {write_version}/{read_version} are newer than this reader"
             )));
         }
-        if write_version == 2 || read_version == 2 {
-            return Err(SqliteError::unsupported(
-                "the database is in wal mode, so the main file may be missing committed data; \
-                 check it in first, for example with: sqlite3 db.sqlite 'pragma wal_checkpoint(truncate)'",
-            ));
-        }
+        let wal_mode = write_version == 2 || read_version == 2;
 
         let reserved_space = bytes[20];
         let usable = page_size as i64 - reserved_space as i64;
@@ -183,6 +184,7 @@ impl Header {
             reserved_space,
             file_change_counter,
             header_page_count,
+            wal_mode,
             first_freelist_trunk: be32(bytes, 32),
             freelist_page_count: be32(bytes, 36),
             schema_cookie: be32(bytes, 40),

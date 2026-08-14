@@ -27,22 +27,53 @@ pub trait Source {
     fn is_empty(&self) -> Result<bool> {
         Ok(self.len()? == 0)
     }
+
+    /// Whether this source has already accounted for a write-ahead log.
+    ///
+    /// A wal mode database is only complete in its main file once the log
+    /// has been checkpointed into it, and bytes alone cannot say whether
+    /// that happened. A source that knows, because it looked next to the
+    /// file or because it reads the log itself, says so here; everything
+    /// else stays conservative and a wal mode database read through it is
+    /// refused rather than silently truncated to an older version.
+    fn accounts_for_wal(&self) -> bool {
+        false
+    }
 }
 
 /// A file opened read only.
 pub struct FileSource {
     file: File,
+    /// True when there is no log to account for: either no `-wal` file
+    /// sits next to this one, or the one that does is empty, which is what
+    /// sqlite leaves behind after a checkpoint.
+    no_log_beside_it: bool,
 }
 
 impl FileSource {
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
+        let path = path.as_ref();
         let file = File::open(path)?;
-        Ok(FileSource { file })
+        // sqlite names the log after the database, suffix and all
+        let mut log = path.as_os_str().to_os_string();
+        log.push("-wal");
+        let no_log_beside_it = match std::fs::metadata(Path::new(&log)) {
+            Ok(meta) => meta.len() == 0,
+            Err(_) => true,
+        };
+        Ok(FileSource {
+            file,
+            no_log_beside_it,
+        })
     }
 }
 
 #[cfg(unix)]
 impl Source for FileSource {
+    fn accounts_for_wal(&self) -> bool {
+        self.no_log_beside_it
+    }
+
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<()> {
         use std::os::unix::fs::FileExt;
         self.file.read_exact_at(buf, offset)?;
@@ -56,6 +87,10 @@ impl Source for FileSource {
 
 #[cfg(windows)]
 impl Source for FileSource {
+    fn accounts_for_wal(&self) -> bool {
+        self.no_log_beside_it
+    }
+
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<()> {
         use std::os::windows::fs::FileExt;
         let mut done = 0;

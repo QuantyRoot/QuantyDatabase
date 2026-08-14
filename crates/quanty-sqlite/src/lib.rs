@@ -43,7 +43,7 @@ pub use schema::{ObjectKind, Schema, SchemaObject};
 pub use source::{FileSource, SliceSource, Source};
 pub use survey::{Cell as MappedCell, ColumnSurvey, RowLayout, TableSurvey};
 pub use tree::{IndexScan, Row, Rows, TableRow, TableScan};
-pub use wal::Wal;
+pub use wal::{Wal, WalSource};
 
 /// A SQLite database file, opened for reading.
 pub struct Reader<S: Source> {
@@ -66,6 +66,21 @@ impl<S: Source> Reader<S> {
         let mut buf = [0u8; header::HEADER_LEN];
         source.read_at(0, &mut buf)?;
         let header = Header::parse(&buf)?;
+
+        // a wal mode database is complete in its main file only once the
+        // log has been checkpointed into it. the flag alone cannot tell us
+        // whether that happened, so the source is asked: one that looked
+        // beside the file, or one that reads the log itself, says yes, and
+        // anything else gets refused rather than quietly handed a database
+        // as it stood at the last checkpoint.
+        if header.wal_mode && !source.accounts_for_wal() {
+            return Err(SqliteError::unsupported(
+                "the database is in wal mode and nothing here accounts for its log, so the \
+                 main file may be missing committed data; open it with open_file, put a \
+                 WalSource around it, or check the log in first, for example with: \
+                 sqlite3 db.sqlite 'pragma wal_checkpoint(truncate)'",
+            ));
+        }
 
         // the header may state the page count, and the file itself implies
         // one. where they disagree the file is truncated, and finding that
@@ -259,4 +274,28 @@ impl<S: Source> Reader<S> {
         }
         Ok(out)
     }
+}
+
+/// Open a database file by path, log included if there is one.
+///
+/// This is the call that does the right thing without the caller having to
+/// know what wal mode is: if a `-wal` file sits next to the database and
+/// holds committed frames, its pages are read on top of the main file, and
+/// if it does not, nothing changes.
+pub fn open_file(
+    path: impl AsRef<std::path::Path>,
+) -> Result<Reader<WalSource<FileSource, FileSource>>> {
+    let path = path.as_ref();
+    let main = FileSource::open(path)?;
+
+    let mut log_path = path.as_os_str().to_os_string();
+    log_path.push("-wal");
+    let log = match FileSource::open(std::path::Path::new(&log_path)) {
+        Ok(source) => Some(source),
+        // no log next to the database is the ordinary case, not a failure
+        Err(SqliteError::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => return Err(e),
+    };
+
+    Reader::open(WalSource::new(main, log)?)
 }
