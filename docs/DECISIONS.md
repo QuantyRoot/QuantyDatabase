@@ -336,3 +336,93 @@ Scheduling: phase 9. That is dependency order, not importance. It needs the
 public embedded crate and the call syntax before it can start. The roadmap
 allows pulling a later phase forward with a written reason, and this record
 is that reason if a real extension user shows up before phase 8 is green.
+
+## ADR-019: The declared type proposes, the stored data decides
+
+SQLite is dynamically typed and we are not, so importing means answering a
+question the source file does not answer for us: what type is this column.
+The rule chosen here is that the declared type supplies the candidate, the
+values that are actually stored settle it, and a disagreement is reported
+rather than resolved in silence.
+
+The goal it serves comes first, because it decides the ties: a developer
+should be able to point us at an ordinary `.sqlite` file, run one command,
+and get their data. Ninety-nine out of a hundred real databases, from
+whatever codebase, should need nothing else. An import that stops is a
+product failure, not a safety win, and every rule below was chosen with
+that in mind.
+
+**The declared type is not decoration, and it is not a guarantee either.**
+A column declared `INTEGER` may hold text; SQLite's affinity only converts
+where it can do so without losing anything. Two things follow, both
+measured on chinook rather than assumed:
+
+Reading the declaration alone gets it wrong. `DATETIME` has numeric
+affinity and chinook stores text in every one of those columns. `NUMERIC(10,2)`
+means integer-or-real, and the file holds reals. A reader that trusts the
+declaration builds a number column for birth dates and falls over on the
+first row.
+
+Reading the bytes alone gets it wrong too, and worse. SQLite stores a
+whole-numbered value in a column with real affinity as an integer, to save
+space, and converts it back on the way out using that column's affinity. So
+`1.0` and `2.5` in the same real column are physically an integer and a
+float. Judging by storage class alone, nearly every real column in the
+world looks like a mixed column, and nearly every import would stop. The
+declared type is therefore not a hint but a necessity: it is the only thing
+that says whether an integer on disk means an integer.
+
+**So both are read.** Affinity is computed from the declared type by
+SQLite's five rules, storage classes are collected from the rows, and the
+column type follows from the two together.
+
+**Mixed columns widen rather than stop.** Integer and real together become
+`float`, since our float holds both, with one exception: an integer past
+2^53 does not survive the trip and stops the import naming the row. Any
+other mixture becomes `text`, or `bytes` once a blob is in it. This is the
+rule the goal above bought: the alternative is refusing databases that
+SQLite reads perfectly well, and a settings table with a `value` column
+holding both numbers and strings is an ordinary thing to have, not a
+corruption.
+
+Widening has a real cost and it gets stated plainly rather than hidden: as
+text, `10` sorts before `9`. That is why every import ends with a report
+naming each column that was widened, what it held, and what it became, and
+why `--strict` exists to turn the widening back into a refusal for anyone
+who would rather fix the source. The promise is not that nothing lossy ever
+happens. It is that nothing lossy happens quietly.
+
+**A table always gets a key.** A rowid alias becomes the key. A composite
+primary key becomes a composite key, which our catalog supports. Where
+neither is available, or where the declared key cannot be one for us
+because it holds NULL, the rowid becomes a key column of its own and the
+original column is kept as ordinary data. That adds a column the source
+schema did not have, which is a visible change and goes in the report, and
+it is better than refusing the many real tables that have no primary key.
+
+**Two passes, not one.** The first pass reads and decides, writing nothing;
+the second writes. It costs a second read of the file, and it buys a report
+of every problem at once, a minute in, instead of the first problem alone
+after ten minutes of writing. It also means the schema is known before any
+data is written, so nothing has to be migrated halfway through.
+
+**What is skipped rather than refused**, each named in the report: views
+and triggers, which hold no rows; SQLite's own `sqlite_` tables, which are
+another engine's bookkeeping; virtual generated columns, which hold no data
+in the file; and indexes we cannot express.
+
+**Positions in a record are not column positions.** Three rules govern the
+mapping, and each was verified against a file rather than recalled:
+
+- a virtual generated column occupies no slot, while a stored one does, so
+  zipping the declared columns against the stored values shifts every
+  column after the first virtual one
+- a rowid alias column is stored as NULL and its value is the cell's rowid
+- a record may hold fewer values than the table has columns, which is what
+  `alter table add column` leaves behind, and the missing trailing columns
+  take their default from the declaration
+
+**Types we do not invent.** `BOOLEAN` in SQLite is an integer column that
+happens to hold 0 and 1, and may hold 2; it becomes `int`. `DATETIME` holds
+whatever the application put there, usually text; it stays what it is. We
+have no date type and this is not the place to pretend otherwise.
