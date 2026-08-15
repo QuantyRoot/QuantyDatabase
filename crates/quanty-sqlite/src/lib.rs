@@ -211,6 +211,14 @@ impl<S: Source> Reader<S> {
         IndexScan::new(self, root)
     }
 
+    /// Decode a record with the encoding this database uses.
+    ///
+    /// The same as the free function, minus the chance of passing the
+    /// wrong encoding: this one reads it off the header in hand.
+    pub fn decode_record(&self, payload: &[u8]) -> Result<Vec<SqliteValue>> {
+        record::decode(payload, self.header.text_encoding)
+    }
+
     /// Rows of a table, whichever kind of table it is.
     ///
     /// Which walk applies is not a matter of taste: a rowid table is a

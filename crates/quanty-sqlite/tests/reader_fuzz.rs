@@ -32,7 +32,7 @@
 
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use quanty_sqlite::{decode_record, Cell, MappedCell, Reader, RowLayout, SliceSource, SqliteValue};
+use quanty_sqlite::{Cell, MappedCell, Reader, RowLayout, SliceSource, SqliteValue};
 
 struct Rng(u64);
 
@@ -170,10 +170,12 @@ fn exercise(bytes: &[u8]) -> Progress {
             let again = reader.cell(&page, index).expect("a cell parses twice");
             assert_eq!(&cell, &again, "page {number} cell {index} is not stable");
 
-            if let Ok(values) = decode_record(payload) {
+            if let Ok(values) = reader.decode_record(payload) {
                 progress.records += 1;
                 // decoding is a pure function of the payload
-                let repeat = decode_record(payload).expect("a record decodes twice");
+                let repeat = reader
+                    .decode_record(payload)
+                    .expect("a record decodes twice");
                 assert!(
                     same_values(&values, &repeat),
                     "decoding the same payload twice gave different values"

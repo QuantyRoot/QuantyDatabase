@@ -183,7 +183,7 @@ impl<'a, S: Source> TableScan<'a, S> {
                     self.last_rowid = Some(rowid);
                     Ok(Some(TableRow {
                         rowid,
-                        values: record::decode(&payload)?,
+                        values: record::decode(&payload, self.reader.header().text_encoding)?,
                     }))
                 }
                 other => Err(SqliteError::malformed(
@@ -369,7 +369,10 @@ impl<'a, S: Source> IndexScan<'a, S> {
             if let Some(frame) = self.stack.last_mut() {
                 frame.next += 1;
             }
-            return Ok(Some(record::decode(&payload)?));
+            return Ok(Some(record::decode(
+                &payload,
+                self.reader.header().text_encoding,
+            )?));
         }
 
         // interior: left child, then the cell, then on to the right
@@ -403,7 +406,10 @@ impl<'a, S: Source> IndexScan<'a, S> {
                 frame.next += 1;
                 frame.descended = false;
             }
-            return Ok(Some(record::decode(&payload)?));
+            return Ok(Some(record::decode(
+                &payload,
+                self.reader.header().text_encoding,
+            )?));
         }
 
         self.stack.pop();

@@ -10,7 +10,7 @@
 //! page by hand. That is on purpose for one commit: it proves the cell API
 //! is enough to descend a tree before the convenience layer exists.
 
-use quanty_sqlite::{decode_record, Cell, PageKind, Reader, SliceSource, SqliteValue};
+use quanty_sqlite::{Cell, PageKind, Reader, SliceSource, SqliteValue};
 
 fn fixture(name: &str) -> Vec<u8> {
     let path = format!("{}/tests/data/{name}", env!("CARGO_MANIFEST_DIR"));
@@ -25,9 +25,10 @@ fn table_rows(reader: &Reader<SliceSource<'_>>, root: u32) -> Vec<(i64, Vec<Sqli
         PageKind::LeafTable => {
             for i in 0..page.cell_count() {
                 match reader.cell(&page, i).expect("cell parses") {
-                    Cell::TableLeaf { rowid, payload } => {
-                        out.push((rowid, decode_record(&payload).expect("record decodes")))
-                    }
+                    Cell::TableLeaf { rowid, payload } => out.push((
+                        rowid,
+                        reader.decode_record(&payload).expect("record decodes"),
+                    )),
                     other => panic!("leaf page held {other:?}"),
                 }
             }
@@ -268,10 +269,10 @@ fn index_entries_spill_at_their_own_much_lower_boundary() {
         let mut children = Vec::new();
         for i in 0..page.cell_count() {
             match reader.cell(&page, i).unwrap() {
-                Cell::IndexLeaf { payload } => out.push(decode_record(&payload).unwrap()),
+                Cell::IndexLeaf { payload } => out.push(reader.decode_record(&payload).unwrap()),
                 Cell::IndexInterior { child, payload } => {
                     children.push(child);
-                    out.push(decode_record(&payload).unwrap());
+                    out.push(reader.decode_record(&payload).unwrap());
                 }
                 other => panic!("index page held {other:?}"),
             }
@@ -447,7 +448,7 @@ fn corrupting_any_cell_never_panics() {
                             | Cell::IndexInterior { payload, .. } => payload.clone(),
                             Cell::TableInterior { .. } => continue,
                         };
-                        let _ = decode_record(&payload);
+                        let _ = reader.decode_record(&payload);
                     }
                 }
             }

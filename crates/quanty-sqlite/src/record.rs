@@ -14,6 +14,7 @@
 //! reader.
 
 use crate::error::{Result, SqliteError};
+use crate::header::TextEncoding;
 use crate::varint;
 
 /// One of SQLite's five storage classes.
@@ -113,7 +114,12 @@ impl SerialType {
 /// on. Anything that does not add up, a header that overruns the payload, a
 /// value that runs past the end, a reserved serial type, is a malformed
 /// file and comes back as an error.
-pub fn decode(payload: &[u8]) -> Result<Vec<SqliteValue>> {
+///
+/// `encoding` is the one the database header states, and it applies to
+/// every text value in the file. Text comes back as a Rust `String`
+/// whatever the file stores, so the encoding is a fact about the bytes on
+/// disk and not something callers have to carry around afterwards.
+pub fn decode(payload: &[u8], encoding: TextEncoding) -> Result<Vec<SqliteValue>> {
     let (header_len, varint_len) = varint::read_unsigned(payload)?;
     let header_len = usize::try_from(header_len)
         .map_err(|_| SqliteError::malformed(None, "record header length does not fit in memory"))?;
@@ -165,20 +171,59 @@ pub fn decode(payload: &[u8]) -> Result<Vec<SqliteValue>> {
                 SqliteValue::Real(f64::from_bits(u64::from_be_bytes(eight)))
             }
             SerialType::Blob(_) => SqliteValue::Blob(bytes.to_vec()),
-            SerialType::Text(_) => match std::str::from_utf8(bytes) {
-                Ok(text) => SqliteValue::Text(text.to_string()),
-                Err(e) => {
-                    return Err(SqliteError::malformed(
-                        None,
-                        format!("a text value is not valid utf-8: {e}"),
-                    ))
-                }
-            },
+            SerialType::Text(_) => SqliteValue::Text(text_from(bytes, encoding)?),
         });
         at = end;
     }
 
     Ok(values)
+}
+
+/// Turn the stored bytes of a text value into a string.
+///
+/// Both utf-16 encodings are decoded rather than transcoded loosely: an
+/// unpaired surrogate is an error, not a replacement character. Text that
+/// is almost right is the failure mode that survives an import and shows up
+/// months later in somebody's name field, so it stops here.
+fn text_from(bytes: &[u8], encoding: TextEncoding) -> Result<String> {
+    match encoding {
+        TextEncoding::Utf8 => match std::str::from_utf8(bytes) {
+            Ok(text) => Ok(text.to_string()),
+            Err(e) => Err(SqliteError::malformed(
+                None,
+                format!("a text value is not valid utf-8: {e}"),
+            )),
+        },
+        TextEncoding::Utf16Le | TextEncoding::Utf16Be => {
+            if bytes.len() % 2 != 0 {
+                return Err(SqliteError::malformed(
+                    None,
+                    format!(
+                        "a utf-16 text value is {} bytes long, which is not a whole number of \
+                         code units",
+                        bytes.len()
+                    ),
+                ));
+            }
+            let big_endian = encoding == TextEncoding::Utf16Be;
+            let units: Vec<u16> = bytes
+                .chunks_exact(2)
+                .map(|pair| {
+                    if big_endian {
+                        u16::from_be_bytes([pair[0], pair[1]])
+                    } else {
+                        u16::from_le_bytes([pair[0], pair[1]])
+                    }
+                })
+                .collect();
+            String::from_utf16(&units).map_err(|_| {
+                SqliteError::malformed(
+                    None,
+                    "a utf-16 text value holds an unpaired surrogate, so it is not text",
+                )
+            })
+        }
+    }
 }
 
 /// Big endian two's complement of 1, 2, 3, 4, 6 or 8 bytes.
@@ -223,7 +268,7 @@ mod tests {
         // header: length 6, then serial types null, 0, 1, int8, text(2).
         // a text of n characters is serial type 2n + 13, so two is 17.
         let payload = [6u8, 0, 8, 9, 1, 17, 0x2a, b'h', b'i'];
-        let values = decode(&payload).unwrap();
+        let values = decode(&payload, TextEncoding::Utf8).unwrap();
         assert_eq!(
             values,
             vec![
@@ -238,36 +283,39 @@ mod tests {
 
     #[test]
     fn an_empty_record_has_no_values() {
-        assert_eq!(decode(&[1u8]).unwrap(), vec![]);
+        assert_eq!(decode(&[1u8], TextEncoding::Utf8).unwrap(), vec![]);
     }
 
     #[test]
     fn reserved_serial_types_are_refused() {
-        assert!(decode(&[2u8, 10]).is_err());
-        assert!(decode(&[2u8, 11]).is_err());
+        assert!(decode(&[2u8, 10], TextEncoding::Utf8).is_err());
+        assert!(decode(&[2u8, 11], TextEncoding::Utf8).is_err());
     }
 
     #[test]
     fn a_header_longer_than_the_payload_is_refused() {
-        assert!(decode(&[99u8, 0]).is_err());
-        assert!(decode(&[]).is_err());
+        assert!(decode(&[99u8, 0], TextEncoding::Utf8).is_err());
+        assert!(decode(&[], TextEncoding::Utf8).is_err());
     }
 
     #[test]
     fn a_value_running_past_the_payload_is_refused() {
         // header says one text of 4 bytes, body holds one
-        assert!(decode(&[2u8, 21, b'a']).is_err());
+        assert!(decode(&[2u8, 21, b'a'], TextEncoding::Utf8).is_err());
     }
 
     #[test]
     fn invalid_utf8_in_a_text_value_is_refused() {
-        assert!(decode(&[2u8, 15, 0xff, 0xfe]).is_err());
+        assert!(decode(&[2u8, 15, 0xff, 0xfe], TextEncoding::Utf8).is_err());
     }
 
     #[test]
     fn floats_round_trip_bit_for_bit() {
         let mut payload = vec![2u8, 7];
         payload.extend_from_slice(&(-2.25f64).to_be_bytes());
-        assert_eq!(decode(&payload).unwrap(), vec![SqliteValue::Real(-2.25)]);
+        assert_eq!(
+            decode(&payload, TextEncoding::Utf8).unwrap(),
+            vec![SqliteValue::Real(-2.25)]
+        );
     }
 }

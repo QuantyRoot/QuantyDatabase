@@ -186,11 +186,20 @@ fn wal_mode_is_refused_rather_than_read_stale() {
 }
 
 #[test]
-fn utf16_is_refused_rather_than_guessed() {
-    for encoding in [2u8, 3] {
+fn every_text_encoding_the_format_has_is_read() {
+    // all three are read now, and the header reports which one applies.
+    // whether the text in a given file actually decodes is a question for
+    // the values, not for opening it: see utf16_tests.
+    use quanty_sqlite::TextEncoding;
+    for (byte, expected) in [
+        (1u8, TextEncoding::Utf8),
+        (2, TextEncoding::Utf16Le),
+        (3, TextEncoding::Utf16Be),
+    ] {
         let mut bytes = chinook_bytes();
-        bytes[59] = encoding;
-        assert!(matches!(open_err(&bytes), SqliteError::Unsupported(_)));
+        bytes[59] = byte;
+        let reader = open_bytes(&bytes).expect("the encoding is read, not judged");
+        assert_eq!(reader.header().text_encoding, expected);
     }
 }
 

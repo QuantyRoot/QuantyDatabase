@@ -18,8 +18,9 @@
 //! belongs to `Reader::open`, which can ask the source what it accounts
 //! for.
 //!
-//! A database whose text encoding is not utf-8 is refused rather than
-//! transcoded. Getting utf-16 wrong produces text that looks almost right,
+//! The text encoding is recorded and applies to every text value in the
+//! file. All three are read; what is refused is text that does not decode,
+//! because getting utf-16 wrong produces text that looks almost right,
 //! which is the failure mode hardest to notice downstream.
 
 use crate::error::{Result, SqliteError};
@@ -163,11 +164,6 @@ impl Header {
                 ))
             }
         };
-        if text_encoding != TextEncoding::Utf8 {
-            return Err(SqliteError::unsupported(format!(
-                "text encoding is {text_encoding:?}, this reader only handles utf-8"
-            )));
-        }
 
         // reserved for expansion, and the format says it must be zero. a
         // non zero value means either a newer format or a file that has been
