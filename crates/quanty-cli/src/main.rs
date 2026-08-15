@@ -25,11 +25,13 @@ const USAGE: &str = "\
 quanty, a database that remembers
 
 usage:
+  quanty create <database.qdb>
   quanty import <source.sqlite> <target.qdb> [--dry-run] [--strict]
   quanty run <database.qdb> <statement> [--sql]
   quanty shell <database.qdb> [--sql]
   quanty tables <database.qdb>
 
+  create   make an empty database
   import   read a sqlite file and write it into a new quanty database
              --dry-run  print what would happen and write nothing
              --strict   refuse anything lossy instead of reporting it
@@ -125,6 +127,10 @@ fn run(args: &[String]) -> Result<(), Failure> {
     };
 
     match *command {
+        "create" => match rest {
+            [database] => create(Path::new(database)),
+            _ => Err(usage("create takes a database")),
+        },
         "import" => match rest {
             [source, target] => import(Path::new(source), Path::new(target), &flags),
             _ => Err(usage("import takes a source and a target")),
@@ -152,6 +158,25 @@ fn run(args: &[String]) -> Result<(), Failure> {
         "help" => Err(usage("")),
         other => Err(usage(format!("unknown command {other}"))),
     }
+}
+
+// ---------------------------------------------------------------------------
+// create
+// ---------------------------------------------------------------------------
+
+/// Make an empty database.
+///
+/// This exists as its own command rather than as something `run` and
+/// `shell` do when the file is missing. Creating a database by mistyping a
+/// path is a mistake that looks like success: the tool answers, the queries
+/// return nothing, and the real database is somewhere else with the data
+/// still in it.
+fn create(database: &Path) -> Result<(), Failure> {
+    if database.exists() {
+        return Err(failed(format!("{} already exists", database.display())));
+    }
+    Db::create_file(database).map_err(|e| failed(format!("{}: {e}", database.display())))?;
+    emit(&format!("created {}", database.display()))
 }
 
 // ---------------------------------------------------------------------------

@@ -234,3 +234,49 @@ fn a_missing_file_says_so_without_a_backtrace() {
     assert_eq!(not_sqlite.status.code(), Some(1));
     assert!(!stderr(&not_sqlite).contains("panicked"));
 }
+
+#[test]
+fn an_empty_database_can_be_made_and_used() {
+    let dir = TestDir::new();
+    let target = dir.path().join("fresh.qdb");
+    let path = target.to_str().unwrap();
+
+    let made = quanty(&["create", path]);
+    assert!(made.status.success(), "{}", stderr(&made));
+    assert!(target.exists());
+    assert!(stdout(&made).contains("created"));
+
+    // and it is a working database, not just a file
+    let used = quanty(&["run", path, "table t { id: int @key, v: text }"]);
+    assert!(used.status.success(), "{}", stderr(&used));
+    let listed = quanty(&["tables", path]);
+    assert_eq!(stdout(&listed).trim(), "t");
+}
+
+#[test]
+fn create_refuses_to_touch_an_existing_database() {
+    // a create that quietly reopened an existing file would be a way to
+    // lose a database by typing a name twice
+    let dir = TestDir::new();
+    let target = dir.path().join("twice.qdb");
+    let path = target.to_str().unwrap();
+    assert!(quanty(&["create", path]).status.success());
+
+    let again = quanty(&["create", path]);
+    assert!(!again.status.success());
+    assert!(stderr(&again).contains("already exists"));
+}
+
+#[test]
+fn a_missing_database_is_not_created_by_accident() {
+    // sqlite creates a database when you open a path that is not there,
+    // which turns a typo into an empty database that answers every query
+    // with nothing. run and shell refuse instead.
+    let dir = TestDir::new();
+    let typo = dir.path().join("typo.qdb");
+    let output = quanty(&["run", typo.to_str().unwrap(), "show tables"]);
+
+    assert!(!output.status.success());
+    assert!(stderr(&output).contains("does not exist"));
+    assert!(!typo.exists(), "a database was created by a failed read");
+}
