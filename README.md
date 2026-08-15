@@ -164,12 +164,29 @@ Keeping this list is half the battle:
 
 ## Status
 
-Pre-alpha. The storage core (pager, copy-on-write B-tree, transactions,
-snapshots of any commit) and the first QQL slice (tables, put/get/set/del,
-secondary indexes, explain) are in and tested. The test bar: property
-tests against a model, parser fuzzing, 200+ golden query tests, an index
-consistency checker, and a crash harness that kill -9s the process
-mid-write a thousand times per CI run.
+Pre-alpha, and further along than that sounds. What works today:
+
+- the storage core: pager, copy-on-write B-tree, transactions, snapshots of
+  any commit, branches and `as of` queries
+- QQL and a SQLite-flavored SQL front end, both lowering to the same plans,
+  with inner and left joins and multi-statement transactions
+- a `.sqlite` importer that reads the format directly, with no SQLite
+  library underneath it, and a command line tool around it
+
+```sh
+quanty import app.sqlite app.qdb
+quanty run app.qdb "get users { name } where score > 100"
+```
+
+The importer reads what SQLite writes, including tables without rowids,
+uncheckpointed write-ahead logs, text in utf-16 and columns added by a
+later `alter table`. See [IMPORT.md](docs/IMPORT.md) for what it decides on
+your behalf and what it tells you about afterwards.
+
+The test bar: property tests against a model, four fuzzers, golden query
+suites, an index consistency checker, row for row verification of an
+imported database against SQLite's own output, and a crash harness that
+kill -9s the process mid-write a thousand times per CI run.
 
 Progress lives in [ROADMAP.md](docs/ROADMAP.md). Design notes live in
 [ARCHITECTURE.md](docs/ARCHITECTURE.md) and [DECISIONS.md](docs/DECISIONS.md)
