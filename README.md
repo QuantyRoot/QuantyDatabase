@@ -194,6 +194,28 @@ toolchain from 2023. The checksum and the locks under the storage core are
 written out rather than pulled in, and what that cost is measured and
 written down in [ADR-020](docs/DECISIONS.md).
 
+### v0.2.0 by the numbers
+
+| | |
+|---|---|
+| Rust, source | 15825 lines across 6 crates |
+| Rust, tests | 8082 lines, 271 test functions |
+| Design notes | 1851 lines, 20 decision records |
+| Dependencies | 0 |
+| CI per push | 8 jobs, including 3 fuzzers and 2000 kill -9s |
+
+The acceptance runs behind phase 4, each an hour on one core:
+
+| | |
+|---|---|
+| SQL parser | 4244088000 inputs parsed, no panic, no broken roundtrip |
+| SQLite reader | 1831872 damaged files read, 12 billion cells, no panic |
+| chinook import | 15607 rows, every value compared against the source |
+
+What is not measured yet: speed. There is no benchmark against SQLite or
+anything else in this repo, so any claim about performance would be a guess
+and none is made.
+
 Progress lives in [ROADMAP.md](docs/ROADMAP.md). Design notes live in
 [ARCHITECTURE.md](docs/ARCHITECTURE.md) and [DECISIONS.md](docs/DECISIONS.md)
 if you want to see how the sausage is made.
