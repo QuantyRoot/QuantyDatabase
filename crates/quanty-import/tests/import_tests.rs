@@ -8,7 +8,7 @@
 mod common;
 
 use common::TestDir;
-use quanty_core::Db;
+use quanty_core::{Db, Value};
 use quanty_exec::Session;
 use quanty_import::{execute, plan, Options};
 use quanty_sqlite::{FileSource, Reader, SliceSource};
@@ -208,4 +208,122 @@ fn a_source_that_changed_between_the_passes_is_caught() {
     let err = execute(&reader, &plan, &mut session)
         .expect_err("a plan that disagrees with the file was accepted");
     assert!(err.to_string().contains("counted"), "message was: {err}");
+}
+
+/// Every value of every row, read back out of the imported database.
+fn imported_rows(
+    session: &mut Session<quanty_core::FileStorage>,
+    table: &str,
+    columns: &[String],
+) -> Vec<Vec<Value>> {
+    let list = columns.join(", ");
+    match session
+        .execute(&format!("get {table} {{ {list} }}"))
+        .unwrap_or_else(|e| panic!("reading {table}: {e}"))
+    {
+        quanty_exec::Output::Rows(rows) => rows,
+        other => panic!("expected rows, got {other:?}"),
+    }
+}
+
+/// The same rows as the source holds them, seen through the reader.
+///
+/// The reader is verified against sqlite's own digests elsewhere, row for
+/// row over all 15607 of them. So comparing the imported database against
+/// the reader closes the chain: source to reader is checked against sqlite,
+/// reader to database is checked here, and nothing in between is taken on
+/// trust.
+fn source_rows(
+    reader: &Reader<FileSource>,
+    plan: &quanty_import::ImportPlan,
+    table: &quanty_import::TablePlan,
+) -> Vec<Vec<Value>> {
+    let schema = reader.schema().unwrap();
+    let object = schema.object(&table.source_name).unwrap();
+    let def = object.table_def().unwrap();
+    let layout = quanty_sqlite::RowLayout::new(&def);
+    let _ = plan;
+
+    let mut out = Vec::new();
+    for row in reader.rows(table.root_page).unwrap() {
+        let row = row.unwrap();
+        let mut values = Vec::with_capacity(table.columns.len());
+        for column in &table.columns {
+            let value = match column.source {
+                quanty_import::ValueSource::Rowid => Value::Int(row.rowid.unwrap()),
+                quanty_import::ValueSource::Declared(index) => match layout.cell(&row, index) {
+                    quanty_sqlite::MappedCell::Rowid(id) => Value::Int(id),
+                    quanty_sqlite::MappedCell::Missing => {
+                        column.default.clone().unwrap_or(Value::Null)
+                    }
+                    quanty_sqlite::MappedCell::Virtual => panic!("a virtual column was planned"),
+                    quanty_sqlite::MappedCell::Value(value) => convert(value, column.ty),
+                },
+            };
+            values.push(value);
+        }
+        out.push(values);
+    }
+    out
+}
+
+/// The conversion the importer documents, written out a second time so the
+/// test does not simply agree with the code it is checking.
+fn convert(value: &quanty_sqlite::SqliteValue, ty: quanty_ql::ast::TypeName) -> Value {
+    use quanty_ql::ast::TypeName;
+    use quanty_sqlite::SqliteValue as S;
+    match (value, ty) {
+        (S::Null, _) => Value::Null,
+        (S::Integer(n), TypeName::Int) => Value::Int(*n),
+        (S::Integer(n), TypeName::Float) => Value::Float(*n as f64),
+        (S::Integer(n), TypeName::Text) => Value::Text(n.to_string()),
+        (S::Integer(n), TypeName::Bytes) => Value::Bytes(n.to_string().into_bytes()),
+        (S::Real(f), TypeName::Float) => Value::Float(*f),
+        (S::Real(f), TypeName::Text) => Value::Text(format!("{f}")),
+        (S::Real(f), TypeName::Bytes) => Value::Bytes(format!("{f}").into_bytes()),
+        (S::Text(t), TypeName::Text) => Value::Text(t.clone()),
+        (S::Text(t), TypeName::Bytes) => Value::Bytes(t.clone().into_bytes()),
+        (S::Blob(b), TypeName::Bytes) => Value::Bytes(b.clone()),
+        (value, ty) => panic!("no conversion from {value:?} to {ty:?}"),
+    }
+}
+
+#[test]
+fn every_imported_row_matches_the_source() {
+    let dir = TestDir::new();
+    let reader = Reader::open(FileSource::open(data_path("chinook.sqlite")).unwrap()).unwrap();
+    let plan = plan(&reader, &Options::default()).unwrap();
+    let db = Db::create_file(dir.path().join("verify.qdb")).unwrap();
+    let mut session = Session::new(db);
+    execute(&reader, &plan, &mut session).unwrap();
+
+    let mut checked = 0u64;
+    for table in &plan.tables {
+        let columns: Vec<String> = table.columns.iter().map(|c| c.name.clone()).collect();
+        let mut expected = source_rows(&reader, &plan, table);
+        let mut actual = imported_rows(&mut session, &table.name, &columns);
+
+        assert_eq!(
+            actual.len(),
+            expected.len(),
+            "{}: row counts differ",
+            table.name
+        );
+
+        // a composite key orders rows differently from a rowid, so both
+        // sides are sorted before comparing rather than assuming an order
+        let key = |row: &Vec<Value>| format!("{row:?}");
+        expected.sort_by_key(key);
+        actual.sort_by_key(key);
+
+        for (index, (got, want)) in actual.iter().zip(&expected).enumerate() {
+            assert_eq!(
+                got, want,
+                "{}: row {index} differs\n  imported: {got:?}\n  source:   {want:?}",
+                table.name
+            );
+            checked += 1;
+        }
+    }
+    assert_eq!(checked, 15607, "every row of chinook was compared");
 }

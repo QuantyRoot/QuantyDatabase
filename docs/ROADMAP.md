@@ -77,19 +77,28 @@ minimal quanty-cli around it.
 
 Acceptance:
 - [x] the SQL golden suite runs the same logical cases as the QQL suite
-- [ ] SQL parser fuzzing 1h without crash, same bar as the QQL parser
+- [x] SQL parser fuzzing 1h without crash, same bar as the QQL parser
+      (4244088000 inputs, seed 1786811633224126431; a third of them
+      mutations of valid statements, the rest byte and token soup, each
+      parsed and, where it parsed, put through the canonical roundtrip)
 - [x] inner and left joins return results identical to a brute force
       reference on randomized workloads; explain pins the join strategy
       (nested loop vs index nested loop) in golden tests
 - [x] begin/commit/rollback across statements, and the crash harness kills
       inside an open transaction: committed data survives, the open
       transaction vanishes without a trace
-- [ ] import of a real-world SQLite db (chinook, checked into the repo)
-      with schema + data verified row by row against the source
-- [ ] the SQLite reader rejects corrupted and hostile files with errors,
+- [x] import of a real-world SQLite db (chinook, checked into the repo)
+      with schema + data verified row by row against the source: all 15607
+      rows compared value for value after the import, against a reader that
+      is itself checked against sqlite's own digests
+- [x] the SQLite reader rejects corrupted and hostile files with errors,
       never panics or wrong data (fuzzed, same bar as our own format
-      reader)
-- [ ] unsupported SQL returns a clear error, wrong results count as P0 bugs
+      reader: 1831872 files in 1h, seed 1786811631166197537, reaching 232
+      million pages and 12 billion cells)
+- [x] unsupported SQL returns a clear error, wrong results count as P0
+      bugs: 33 constructs the dialect does not have are each refused by
+      name, with a position, in a golden test that also checks the
+      supported subset still parses
 
 Three things the reader refuses today rather than reads. Each refusal is a
 loud error naming the reason, and each is a stopping point rather than a
