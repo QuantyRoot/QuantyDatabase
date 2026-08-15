@@ -469,3 +469,40 @@ looks exactly like this between sessions.
 
 Generated with page size 512, one table of 50 rows, then
 `pragma wal_checkpoint(truncate)` and a close.
+
+## utf16le.sqlite and utf16be.sqlite
+
+The same eight rows in both utf-16 byte orders, so the reader has to produce
+identical strings from files whose every text value differs on disk. The
+encoding is fixed by `pragma encoding` before the first table exists; after
+that it cannot be changed.
+
+The values are chosen for where utf-16 handling breaks:
+
+- plain ASCII, which is two bytes per character here rather than one
+- latin and CJK text in the basic plane
+- an emoji and a tag sequence flag, which are astral: one code point, two
+  utf-16 code units, and a reader that treats code units as characters
+  loses half of each
+- an empty string
+- 2000 characters, which is 4000 bytes and spills across overflow pages
+- 400 emoji, so the spill lands in the middle of surrogate pairs
+
+To regenerate:
+
+```python
+import sqlite3
+VALUES = [(1, "ascii"), (2, "\u00fcber \u00e4nderung"),
+          (3, "\u65e5\u672c\u8a9e"), (4, "\U0001f600 emoji"),
+          (5, "\U0001f3f4\U000e0067\U000e0062\U000e0073\U000e0063\U000e0074\U000e007f"),
+          (6, ""), (7, "a" * 2000), (8, "\U0001f600" * 400)]
+for encoding, name in [("UTF-16le", "utf16le.sqlite"), ("UTF-16be", "utf16be.sqlite")]:
+    con = sqlite3.connect(name)
+    con.execute("pragma encoding = '%s'" % encoding)
+    con.execute("pragma page_size = 512")
+    con.execute("create table t (id integer primary key, v text)")
+    for id_, value in VALUES:
+        con.execute("insert into t values (?, ?)", (id_, value))
+    con.commit()
+    con.close()
+```
