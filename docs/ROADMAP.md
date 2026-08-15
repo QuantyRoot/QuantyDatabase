@@ -185,6 +185,37 @@ Acceptance:
 - [ ] docs/EXTENSIONS.md documents the surface and states plainly that it is
       unstable before 1.0
 
+## Unscheduled and blocking: the public embedded crate
+
+The workspace layout in ARCHITECTURE.md has carried two crates since the
+beginning that no phase ever builds: `quanty/`, the public embedded API that
+a Rust application would add as a dependency, and `quanty-derive/`, the ORM
+derive macros over it. Neither exists. What an embedder needs is reachable
+today only by depending on `quanty-exec` and `quanty-core` directly, which
+are internal crates carrying no stability promise.
+
+This is written down because it blocks phase 9, not because it is scheduled.
+ADR-018 names the public embedded crate as one of the two prerequisites for
+the extension API, next to call syntax in QQL, and it is also what an
+in-process Rust user needs once phase 5 hands every other language a
+protocol. It has been mentioned in passing more than once and never given a
+phase of its own, which is how a gap stays invisible until something waits
+on it.
+
+It is not a new capability. The engine underneath is finished. The work is
+choosing a surface and then keeping it, which is why it deserves a phase
+rather than a corner of one.
+
+Open, and to be decided rather than assumed here:
+- where it belongs in the order. That is a question about who is waiting:
+  phase 5 has a named person behind it and this has nobody yet.
+- how much the first version promises. ADR-018 declares the extension
+  surface explicitly unstable before 1.0; whether the embedded surface makes
+  the same statement is a separate call.
+- whether `quanty-derive` ships with it or follows later. A derive macro
+  means a proc-macro crate, and writing one without `syn` and `quote` is a
+  dependency question under ADR-020, not a detail.
+
 ## Known problems, measured
 
 Things the benchmark suite found, kept here with their numbers rather than
