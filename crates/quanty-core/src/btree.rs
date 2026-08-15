@@ -213,7 +213,7 @@ fn insert_rec<S: Storage>(
     key: &[u8],
     value: ValueRef,
 ) -> Result<Insert> {
-    let buf = batch.read_page(page)?;
+    let buf = batch.page_bytes(page)?;
     let mut node = Node::decode(&buf, page)?;
     match &mut node {
         Node::Leaf { entries } => {
@@ -367,7 +367,7 @@ fn delete_rec<S: Storage>(
     page: PageId,
     key: &[u8],
 ) -> Result<Delete> {
-    let buf = batch.read_page(page)?;
+    let buf = batch.page_bytes(page)?;
     let mut node = Node::decode(&buf, page)?;
     match &mut node {
         Node::Leaf { entries } => {
@@ -448,7 +448,7 @@ fn merge_underfull_child<S: Storage>(
     } else {
         entries[idx - 1].1
     };
-    let child_buf = batch.read_page(child_page)?;
+    let child_buf = batch.page_bytes(child_page)?;
     if Node::decode(&child_buf, child_page)?.encoded_size() >= ps / 4 {
         return Ok(()); // healthy
     }
@@ -465,8 +465,8 @@ fn merge_underfull_child<S: Storage>(
         entries[left_idx - 1].1
     };
     let right_page = entries[right_idx - 1].1;
-    let left_buf = batch.read_page(left_page)?;
-    let right_buf = batch.read_page(right_page)?;
+    let left_buf = batch.page_bytes(left_page)?;
+    let right_buf = batch.page_bytes(right_page)?;
     let left = Node::decode(&left_buf, left_page)?;
     let right = Node::decode(&right_buf, right_page)?;
 

@@ -211,6 +211,24 @@ impl<S: Storage> Pager<S> {
     }
 }
 
+/// A page as a batch sees it: borrowed when the batch already holds it,
+/// shared with the page cache when it comes from the committed file.
+pub enum PageBytes<'a> {
+    Dirty(&'a [u8]),
+    Committed(Arc<[u8]>),
+}
+
+impl std::ops::Deref for PageBytes<'_> {
+    type Target = [u8];
+
+    fn deref(&self) -> &[u8] {
+        match self {
+            PageBytes::Dirty(buf) => buf,
+            PageBytes::Committed(buf) => buf,
+        }
+    }
+}
+
 /// An exclusive write transaction at the page level.
 ///
 /// Dropping a batch without committing discards it completely: nothing it
@@ -452,14 +470,31 @@ impl<S: Storage> WriteBatch<'_, S> {
 
     /// Read a page as visible to this batch: its own dirty pages first,
     /// committed pages otherwise.
+    ///
+    /// Prefer `page_bytes` on any path that runs often. This one hands back
+    /// an owned page, which for a page the batch already holds means
+    /// copying it.
     pub fn read_page(&self, id: PageId) -> Result<Arc<[u8]>> {
+        Ok(match self.page_bytes(id)? {
+            PageBytes::Dirty(buf) => Arc::from(buf.to_vec().into_boxed_slice()),
+            PageBytes::Committed(buf) => buf,
+        })
+    }
+
+    /// The same page, borrowed where that is possible.
+    ///
+    /// A page this batch has already written is right here in memory, and
+    /// handing back a copy of it is a page-sized memcpy for nothing. The
+    /// b-tree reads a page at every level of every descent, so on a bulk
+    /// load that copy is the single most repeated thing the engine does.
+    pub fn page_bytes(&self, id: PageId) -> Result<PageBytes<'_>> {
         if let Some(buf) = self.dirty.get(&id) {
-            return Ok(Arc::from(buf.clone()));
+            return Ok(PageBytes::Dirty(buf));
         }
         if id < 2 || id >= self.base.page_count {
             return Err(Error::PageOutOfBounds(id));
         }
-        self.pager.read_page(id)
+        Ok(PageBytes::Committed(self.pager.read_page(id)?))
     }
 
     pub fn set_data_root(&mut self, root: PageId) {

@@ -5,8 +5,6 @@
 //! slotted-page complexity, which is the right trade while correctness is
 //! being established (phase 1). See docs/FORMAT.md for the byte layout.
 
-use std::sync::Arc;
-
 use crate::error::{Error, Result};
 use crate::page::{self, PageId, PageType, PAGE_HEADER_LEN};
 
@@ -38,7 +36,7 @@ pub(crate) enum Node {
 }
 
 impl Node {
-    pub(crate) fn decode(buf: &Arc<[u8]>, id: PageId) -> Result<Node> {
+    pub(crate) fn decode(buf: &[u8], id: PageId) -> Result<Node> {
         let bad = |what: &str| Error::corrupted(id, format!("node decode: {what}"));
         let count = u16::from_le_bytes(buf[6..8].try_into().expect("hdr")) as usize;
         let body = &buf[PAGE_HEADER_LEN..];
@@ -233,8 +231,10 @@ fn read_u64(buf: &[u8]) -> Option<(u64, &[u8])> {
 mod tests {
     use super::*;
 
-    fn arc(buf: Box<[u8]>) -> Arc<[u8]> {
-        Arc::from(buf)
+    /// Decoding takes a plain slice now, so this just names the step the
+    /// tests used to spell out.
+    fn arc(buf: Box<[u8]>) -> Box<[u8]> {
+        buf
     }
 
     #[test]
