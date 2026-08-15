@@ -351,14 +351,6 @@ fn plan_table<S: Source>(
             return Ok(());
         }
     };
-    if def.without_rowid {
-        plan.problems.push(Problem::Unsupported {
-            what: object.name.clone(),
-            reason: "it is a without rowid table, which this importer cannot read yet".to_string(),
-        });
-        return Ok(());
-    }
-
     note_constraints(&def, &object.name, plan);
 
     let survey = reader.survey_table(object)?;

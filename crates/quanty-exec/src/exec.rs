@@ -88,6 +88,18 @@ impl<S: Storage> Session<S> {
         self.run_parsed(&stmt)
     }
 
+    /// Execute a statement that is already built.
+    ///
+    /// Both front ends lower onto this AST, so this is the same door they
+    /// use with the parser taken off the front. It exists for callers that
+    /// construct statements instead of writing them: the sqlite import
+    /// writes a row per record, and rendering every value into text only to
+    /// parse it straight back would be work whose only product is the
+    /// chance of a formatting bug.
+    pub fn execute_ast(&mut self, stmt: &Statement) -> Result<Output, ExecError> {
+        self.run_parsed(stmt)
+    }
+
     fn run_parsed(&mut self, stmt: &Statement) -> Result<Output, ExecError> {
         match stmt {
             // transaction control drives the session's txn state
