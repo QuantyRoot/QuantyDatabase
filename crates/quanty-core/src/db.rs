@@ -24,7 +24,7 @@ use std::collections::HashSet;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use parking_lot::RwLock;
+use crate::sync::RwLock;
 
 use crate::btree::{self, Scan};
 use crate::commit::{self, CommitInfo};

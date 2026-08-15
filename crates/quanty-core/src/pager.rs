@@ -24,7 +24,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use parking_lot::{Mutex, MutexGuard, RwLock};
+use crate::sync::{Mutex, MutexGuard, RwLock};
 
 use crate::cache::PageCache;
 use crate::error::{Error, Result};
