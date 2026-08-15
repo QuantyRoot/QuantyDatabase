@@ -197,6 +197,10 @@ thousands of randomized inputs.
 
 ## ADR-016: An open transaction is a replayed statement list, for now
 
+*Superseded by ADR-021, which replaced the replay once the benchmark this
+record asked for showed it hurting. The reasoning below is kept because it
+is why the replacement looks the way it does.*
+
 Phase 4's third slice adds `begin` / `commit` / `rollback` across
 statements. The obvious implementation is to hold a core `WriteTx` open in
 the session for the transaction's lifetime. That does not typecheck, and
