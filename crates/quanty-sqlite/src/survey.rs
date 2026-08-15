@@ -193,6 +193,10 @@ pub struct ColumnSurvey {
     /// and reals can only become a float if every integer in it survives
     /// the trip, and past 2^53 they stop doing that.
     pub largest_integer: u64,
+    /// Bytes in the longest text or blob seen. A key or an index has a
+    /// length limit, so a caller deciding what to make of this column needs
+    /// to know its worst case before it starts writing rather than after.
+    pub longest_value: usize,
     pub is_rowid_alias: bool,
     pub is_virtual: bool,
 }
@@ -258,6 +262,7 @@ impl<S: Source> Reader<S> {
                 blobs: 0,
                 missing: 0,
                 largest_integer: 0,
+                longest_value: 0,
                 is_rowid_alias: def
                     .rowid_alias()
                     .is_some_and(|c| c.name.eq_ignore_ascii_case(&column.name)),
@@ -294,6 +299,11 @@ impl<S: Source> Reader<S> {
                         if let SqliteValue::Integer(n) = value {
                             survey.largest_integer = survey.largest_integer.max(n.unsigned_abs());
                         }
+                        survey.longest_value = survey.longest_value.max(match value {
+                            SqliteValue::Text(t) => t.len(),
+                            SqliteValue::Blob(b) => b.len(),
+                            _ => 0,
+                        });
                         match survey.affinity.logical_class(value) {
                             StorageClass::Null => survey.nulls += 1,
                             StorageClass::Integer => survey.integers += 1,

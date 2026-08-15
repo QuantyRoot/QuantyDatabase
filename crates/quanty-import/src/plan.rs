@@ -365,6 +365,24 @@ fn plan_table<S: Source>(
 
     // which declared columns can carry the key, and which have to be added
     let key_choice = choose_key(&def, &survey);
+
+    // falling back to the rowid is only an option where there is one. a
+    // without rowid table that cannot use its own primary key has nothing
+    // left to be keyed by, and saying that here is better than discovering
+    // it row by row in the writing pass.
+    if def.without_rowid {
+        if let KeyChoice::AddRowid { reason } = &key_choice {
+            plan.problems.push(Problem::Unsupported {
+                what: object.name.clone(),
+                reason: format!(
+                    "it is a without rowid table with {reason}, so there is no key left to \
+                     give it"
+                ),
+            });
+            return Ok(());
+        }
+    }
+
     let mut column_names = Names::new();
     let mut columns = Vec::new();
 
@@ -442,13 +460,30 @@ fn plan_table<S: Source>(
             survey_column.nulls > 0 || (survey_column.missing > 0 && default.is_none())
         };
 
+        // an index is a b-tree too, so a column with a value longer than a
+        // key may be stored but not indexed. the index is dropped rather
+        // than the table, and the note says so, because a missing index
+        // costs speed and a missing table costs data.
+        let mut indexed = !is_key && indexed.iter().any(|c| c.eq_ignore_ascii_case(&column.name));
+        if indexed && survey_column.longest_value > key_limit() {
+            plan.notes.push(Note::Skipped {
+                what: format!("the index on {}.{}", object.name, column.name),
+                reason: format!(
+                    "it holds a value of {} bytes and an index key stops at {}",
+                    survey_column.longest_value,
+                    key_limit()
+                ),
+            });
+            indexed = false;
+        }
+
         columns.push(ColumnPlan {
             source_name: column.name.clone(),
             name: name.clone(),
             ty,
             nullable,
             key: is_key,
-            indexed: !is_key && indexed.iter().any(|c| c.eq_ignore_ascii_case(&column.name)),
+            indexed,
             default,
             source: ValueSource::Declared(index),
         });
@@ -514,6 +549,17 @@ enum KeyChoice {
 }
 
 /// Pick a key, and never fail to pick one.
+/// The longest key our b-tree accepts, which depends on the page size a
+/// database was created with.
+///
+/// This is not a detail the importer can leave to the writer. A key that is
+/// one byte too long fails on the row that holds it, halfway through a
+/// table, with a database already part written, which is exactly the class
+/// of surprise the planning pass exists to move to the front.
+fn key_limit() -> usize {
+    quanty_core::max_key_len(quanty_core::PagerOptions::default().page_size)
+}
+
 fn choose_key(def: &quanty_sqlite::TableDef, survey: &TableSurvey) -> KeyChoice {
     if let Some(alias) = def.rowid_alias() {
         return KeyChoice::Columns(vec![alias.name.clone()]);
@@ -539,6 +585,19 @@ fn choose_key(def: &quanty_sqlite::TableDef, survey: &TableSurvey) -> KeyChoice 
             Some(column) if column.is_virtual => {
                 return KeyChoice::AddRowid {
                     reason: format!("a primary key over the virtual column {key}"),
+                }
+            }
+            // a key column holding a value longer than the b-tree allows
+            // cannot be a key here, and the rowid can, so the table still
+            // imports and the report says what changed
+            Some(column) if column.longest_value > key_limit() => {
+                return KeyChoice::AddRowid {
+                    reason: format!(
+                        "a primary key over {key}, which holds a value of {} bytes and keys \
+                         stop at {}",
+                        column.longest_value,
+                        key_limit()
+                    ),
                 }
             }
             Some(_) => {}
