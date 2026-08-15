@@ -162,9 +162,52 @@ impl<S: Storage> Pager<S> {
             touched_freelist: false,
             allow_reuse: true,
             freelist_override: None,
+            savepoint: None,
             base,
             dirty: BTreeMap::new(),
         }
+    }
+
+    /// Put a suspended batch back to work.
+    ///
+    /// Refuses a batch whose base is no longer the committed state. That
+    /// can only happen if another writer committed while this one was
+    /// suspended, and continuing would quietly build on a snapshot that no
+    /// longer exists, overwriting their commit at ours.
+    ///
+    /// The refusal consumes the batch, which is the rollback: an open
+    /// transaction has written nothing to disk, so discarding it leaves the
+    /// database exactly as the other writer left it. The message says so
+    /// rather than suggesting a retry of something that no longer exists.
+    pub fn resume(&self, batch: SuspendedBatch) -> Result<WriteBatch<'_, S>> {
+        let guard = self.writer.lock();
+        let current = self.committed.read().clone();
+        if current.txid != batch.base.txid {
+            return Err(Error::InvalidArgument(
+                "another writer committed while this transaction was open, so its writes were \
+                 made against a snapshot that no longer exists; the transaction is gone and the \
+                 work has to start again",
+            ));
+        }
+        Ok(WriteBatch {
+            pager: self,
+            _guard: guard,
+            base: batch.base,
+            next_page: batch.next_page,
+            dirty: batch.dirty,
+            data_root: batch.data_root,
+            catalog_root: batch.catalog_root,
+            freelist_root: batch.freelist_root,
+            commit_page: batch.commit_page,
+            refs_root: batch.refs_root,
+            reuse_pool: batch.reuse_pool,
+            chain_cursor: batch.chain_cursor,
+            deferred_free: batch.deferred_free,
+            touched_freelist: batch.touched_freelist,
+            allow_reuse: batch.allow_reuse,
+            freelist_override: batch.freelist_override,
+            savepoint: None,
+        })
     }
 }
 
@@ -198,14 +241,159 @@ pub struct WriteBatch<'p, S: Storage> {
     allow_reuse: bool,
     /// When set, the free list written at commit is exactly this list.
     freelist_override: Option<Vec<PageId>>,
+    /// Set while a statement runs, so that a statement which fails part
+    /// way through can be undone without discarding the whole batch.
+    savepoint: Option<Savepoint>,
+}
+
+/// Everything needed to put a batch back the way it was before a statement
+/// started: the scalars by value, and the pre-image of every page the
+/// statement touched.
+struct Savepoint {
+    next_page: PageId,
+    data_root: PageId,
+    catalog_root: PageId,
+    freelist_root: PageId,
+    commit_page: PageId,
+    refs_root: PageId,
+    reuse_pool: Vec<PageId>,
+    chain_cursor: PageId,
+    deferred_free: Vec<PageId>,
+    touched_freelist: bool,
+    allow_reuse: bool,
+    freelist_override: Option<Vec<PageId>>,
+    /// Page id to what it held before, or `None` where it did not exist.
+    /// Recorded once per page, on first touch.
+    undo: BTreeMap<PageId, Option<Box<[u8]>>>,
+}
+
+/// A write batch with its borrows put down.
+///
+/// A batch holds two kinds of thing: borrowed ones, the pager and the
+/// writer lock, and owned ones, the base metadata and the pages written so
+/// far. Only the borrowed half is what stops a batch from being kept
+/// between calls, so this is the owned half on its own, which a caller can
+/// hold for as long as it likes and hand back to `Pager::resume`.
+///
+/// This is what lets a transaction spanning several statements cost what
+/// its writes cost rather than the square of them (ADR-016, ADR-021).
+pub struct SuspendedBatch {
+    base: Meta,
+    next_page: PageId,
+    dirty: BTreeMap<PageId, Box<[u8]>>,
+    data_root: PageId,
+    catalog_root: PageId,
+    freelist_root: PageId,
+    commit_page: PageId,
+    refs_root: PageId,
+    reuse_pool: Vec<PageId>,
+    chain_cursor: PageId,
+    deferred_free: Vec<PageId>,
+    touched_freelist: bool,
+    allow_reuse: bool,
+    freelist_override: Option<Vec<PageId>>,
+}
+
+impl SuspendedBatch {
+    /// Pages written so far, which is what this holds in memory.
+    pub fn dirty_pages(&self) -> usize {
+        self.dirty.len()
+    }
 }
 
 impl<S: Storage> WriteBatch<'_, S> {
+    /// Put the borrows down and keep the work.
+    pub fn suspend(self) -> SuspendedBatch {
+        SuspendedBatch {
+            base: self.base,
+            next_page: self.next_page,
+            dirty: self.dirty,
+            data_root: self.data_root,
+            catalog_root: self.catalog_root,
+            freelist_root: self.freelist_root,
+            commit_page: self.commit_page,
+            refs_root: self.refs_root,
+            reuse_pool: self.reuse_pool,
+            chain_cursor: self.chain_cursor,
+            deferred_free: self.deferred_free,
+            touched_freelist: self.touched_freelist,
+            allow_reuse: self.allow_reuse,
+            freelist_override: self.freelist_override,
+        }
+    }
+
+    /// Start recording, so that everything from here can be undone.
+    ///
+    /// One level only, which is all a statement needs: a statement either
+    /// joins the transaction whole or does not join it at all.
+    pub fn savepoint(&mut self) {
+        self.savepoint = Some(Savepoint {
+            next_page: self.next_page,
+            data_root: self.data_root,
+            catalog_root: self.catalog_root,
+            freelist_root: self.freelist_root,
+            commit_page: self.commit_page,
+            refs_root: self.refs_root,
+            reuse_pool: self.reuse_pool.clone(),
+            chain_cursor: self.chain_cursor,
+            deferred_free: self.deferred_free.clone(),
+            touched_freelist: self.touched_freelist,
+            allow_reuse: self.allow_reuse,
+            freelist_override: self.freelist_override.clone(),
+            undo: BTreeMap::new(),
+        });
+    }
+
+    /// Keep what the statement did.
+    pub fn release_savepoint(&mut self) {
+        self.savepoint = None;
+    }
+
+    /// Put everything back the way it was when `savepoint` was called.
+    pub fn rollback_savepoint(&mut self) {
+        let Some(mark) = self.savepoint.take() else {
+            return;
+        };
+        for (id, before) in mark.undo {
+            match before {
+                Some(buf) => {
+                    self.dirty.insert(id, buf);
+                }
+                None => {
+                    self.dirty.remove(&id);
+                }
+            }
+        }
+        self.next_page = mark.next_page;
+        self.data_root = mark.data_root;
+        self.catalog_root = mark.catalog_root;
+        self.freelist_root = mark.freelist_root;
+        self.commit_page = mark.commit_page;
+        self.refs_root = mark.refs_root;
+        self.reuse_pool = mark.reuse_pool;
+        self.chain_cursor = mark.chain_cursor;
+        self.deferred_free = mark.deferred_free;
+        self.touched_freelist = mark.touched_freelist;
+        self.allow_reuse = mark.allow_reuse;
+        self.freelist_override = mark.freelist_override;
+    }
+
+    /// Record what a page held before this statement touched it. Called on
+    /// every path that writes to `dirty`, once per page.
+    fn record(&mut self, id: PageId) {
+        if let Some(mark) = &mut self.savepoint {
+            mark.undo
+                .entry(id)
+                .or_insert_with(|| self.dirty.get(&id).cloned());
+        }
+    }
+
     /// Allocate a page with an initialized header, reusing a free page
     /// when one is available and extending the file otherwise. Only pages
     /// allocated here are writable in this batch.
     pub fn allocate(&mut self, page_type: PageType) -> PageId {
         let id = self.take_page_id();
+        self.record(id);
         let mut buf = vec![0u8; self.pager.page_size as usize].into_boxed_slice();
         page::init_header(&mut buf, page_type);
         self.dirty.insert(id, buf);
@@ -255,6 +443,7 @@ impl<S: Storage> WriteBatch<'_, S> {
     /// Mutable access to a page allocated in this batch. Refuses committed
     /// pages: copy-on-write is a hard rule, not a convention.
     pub fn page_mut(&mut self, id: PageId) -> Result<&mut [u8]> {
+        self.record(id);
         match self.dirty.get_mut(&id) {
             Some(buf) => Ok(buf),
             None => Err(Error::PageNotWritable(id)),
@@ -361,6 +550,7 @@ impl<S: Storage> WriteBatch<'_, S> {
             let page_id = match remaining.iter().position(|id| writable.contains(id)) {
                 Some(i) => {
                     let id = remaining.swap_remove(i);
+                    self.record(id);
                     let mut buf = vec![0u8; self.pager.page_size as usize].into_boxed_slice();
                     page::init_header(&mut buf, PageType::FreeList);
                     self.dirty.insert(id, buf);

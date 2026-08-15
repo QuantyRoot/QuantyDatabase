@@ -30,7 +30,7 @@ use crate::btree::{self, Scan};
 use crate::commit::{self, CommitInfo};
 use crate::error::{Error, Result};
 use crate::page::{PageId, NIL_PAGE};
-use crate::pager::{Pager, PagerOptions, WriteBatch};
+use crate::pager::{Pager, PagerOptions, SuspendedBatch, WriteBatch};
 use crate::refs::{self, BranchRef, DEFAULT_BRANCH};
 use crate::storage::{FileStorage, MemStorage, Storage};
 
@@ -283,6 +283,21 @@ impl<S: Storage> Db<S> {
     }
 
     /// A read snapshot of the current branch head.
+    /// Put a suspended transaction back to work.
+    ///
+    /// Fails if another writer has committed in the meantime, because the
+    /// writes being resumed were made against a snapshot that no longer
+    /// exists. Building on it would overwrite that commit at ours.
+    pub fn resume(&self, tx: SuspendedTx) -> Result<WriteTx<'_, S>> {
+        Ok(WriteTx {
+            batch: self.pager.resume(tx.batch)?,
+            root: tx.root,
+            catalog_root: tx.catalog_root,
+            branch: tx.branch,
+            parent: tx.parent,
+        })
+    }
+
     pub fn snapshot(&self) -> Snapshot<'_, S> {
         let meta = self.pager.committed_meta();
         let head = self
@@ -666,6 +681,61 @@ pub struct WriteTx<'db, S: Storage> {
     catalog_root: PageId,
     branch: String,
     parent: BranchRef,
+}
+
+/// A write transaction with its borrows put down, so that a caller can
+/// keep one across several statements without holding the database.
+///
+/// This is what an open `begin` is: the writes made so far, in memory,
+/// touching nothing on disk. A process killed while holding one leaves the
+/// database exactly as it was, because none of this has been written.
+pub struct SuspendedTx {
+    batch: SuspendedBatch,
+    root: PageId,
+    catalog_root: PageId,
+    branch: String,
+    parent: BranchRef,
+}
+
+impl SuspendedTx {
+    /// Pages held in memory, which is what an open transaction costs.
+    pub fn dirty_pages(&self) -> usize {
+        self.batch.dirty_pages()
+    }
+}
+
+impl<'db, S: Storage> WriteTx<'db, S> {
+    /// Put the borrows down and keep the writes.
+    pub fn suspend(self) -> SuspendedTx {
+        SuspendedTx {
+            batch: self.batch.suspend(),
+            root: self.root,
+            catalog_root: self.catalog_root,
+            branch: self.branch,
+            parent: self.parent,
+        }
+    }
+
+    /// Start a point this transaction can be put back to.
+    pub fn savepoint(&mut self) {
+        self.batch.savepoint();
+    }
+
+    pub fn release_savepoint(&mut self) {
+        self.batch.release_savepoint();
+    }
+
+    /// Undo everything since `savepoint`, roots included.
+    pub fn rollback_savepoint(&mut self, roots: (PageId, PageId)) {
+        self.batch.rollback_savepoint();
+        self.root = roots.0;
+        self.catalog_root = roots.1;
+    }
+
+    /// The roots as they stand, so a caller can put them back.
+    pub fn roots(&self) -> (PageId, PageId) {
+        (self.root, self.catalog_root)
+    }
 }
 
 impl<S: Storage> WriteTx<'_, S> {
