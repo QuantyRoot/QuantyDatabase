@@ -360,6 +360,12 @@ impl Parser {
         } else {
             let mut cols = Vec::new();
             loop {
+                // naming the construct beats the generic message: told that
+                // 'case' is reserved and could be quoted, a reader will try
+                // quoting it, which is not the problem they have
+                if self.at_kw("case") {
+                    return Err(self.not_yet("case expressions"));
+                }
                 if !matches!(self.peek(), Tok::Word(_) | Tok::Quoted(_)) {
                     return Err(ParseError::at(
                         self.at(),
@@ -511,6 +517,12 @@ impl Parser {
 
     /// One table reference: a bare name, no alias.
     fn one_table(&mut self) -> Result<String, ParseError> {
+        // a parenthesis here is a subquery or a parenthesised join, and
+        // "expected a table name" would send the reader looking for a typo
+        // instead of telling them the construct is not supported
+        if self.peek() == &Tok::LParen {
+            return Err(self.not_yet("subqueries and parentheses in from"));
+        }
         let name = self.ident("a table name")?;
         if self.peek() == &Tok::Dot {
             return Err(ParseError::at(
