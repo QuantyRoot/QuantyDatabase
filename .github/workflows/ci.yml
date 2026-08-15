@@ -111,3 +111,25 @@ jobs:
         run: cargo test -p quanty-sqlite --release --test reader_fuzz -- --nocapture
         env:
           QUANTY_FUZZ_SECS: "600"
+
+  benchmarks:
+    name: benchmarks against sqlite
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: install sqlite3
+        run: sudo apt-get update && sudo apt-get install -y sqlite3
+      - name: time both engines on the same machine
+        run: |
+          cargo build --release -p quanty-cli -p quanty-bench
+          ./target/release/quanty-bench --check | tee bench.txt
+      - name: put the table in the job summary
+        if: always()
+        run: |
+          echo '## Benchmarks against SQLite' >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          cat bench.txt >> $GITHUB_STEP_SUMMARY || true
+          echo '```' >> $GITHUB_STEP_SUMMARY

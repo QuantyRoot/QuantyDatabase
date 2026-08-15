@@ -1,0 +1,14 @@
+[package]
+name = "quanty-bench"
+description = "Times QuantyDB against SQLite on the same machine, through both engines' own command line tools"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "quanty-bench"
+path = "src/main.rs"
+
+[dependencies]

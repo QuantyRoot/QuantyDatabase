@@ -185,6 +185,29 @@ Acceptance:
 - [ ] docs/EXTENSIONS.md documents the surface and states plainly that it is
       unstable before 1.0
 
+## Known problems, measured
+
+Things the benchmark suite found, kept here with their numbers rather than
+in somebody's memory. Each is a defect with a known cause, not a decision.
+
+**A statement inside an open transaction replays every statement before
+it.** ADR-016 chose a replay model for multi-statement transactions, which
+is simple and correct and turns out to be quadratic: each new statement
+re-runs the whole buffer to validate against it, so N statements cost N^2/2
+statement executions. Measured at 5000 rows in 50 batched inserts: 2.95
+seconds inside one transaction against 0.15 seconds as 50 separate
+transactions, and 294 times slower than sqlite doing the same thing. A
+transaction is therefore slower than no transaction, which is backwards,
+and bulk loading, the main reason to open one, is where it hurts most. The
+importer is unaffected because it commits per batch. Fixing this means the
+buffer holding a write batch instead of a statement list.
+
+**Everything durable is about 4x sqlite.** Insert, point lookup, scan and
+indexed lookup all land between 3.9 and 4.4 times sqlite's time on the same
+machine, with no optimisation work done anywhere. That is a starting point
+rather than a problem, and it is written down so the next measurement has
+something to move against.
+
 ## Later / unscheduled
 
 Live query subscriptions, Postgres wire protocol, vector index, real merge
