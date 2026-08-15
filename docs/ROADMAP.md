@@ -200,11 +200,39 @@ where sqlite does it in 10 milliseconds and we do it in 129 with a single
 fsync on both sides. That is CPU and memory work on our side, and it is the
 next thing to measure.
 
-**Everything durable is about 2.5x sqlite.** Insert, point lookup, scan and
-indexed lookup all land between 2.4 and 2.7 times sqlite's time on the CI
-runner, with no optimisation work done anywhere. That is a starting point
-rather than a problem, and it is written down so the next measurement has
-something to move against.
+**Reading is close, writing is not.** With reads timed on their own,
+against a database loaded beforehand, the picture separates cleanly:
+
+| what | quanty | sqlite | ratio |
+|---|---|---|---|
+| open a database, do nothing | 1.1 ms | 1.2 ms | 0.92x |
+| 5000 lookups by key | 44 ms | 31 ms | 1.44x |
+| 20 full scans of 5000 rows | 43 ms | 24 ms | 1.75x |
+| 5000 lookups by secondary index | 77 ms | 36 ms | 2.13x |
+| 5000 rows, one commit per batch | 145 ms | 36 ms | 4.09x |
+| 5000 rows, one transaction | 130 ms | 10 ms | 12.82x |
+
+So reads are within a factor of two and opening is a hair faster. The gap
+is writing, and it is clearest where fsync does not hide it: 130
+milliseconds against 10 for the same 5000 rows.
+
+**Where the write time goes, measured rather than guessed.** Of those 130
+milliseconds, parsing the script is 4.7, and the secondary index is about a
+third (86 ms without it, 133 with). Row width barely matters: the same load
+with a narrower row takes the same time. What is left is the per-insert
+cost in the b-tree, roughly 16 microseconds a row, and the reason is in
+`insert_rec`: every single insert reads its leaf, decodes the whole node
+into vectors, inserts one entry, and encodes the whole node back, at every
+level of the tree. A leaf holding a hundred entries is therefore decoded
+and re-encoded a hundred times while it fills.
+
+The fix is to stop paying for the whole node on every entry. In rising
+order of effort: keep decoded nodes for the pages on the current insert
+path so consecutive inserts into the same leaf decode once instead of every
+time; or edit the encoded page in place, which is what sqlite does and what
+makes its number what it is. The first is a cache with an invalidation
+rule; the second is a change to the node format's write path. Neither
+should start before the benchmark can prove which one bought what.
 
 ## Later / unscheduled
 

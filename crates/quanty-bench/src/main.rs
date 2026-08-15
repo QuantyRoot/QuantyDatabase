@@ -41,6 +41,14 @@
 //! lookup through a secondary index. They are the shapes where a storage
 //! engine's basic choices show, and they are the ones we can express in
 //! both languages, since our dialect has no aggregates yet.
+//!
+//! ## Reads are timed on their own
+//!
+//! The read workloads run against a database loaded beforehand, outside the
+//! measurement, so what they report is reading rather than the loading that
+//! used to dominate them. The `startup` row is the floor for all of them:
+//! open the database, run nothing, exit. Subtract it mentally before
+//! reading anything into a small difference.
 
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -49,14 +57,33 @@ use std::time::{Duration, Instant};
 
 const ROWS: usize = 5_000;
 const BATCH: usize = 100;
-const LOOKUPS: usize = 500;
-const SCANS: usize = 5;
+const LOOKUPS: usize = 5_000;
+const SCANS: usize = 20;
 /// Runs per workload; the median is reported, so one unlucky run does not
 /// decide anything.
 const REPEATS: usize = 3;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Phase {
+    /// Timed from an empty database: what writing costs.
+    Write(Mode),
+    /// Timed against a database prepared beforehand and not timed, so the
+    /// reading is what shows rather than the loading that preceded it.
+    Read,
+}
+
+impl Phase {
+    fn label(self) -> &'static str {
+        match self {
+            Phase::Write(mode) => mode.label(),
+            Phase::Read => "read",
+        }
+    }
+}
+
 struct Workload {
     name: &'static str,
+    phase: Phase,
     /// What it does, for the table the report prints. Built from the
     /// constants above rather than written out, because a label that says
     /// 50000 while the run does 5000 is how a benchmark starts lying
@@ -97,6 +124,9 @@ const DURABLE_CEILING: f64 = 15.0;
 /// ceiling is looser, and lowering it is the point of the next round.
 const BULK_CEILING: f64 = 25.0;
 
+/// And for reads, against a database that was loaded beforehand.
+const READ_CEILING: f64 = 25.0;
+
 fn main() {
     let check = std::env::args().any(|a| a == "--check");
     let quanty = binary("quanty");
@@ -111,29 +141,65 @@ fn main() {
     println!("scratch: {}\n", dir.display());
 
     let workloads = workloads();
-    let mut rows = Vec::new();
 
-    for mode in [Mode::Durable, Mode::Bulk] {
-        for workload in &workloads {
-            let ours = time_engine(&dir, &quanty, workload, mode, Engine::Quanty);
-            let theirs = time_engine(&dir, &sqlite, workload, mode, Engine::Sqlite);
-            rows.push((mode, workload.name, workload.what.clone(), ours, theirs));
-        }
+    // one prepared database per engine, loaded once and not timed, so the
+    // read numbers are reading rather than loading
+    let prepared = [
+        (Engine::Quanty, prepare(&dir, &quanty, Engine::Quanty)),
+        (Engine::Sqlite, prepare(&dir, &sqlite, Engine::Sqlite)),
+    ];
+    let prepared_for = |engine: Engine| -> PathBuf {
+        prepared
+            .iter()
+            .find(|(e, _)| {
+                matches!(
+                    (e, engine),
+                    (Engine::Quanty, Engine::Quanty) | (Engine::Sqlite, Engine::Sqlite)
+                )
+            })
+            .map(|(_, path)| path.clone())
+            .expect("both engines were prepared")
+    };
+
+    let mut rows = Vec::new();
+    for workload in &workloads {
+        let ours = time_engine(
+            &dir,
+            &quanty,
+            workload,
+            Engine::Quanty,
+            &prepared_for(Engine::Quanty),
+        );
+        let theirs = time_engine(
+            &dir,
+            &sqlite,
+            workload,
+            Engine::Sqlite,
+            &prepared_for(Engine::Sqlite),
+        );
+        rows.push((
+            workload.phase,
+            workload.name,
+            workload.what.clone(),
+            ours,
+            theirs,
+        ));
     }
 
     print_table(&rows);
 
     if check {
         let mut over = Vec::new();
-        for (mode, name, _, ours, theirs) in &rows {
+        for (phase, name, _, ours, theirs) in &rows {
             let ratio = ours.as_secs_f64() / theirs.as_secs_f64();
             // both modes gate now. bulk was exempt while an open
             // transaction replayed its whole buffer per statement, which
             // was quadratic; ADR-021 replaced that with a suspended write
             // batch and the ceiling below is what the fix bought.
-            let ceiling = match mode {
-                Mode::Durable => DURABLE_CEILING,
-                Mode::Bulk => BULK_CEILING,
+            let ceiling = match phase {
+                Phase::Write(Mode::Durable) => DURABLE_CEILING,
+                Phase::Write(Mode::Bulk) => BULK_CEILING,
+                Phase::Read => READ_CEILING,
             };
             if ratio > ceiling {
                 over.push(format!("{name}: {ratio:.1}x"));
@@ -156,39 +222,84 @@ enum Engine {
     Sqlite,
 }
 
+/// Load a database for the read workloads, once, outside any measurement.
+fn prepare(dir: &Path, binary: &Path, engine: Engine) -> PathBuf {
+    let (db, script, args) = match engine {
+        Engine::Quanty => {
+            let db = dir.join("prepared.qdb");
+            let script = dir.join("prepare.qql");
+            std::fs::write(&script, quanty_insert(Mode::Bulk)).expect("writing the script");
+            let made = Command::new(binary)
+                .args(["create", &path(&db)])
+                .stdout(std::process::Stdio::null())
+                .status()
+                .expect("creating the database");
+            assert!(made.success());
+            (db.clone(), script, vec!["shell".to_string(), path(&db)])
+        }
+        Engine::Sqlite => {
+            let db = dir.join("prepared.sqlite");
+            let script = dir.join("prepare.sql");
+            std::fs::write(&script, sqlite_insert(Mode::Bulk)).expect("writing the script");
+            (db.clone(), script, vec![path(&db)])
+        }
+    };
+    let input = std::fs::File::open(&script).expect("opening the script");
+    let status = Command::new(binary)
+        .args(&args)
+        .stdin(input)
+        .stdout(std::process::Stdio::null())
+        .status()
+        .expect("preparing the database");
+    assert!(status.success(), "could not prepare {}", db.display());
+    db
+}
+
 /// Run one workload `REPEATS` times against one engine and take the median.
 fn time_engine(
     dir: &Path,
     binary: &Path,
     workload: &Workload,
-    mode: Mode,
     engine: Engine,
+    prepared: &Path,
 ) -> Duration {
+    let mode = match workload.phase {
+        Phase::Write(mode) => mode,
+        Phase::Read => Mode::Bulk,
+    };
     let mut times = Vec::with_capacity(REPEATS);
     for run in 0..REPEATS {
-        let name = format!("{}-{}-{run}", workload.name, mode.label());
+        let name = format!("{}-{}-{run}", workload.name, workload.phase.label());
         let (db, script, args) = match engine {
             Engine::Quanty => {
-                let db = dir.join(format!("{name}.qdb"));
+                let db = match workload.phase {
+                    Phase::Read => prepared.to_path_buf(),
+                    Phase::Write(_) => dir.join(format!("{name}.qdb")),
+                };
                 let script = dir.join(format!("{name}.qql"));
                 std::fs::write(&script, (workload.quanty)(mode)).expect("writing the script");
                 (db.clone(), script, vec!["shell".to_string(), path(&db)])
             }
-            // sqlite creates its file on open and we do not, so the create
-            // step is inside the timed region below for us and inside
-            // sqlite's own run for it. neither engine gets it for free.
             Engine::Sqlite => {
-                let db = dir.join(format!("{name}.sqlite"));
+                let db = match workload.phase {
+                    Phase::Read => prepared.to_path_buf(),
+                    Phase::Write(_) => dir.join(format!("{name}.sqlite")),
+                };
                 let script = dir.join(format!("{name}.sql"));
                 std::fs::write(&script, (workload.sqlite)(mode)).expect("writing the script");
                 (db.clone(), script, vec![path(&db)])
             }
         };
-        let _ = std::fs::remove_file(&db);
+        if let Phase::Write(_) = workload.phase {
+            let _ = std::fs::remove_file(&db);
+        }
 
         let input = std::fs::File::open(&script).expect("opening the script");
         let started = Instant::now();
-        if let Engine::Quanty = engine {
+        // sqlite creates its file on open and we do not, so for the write
+        // workloads the create step is inside the timed region for us and
+        // inside sqlite's own run for it. neither engine gets it for free.
+        if let (Engine::Quanty, Phase::Write(_)) = (engine, workload.phase) {
             let made = Command::new(binary)
                 .args(["create", &path(&db)])
                 .stdout(std::process::Stdio::null())
@@ -217,26 +328,44 @@ fn time_engine(
 fn workloads() -> Vec<Workload> {
     vec![
         Workload {
+            name: "startup",
+            phase: Phase::Read,
+            what: "open a database and do nothing".to_string(),
+            quanty: |_| String::new(),
+            sqlite: |_| String::new(),
+        },
+        Workload {
             name: "insert",
-            what: format!("{ROWS} rows in batches of {BATCH}"),
+            phase: Phase::Write(Mode::Durable),
+            what: format!("{ROWS} rows in batches of {BATCH}, one commit each"),
+            quanty: quanty_insert,
+            sqlite: sqlite_insert,
+        },
+        Workload {
+            name: "insert",
+            phase: Phase::Write(Mode::Bulk),
+            what: format!("{ROWS} rows in batches of {BATCH}, one transaction"),
             quanty: quanty_insert,
             sqlite: sqlite_insert,
         },
         Workload {
             name: "lookup",
-            what: format!("that, then {LOOKUPS} lookups by key"),
+            phase: Phase::Read,
+            what: format!("{LOOKUPS} lookups by key"),
             quanty: quanty_lookup,
             sqlite: sqlite_lookup,
         },
         Workload {
             name: "scan",
-            what: format!("that, then {SCANS} full scans"),
+            phase: Phase::Read,
+            what: format!("{SCANS} full scans of {ROWS} rows"),
             quanty: quanty_scan,
             sqlite: sqlite_scan,
         },
         Workload {
             name: "indexed",
-            what: format!("that, then {LOOKUPS} lookups by index"),
+            phase: Phase::Read,
+            what: format!("{LOOKUPS} lookups through a secondary index"),
             quanty: quanty_indexed,
             sqlite: sqlite_indexed,
         },
@@ -308,42 +437,42 @@ fn sqlite_insert(mode: Mode) -> String {
     s
 }
 
-/// The read workloads load the table first, so what they time is the load
-/// plus the reads. The insert row above is what separates the two.
-fn quanty_lookup(mode: Mode) -> String {
-    let mut s = quanty_insert(mode);
+/// The read scripts run against a database prepared beforehand, so they
+/// hold nothing but the reads.
+fn quanty_lookup(_mode: Mode) -> String {
+    let mut s = String::new();
     for key in lookup_keys() {
         let _ = writeln!(s, "get bench {{ name, score }} where id = {key}");
     }
     s
 }
 
-fn sqlite_lookup(mode: Mode) -> String {
-    let mut s = sqlite_insert(mode);
+fn sqlite_lookup(_mode: Mode) -> String {
+    let mut s = String::new();
     for key in lookup_keys() {
         let _ = writeln!(s, "select name, score from bench where id = {key};");
     }
     s
 }
 
-fn quanty_scan(mode: Mode) -> String {
-    let mut s = quanty_insert(mode);
+fn quanty_scan(_mode: Mode) -> String {
+    let mut s = String::new();
     for _ in 0..SCANS {
         s.push_str("get bench { id, name, score }\n");
     }
     s
 }
 
-fn sqlite_scan(mode: Mode) -> String {
-    let mut s = sqlite_insert(mode);
+fn sqlite_scan(_mode: Mode) -> String {
+    let mut s = String::new();
     for _ in 0..SCANS {
         s.push_str("select id, name, score from bench;\n");
     }
     s
 }
 
-fn quanty_indexed(mode: Mode) -> String {
-    let mut s = quanty_insert(mode);
+fn quanty_indexed(_mode: Mode) -> String {
+    let mut s = String::new();
     for key in lookup_keys() {
         let _ = writeln!(
             s,
@@ -354,8 +483,8 @@ fn quanty_indexed(mode: Mode) -> String {
     s
 }
 
-fn sqlite_indexed(mode: Mode) -> String {
-    let mut s = sqlite_insert(mode);
+fn sqlite_indexed(_mode: Mode) -> String {
+    let mut s = String::new();
     for key in lookup_keys() {
         let _ = writeln!(
             s,
@@ -370,17 +499,17 @@ fn sqlite_indexed(mode: Mode) -> String {
 // reporting
 // ---------------------------------------------------------------------------
 
-fn print_table(rows: &[(Mode, &str, String, Duration, Duration)]) {
+fn print_table(rows: &[(Phase, &str, String, Duration, Duration)]) {
     println!(
         "{:<9} {:<9} {:<38} {:>10} {:>10} {:>9}",
-        "mode", "workload", "what", "quanty", "sqlite", "ratio"
+        "phase", "workload", "what", "quanty", "sqlite", "ratio"
     );
     println!("{}", "-".repeat(89));
-    for (mode, name, what, ours, theirs) in rows {
+    for (phase, name, what, ours, theirs) in rows {
         let ratio = ours.as_secs_f64() / theirs.as_secs_f64();
         println!(
             "{:<9} {:<9} {:<38} {:>10} {:>10} {:>8.2}x",
-            mode.label(),
+            phase.label(),
             name,
             what,
             millis(*ours),
@@ -396,13 +525,13 @@ fn print_table(rows: &[(Mode, &str, String, Duration, Duration)]) {
 
     // a machine readable line per result, so a CI job can keep them
     println!();
-    for (mode, name, _, ours, theirs) in rows {
+    for (phase, name, _, ours, theirs) in rows {
         println!(
-            "RESULT {mode} {name} quanty_ms={:.1} sqlite_ms={:.1} ratio={:.3}",
+            "RESULT {phase} {name} quanty_ms={:.1} sqlite_ms={:.1} ratio={:.3}",
             ours.as_secs_f64() * 1000.0,
             theirs.as_secs_f64() * 1000.0,
             ours.as_secs_f64() / theirs.as_secs_f64(),
-            mode = mode.label()
+            phase = phase.label()
         );
     }
 }
