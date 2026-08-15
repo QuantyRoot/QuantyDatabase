@@ -541,3 +541,57 @@ milliseconds instead of 2950, and a transaction is now faster than no
 transaction, as it should be. Against sqlite the gap on that workload is
 12.7 times rather than 294, which is the next thing to look at rather than
 the end of it.
+
+## ADR-022: The server has no dependencies either, so it is threads
+
+Phase 5 was written as "binary protocol, tokio server". That line predates
+ADR-020, which took the workspace to zero dependencies by writing out the
+last two, and it was never reconciled. The README now advertises the zero,
+so the question had to be answered before anything went into a Cargo.toml:
+does the server get an exception, or does the claim stand as written.
+
+**The claim stands as written. No tokio, no async runtime, no dependency
+anywhere in the workspace.** The server is built on the standard library.
+
+This is a product decision, not a technical one. ADR-008 always allowed
+dependencies above the core, so tokio was permitted by the letter of the
+rules; what it was not permitted by is the sentence on the front page. A
+qualified claim ("the core has none, the server has some") is a weaker thing
+to own than an unqualified one, and the unqualified one is only worth
+keeping if it survives the first phase that makes it inconvenient. This is
+that phase.
+
+**The consequence is thread per connection**, because that is the only I/O
+model the standard library has. `std::net` offers blocking reads and
+`set_nonblocking`, but no readiness primitive: no epoll, no kqueue, no
+`poll`. Getting one means either the `libc` crate, which is a dependency, or
+declaring the syscalls `extern "C"` by hand, which is unsafe code sitting
+under the connection handler and platform specific on top. ADR-016 refused
+unsafe to save work in a path nobody had benchmarked and ADR-018 refused it
+again at a wider blast radius; refusing it a third time here is consistent
+rather than novel. So: one thread per connection, blocking reads, writes
+serialized through a queue as ADR-003 already requires.
+
+**The price, stated plainly, is the first acceptance criterion.** Phase 5
+asks for 10k idle connections plus 1k active mixed QPS on a 2 vCPU box,
+stable for 30 minutes. Thread per connection meets that or it does not, and
+which one is a measurement nobody here has taken. What is known: 10k idle
+threads is 10k kernel tasks, each blocked in `read`, which Linux handles far
+better than the model's reputation suggests, and the stack cost is tunable
+down from the 2 MiB default via `Builder::stack_size`. What is not known is
+what 1k QPS of scheduling churn costs on two cores, and there are two limits
+outside the process that can refuse the number outright: the open file
+limit and the process limit. Neither is a code problem and both belong in
+the acceptance test rather than in an assumption here.
+
+So the acceptance test is the decision procedure. It runs early in the
+phase, not at the end, because it is the thing that can invalidate this
+record. If it fails on the model rather than on tuning, the fork reopens
+with numbers attached, which is the only form in which ADR-016 allows a
+rewrite of something this central. Per ADR-009 the honest position today is
+that this is expected to hold and has not been shown to.
+
+Two things this record does not decide. The wire format lives in
+docs/PROTOCOL.md and is independent of the runtime; it would look the same
+under tokio. Where auth tokens are stored and how they are revoked is still
+open, and the protocol reserves room for it rather than answering it.
