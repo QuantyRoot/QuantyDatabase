@@ -1,0 +1,18 @@
+[package]
+name = "quanty-cli"
+description = "The quanty command line tool"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "quanty"
+path = "src/main.rs"
+
+[dependencies]
+quanty-core = { path = "../quanty-core" }
+quanty-exec = { path = "../quanty-exec" }
+quanty-import = { path = "../quanty-import" }
+quanty-sqlite = { path = "../quanty-sqlite" }

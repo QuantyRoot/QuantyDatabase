@@ -5,6 +5,7 @@ members = [
     "crates/quanty-exec",
     "crates/quanty-sqlite",
     "crates/quanty-import",
+    "crates/quanty-cli",
 ]
 resolver = "2"
 

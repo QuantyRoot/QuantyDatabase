@@ -62,6 +62,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "quanty-cli"
+version = "0.1.1"
+dependencies = [
+ "quanty-core",
+ "quanty-exec",
+ "quanty-import",
+ "quanty-sqlite",
+]
+
+[[package]]
 name = "quanty-core"
 version = "0.1.1"
 dependencies = [
