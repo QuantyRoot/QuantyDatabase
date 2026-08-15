@@ -12,7 +12,7 @@
 //! Tuple encoding is order preserving and prefix friendly, so table scans
 //! and index probes are plain range scans.
 
-use quanty_core::{decode_key, encode_key, Db, Storage, Value, WriteTx};
+use quanty_core::{decode_key, encode_key, Db, Storage, SuspendedTx, Value, WriteTx};
 use quanty_ql::ast::{AsOf, ColumnRef, Direction, Expr, Get, Statement};
 
 use crate::catalog::{self, Table};
@@ -27,11 +27,21 @@ type Fetched = Vec<(Vec<u8>, Vec<Value>)>;
 /// Raw key/value pairs from a scan, before row decoding.
 type RawRows = Vec<(Vec<u8>, Vec<u8>)>;
 
+/// An open explicit transaction.
+struct Open {
+    tx: SuspendedTx,
+    /// Whether anything in it actually wrote, so that an empty transaction
+    /// commits nothing.
+    mutated: bool,
+}
+
 pub struct Session<S: Storage> {
     db: Db<S>,
-    /// Buffered mutations of an explicit `begin` transaction, in order.
-    /// `None` in autocommit mode. See `run_in_txn` for the replay model.
-    txn: Option<Vec<Statement>>,
+    /// The open `begin` transaction, suspended between statements, or
+    /// `None` in autocommit mode. It holds the writes made so far in
+    /// memory and has touched nothing on disk, so a process killed with one
+    /// open leaves the database exactly as it was before `begin`.
+    txn: Option<Open>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -109,14 +119,21 @@ impl<S: Storage> Session<S> {
                         "a transaction is already open; commit or rollback first",
                     ));
                 }
-                self.txn = Some(Vec::new());
+                self.txn = Some(Open {
+                    tx: self.db.begin().suspend(),
+                    mutated: false,
+                });
                 Ok(Output::Ok)
             }
             Statement::Commit => {
-                let Some(buffered) = self.txn.take() else {
+                let Some(open) = self.txn.take() else {
                     return Err(ExecError::exec("no transaction is open"));
                 };
-                self.commit_buffered(&buffered)?;
+                // a transaction that wrote nothing commits nothing and
+                // burns no commit id
+                if open.mutated {
+                    self.db.resume(open.tx)?.commit()?;
+                }
                 Ok(Output::Ok)
             }
             Statement::Rollback => {
@@ -229,64 +246,53 @@ impl<S: Storage> Session<S> {
             )),
             // history reads are independent of the pending writes
             Statement::Get(get) if get.as_of.is_some() => self.read_as_of(get),
-            // reads and explains: replay the pending writes, run, discard
-            Statement::Get(_) | Statement::ShowTables | Statement::Explain(_) => {
-                let buffered = self.txn.as_ref().expect("transaction is open");
-                self.dry_run(buffered, stmt)
-            }
-            // mutations: replay plus this statement must succeed before it
-            // joins the buffer; on error nothing is buffered and the
-            // transaction stays open, matching statement-level rollback
-            Statement::TableDef(_)
-            | Statement::DropTable { .. }
-            | Statement::Put { .. }
-            | Statement::Set { .. }
-            | Statement::Del { .. }
-            | Statement::IndexDef { .. } => {
-                let buffered = self.txn.as_ref().expect("transaction is open");
-                let output = self.dry_run(buffered, stmt)?;
-                self.txn
-                    .as_mut()
-                    .expect("transaction is open")
-                    .push(stmt.clone());
-                Ok(output)
-            }
             Statement::Begin | Statement::Commit | Statement::Rollback => {
                 unreachable!("transaction control is handled in run_parsed")
             }
+            // everything else runs against the transaction's own writes
+            _ => self.in_open_txn(stmt),
         }
     }
 
-    /// Replay `buffered` into a fresh write transaction, run `stmt` on top,
-    /// and discard everything. Used for reads and for validating a
-    /// mutation before it joins the buffer.
-    fn dry_run(&self, buffered: &[Statement], stmt: &Statement) -> Result<Output, ExecError> {
-        let mut run = Run {
-            tx: self.db.begin(),
-            mutated: false,
-        };
-        for s in buffered {
-            run.statement(s)?;
-        }
-        run.statement(stmt)
-        // run drops here, discarding the write batch
-    }
+    /// Run one statement on the open transaction.
+    ///
+    /// The transaction is resumed, the statement runs against the writes
+    /// made so far, and the transaction is suspended again. Nothing is
+    /// replayed, so N statements cost what their writes cost rather than
+    /// N squared (ADR-021).
+    ///
+    /// A statement that fails is undone completely and does not close the
+    /// transaction, which is the promise ADR-016 made and the reason for
+    /// the savepoint: the writes of a rejected statement must not be
+    /// visible to the next one, and must not reach a later commit.
+    fn in_open_txn(&mut self, stmt: &Statement) -> Result<Output, ExecError> {
+        let open = self.txn.take().expect("transaction is open");
+        let mutating = !matches!(
+            stmt,
+            Statement::Get(_) | Statement::ShowTables | Statement::Explain(_)
+        );
 
-    /// Replay `buffered` into a fresh write transaction and commit it. An
-    /// empty or purely no-op transaction commits nothing and burns no
-    /// commit id.
-    fn commit_buffered(&self, buffered: &[Statement]) -> Result<(), ExecError> {
-        let mut run = Run {
-            tx: self.db.begin(),
-            mutated: false,
-        };
-        for s in buffered {
-            run.statement(s)?;
+        // a resume that fails takes the transaction with it, which is the
+        // rollback: nothing was on disk, so there is nothing to undo. the
+        // session is back in autocommit mode and the error says why.
+        let mut tx = self.db.resume(open.tx)?;
+        let roots = tx.roots();
+        tx.savepoint();
+
+        let mut run = Run { tx, mutated: false };
+        let result = run.statement(stmt);
+        let mut tx = run.tx;
+        let wrote = run.mutated;
+
+        match &result {
+            Ok(_) => tx.release_savepoint(),
+            Err(_) => tx.rollback_savepoint(roots),
         }
-        if run.mutated {
-            run.tx.commit()?;
-        }
-        Ok(())
+        self.txn = Some(Open {
+            tx: tx.suspend(),
+            mutated: open.mutated || (result.is_ok() && mutating && wrote),
+        });
+        result
     }
 }
 

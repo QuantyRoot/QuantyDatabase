@@ -92,6 +92,11 @@ impl Mode {
 /// on its own.
 const DURABLE_CEILING: f64 = 15.0;
 
+/// The same for bulk, where one fsync covers the whole workload and the
+/// engines' own work is what shows. We are further behind here, so the
+/// ceiling is looser, and lowering it is the point of the next round.
+const BULK_CEILING: f64 = 25.0;
+
 fn main() {
     let check = std::env::args().any(|a| a == "--check");
     let quanty = binary("quanty");
@@ -122,24 +127,26 @@ fn main() {
         let mut over = Vec::new();
         for (mode, name, _, ours, theirs) in &rows {
             let ratio = ours.as_secs_f64() / theirs.as_secs_f64();
-            // only the durable numbers gate. bulk is measured and printed,
-            // and it is currently far past any ceiling for a known reason
-            // that is written down in the roadmap: a statement inside an
-            // open transaction replays every statement before it, which is
-            // quadratic. gating on a defect we have already named would
-            // just mean a permanently red job.
-            if *mode == Mode::Durable && ratio > DURABLE_CEILING {
+            // both modes gate now. bulk was exempt while an open
+            // transaction replayed its whole buffer per statement, which
+            // was quadratic; ADR-021 replaced that with a suspended write
+            // batch and the ceiling below is what the fix bought.
+            let ceiling = match mode {
+                Mode::Durable => DURABLE_CEILING,
+                Mode::Bulk => BULK_CEILING,
+            };
+            if ratio > ceiling {
                 over.push(format!("{name}: {ratio:.1}x"));
             }
         }
         if !over.is_empty() {
-            eprintln!(
-                "\nover the {DURABLE_CEILING}x ceiling against sqlite: {}",
-                over.join(", ")
-            );
+            eprintln!("\nover the ceiling against sqlite: {}", over.join(", "));
             std::process::exit(1);
         }
-        println!("\nall durable workloads are within {DURABLE_CEILING}x of sqlite");
+        println!(
+            "\nall workloads within their ceiling: {DURABLE_CEILING}x durable, \
+             {BULK_CEILING}x bulk"
+        );
     }
 }
 

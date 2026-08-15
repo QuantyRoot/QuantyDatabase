@@ -190,21 +190,19 @@ Acceptance:
 Things the benchmark suite found, kept here with their numbers rather than
 in somebody's memory. Each is a defect with a known cause, not a decision.
 
-**A statement inside an open transaction replays every statement before
-it.** ADR-016 chose a replay model for multi-statement transactions, which
-is simple and correct and turns out to be quadratic: each new statement
-re-runs the whole buffer to validate against it, so N statements cost N^2/2
-statement executions. Measured at 5000 rows in 50 batched inserts: 2.95
-seconds inside one transaction against 0.15 seconds as 50 separate
-transactions, and 294 times slower than sqlite doing the same thing. A
-transaction is therefore slower than no transaction, which is backwards,
-and bulk loading, the main reason to open one, is where it hurts most. The
-importer is unaffected because it commits per batch. Fixing this means the
-buffer holding a write batch instead of a statement list.
+**Bulk loading in a transaction, fixed.** A statement inside an open
+transaction used to replay every statement before it, which was quadratic:
+5000 rows in one transaction took 2.95 seconds against 0.15 as separate
+transactions. An open transaction is now a suspended write batch (ADR-021)
+and the same load takes 0.13 seconds, which is faster than no transaction,
+as it should be. What is left is a 12.7x gap to sqlite on that workload,
+where sqlite does it in 10 milliseconds and we do it in 129 with a single
+fsync on both sides. That is CPU and memory work on our side, and it is the
+next thing to measure.
 
-**Everything durable is about 4x sqlite.** Insert, point lookup, scan and
-indexed lookup all land between 3.9 and 4.4 times sqlite's time on the same
-machine, with no optimisation work done anywhere. That is a starting point
+**Everything durable is about 2.5x sqlite.** Insert, point lookup, scan and
+indexed lookup all land between 2.4 and 2.7 times sqlite's time on the CI
+runner, with no optimisation work done anywhere. That is a starting point
 rather than a problem, and it is written down so the next measurement has
 something to move against.
 

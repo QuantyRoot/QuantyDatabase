@@ -482,3 +482,58 @@ dependencies as it needs them, and the sqlite reader, the importer and the
 command line tool happen to need none. If a benchmark ever shows the
 checksum dominating something real, the answer is a measured intrinsic
 behind a feature flag, not a quiet return to a dependency.
+
+## ADR-021: An open transaction is a suspended write batch
+
+ADR-016 chose a replay model for multi-statement transactions and named the
+condition for replacing it: "it should land with a benchmark that shows the
+replay hurting, not before." The benchmark now exists and it hurts. Loading
+5000 rows as 50 batched inserts took 2.95 seconds inside one transaction
+against 0.15 seconds as 50 separate ones, 294 times slower than sqlite
+doing the same thing. A transaction was slower than no transaction, which
+is backwards, and bulk loading is the main reason anyone opens one.
+
+The cause was exactly the one ADR-016 predicted: every statement replayed
+the whole buffer to validate against it, so N statements cost N squared
+over two statement executions.
+
+**An open transaction is now the write batch itself, suspended.** A batch
+holds two kinds of thing: borrowed ones, the pager reference and the writer
+lock, and owned ones, the base metadata and the pages written so far. Only
+the borrowed half was ever the problem. `WriteBatch::suspend` puts the
+borrows down and hands back the owned half, `Pager::resume` picks it up
+again, and a session between statements holds nothing but data. So the
+self-referential struct that ADR-016 could not typecheck is not needed, and
+neither is unsafe or a dependency, which is what that record was protecting.
+
+Two things had to be preserved rather than assumed.
+
+**A rejected statement must leave nothing behind.** Under replay this was
+free: a statement that failed simply never joined the list. Against a live
+batch it is not, because a statement can write pages before it fails. So a
+batch now takes a savepoint before each statement, recording the pre-image
+of every page on first touch along with the roots and the allocation state,
+and rolls back to it if the statement fails. One level is enough: a
+statement joins the transaction whole or not at all. The golden suite
+checks this directly, with a two-row insert whose second row is the wrong
+type.
+
+**A suspended batch must not build on a snapshot that has moved.** The
+writer lock is released while suspended, so another writer could commit in
+between. `resume` compares the base commit id against the current one and
+refuses if they differ, telling the caller to roll back and retry.
+Continuing would overwrite that commit with ours, which is the one outcome
+worth failing loudly for.
+
+The cost has moved rather than vanished, and the new shape is the better
+one: an open transaction now holds its dirty pages in memory, so it costs
+memory proportional to what it has written, where before it cost time
+proportional to the square of how many statements it had run. Memory is
+the resource a caller can see coming and bound by committing periodically.
+`SuspendedTx::dirty_pages` reports it.
+
+After the change, the same 5000 rows in one transaction take 129
+milliseconds instead of 2950, and a transaction is now faster than no
+transaction, as it should be. Against sqlite the gap on that workload is
+12.7 times rather than 294, which is the next thing to look at rather than
+the end of it.

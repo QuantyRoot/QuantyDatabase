@@ -119,3 +119,35 @@ ok
 # u never existed outside the rolled back transaction
 > get u
 error: no table named 'u'
+
+# a statement that fails inside a transaction leaves nothing behind and
+# does not close the transaction. this is the promise a savepoint keeps:
+# the writes a rejected statement managed to make before failing must not
+# be visible to the next statement, and must not reach the commit.
+> begin
+ok
+
+> put t { id: 7, n: 70 }
+put 1
+
+# the second row of this statement is the wrong type, so the whole
+# statement is rejected
+> put t { id: 8, n: 80 }, { id: 9, n: "not a number" }
+error:...
+
+# the transaction is still open and still holds only the good write
+> get t order by id
+1|15
+4|40
+7|70
+
+# and neither row of the rejected statement is anywhere
+> get t where id = 8
+> get t where id = 9
+> commit
+ok
+
+> get t order by id
+1|15
+4|40
+7|70
