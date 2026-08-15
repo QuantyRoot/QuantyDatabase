@@ -426,3 +426,59 @@ mapping, and each was verified against a file rather than recalled:
 happens to hold 0 and 1, and may hold 2; it becomes `int`. `DATETIME` holds
 whatever the application put there, usually text; it stays what it is. We
 have no date type and this is not the place to pretend otherwise.
+
+## ADR-020: The core has no dependencies either
+
+ADR-008 gave quanty-core a budget of three: crc32c, blake3 and parking_lot.
+Two of those were being used, and both are now written out instead, so the
+workspace depends on nothing outside the standard library. This supersedes
+the budget rather than bending it, so the reasoning belongs here.
+
+The two were not the same job.
+
+**parking_lot** was providing `Mutex` and `RwLock` at four call sites, with
+no use of the parts that make it interesting: no `try_lock`, no upgradable
+reads, no `Condvar`. What is left is what the standard library has had for
+years, and since 1.62 its locks are futex based, which is where most of
+parking_lot's original advantage came from. The one real difference is
+poisoning, which std has and parking_lot does not, so the replacement had
+to decide what to do about it. It takes the lock anyway, and `sync.rs` says
+why in full: the state behind these locks is not where durability lives.
+The pager's in-memory metadata is only replaced after a commit is already
+on disk, and a write transaction that panics is dropped uncommitted, so a
+panic cannot leave the guarded state disagreeing with the file. What can
+leave the file inconsistent is a process dying mid-write, and the crash
+harness covers that.
+
+**crc32c** was a genuine trade rather than a formality, because modern x86
+and aarch64 have a CRC-32C instruction and no table can match it. Keeping
+the instruction would mean either unsafe intrinsics with runtime feature
+detection or a dependency carrying them, and this project has already
+refused unsafe for a smaller prize (ADR-016). So the question was what the
+instruction is actually worth here, and it was measured rather than
+guessed, both implementations side by side on one machine: 1.8 microseconds
+per 4 KiB page for the slice-by-16 table against 1.0 for the instruction,
+2.1 GiB/s against 3.9. Roughly twice as fast, and both far quicker than the
+things they sit beside. A commit ends in an fsync costing hundreds of
+microseconds. A page arriving in the cache came off a disk or through a
+syscall first.
+
+Under a microsecond a page is what this costs, and thirteen entries in the
+lock file is what it buys back, since those two pulled in eleven more
+between them. Each of those has its own release schedule, its own minimum
+supported Rust version and its own security surface, in a project whose CI
+runs the whole suite on a toolchain from 2023.
+
+The correctness of the replacement is not a matter of confidence. While
+crc32c was still present, the new implementation was checked against it
+over twenty thousand inputs of every length up to nine kilobytes, and it
+agreed on all of them, so existing database files stay readable: the
+checksums are the same bytes as before. The published check value for
+CRC-32C, 0xe3069283 over the nine ascii digits, is asserted separately, and
+it pins the polynomial, the reflection and both conditioning steps at once.
+
+What this does not change: everything above the core may still take
+dependencies as it needs them, and the sqlite reader, the importer and the
+command line tool happen to need none. If a benchmark ever shows the
+checksum dominating something real, the answer is a measured intrinsic
+behind a feature flag, not a quiet return to a dependency.

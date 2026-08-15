@@ -88,14 +88,14 @@ pub fn lsn(buf: &[u8]) -> u64 {
 /// hits storage. After sealing the buffer must not change.
 pub fn seal(buf: &mut [u8], txid: u64) {
     buf[OFF_LSN..OFF_LSN + 8].copy_from_slice(&txid.to_le_bytes());
-    let sum = crc32c::crc32c(&buf[OFF_TYPE..]);
+    let sum = crate::crc::crc32c(&buf[OFF_TYPE..]);
     buf[OFF_CHECKSUM..OFF_CHECKSUM + 4].copy_from_slice(&sum.to_le_bytes());
 }
 
 /// Verify the checksum of a page read from storage.
 pub fn verify(buf: &[u8], id: PageId) -> Result<()> {
     let stored = u32::from_le_bytes(buf[OFF_CHECKSUM..OFF_CHECKSUM + 4].try_into().expect("hdr"));
-    let actual = crc32c::crc32c(&buf[OFF_TYPE..]);
+    let actual = crate::crc::crc32c(&buf[OFF_TYPE..]);
     if stored != actual {
         return Err(Error::corrupted(
             id,

@@ -17,6 +17,7 @@
 mod btree;
 mod cache;
 mod commit;
+mod crc;
 mod db;
 pub mod encoding;
 mod error;
@@ -27,6 +28,7 @@ pub mod page;
 mod pager;
 pub mod refs;
 mod storage;
+mod sync;
 
 pub use btree::{max_key_len, ReadPages, Scan};
 pub use commit::CommitInfo;

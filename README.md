@@ -188,6 +188,12 @@ suites, an index consistency checker, row for row verification of an
 imported database against SQLite's own output, and a crash harness that
 kill -9s the process mid-write a thousand times per CI run.
 
+No dependencies. Not "few": the lock file holds this workspace and nothing
+else, so `cargo build` fetches nothing and the whole suite runs on a
+toolchain from 2023. The checksum and the locks under the storage core are
+written out rather than pulled in, and what that cost is measured and
+written down in [ADR-020](docs/DECISIONS.md).
+
 Progress lives in [ROADMAP.md](docs/ROADMAP.md). Design notes live in
 [ARCHITECTURE.md](docs/ARCHITECTURE.md) and [DECISIONS.md](docs/DECISIONS.md)
 if you want to see how the sausage is made.
