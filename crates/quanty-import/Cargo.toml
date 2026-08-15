@@ -9,9 +9,11 @@ repository.workspace = true
 
 [dependencies]
 quanty-core = { path = "../quanty-core" }
+quanty-exec = { path = "../quanty-exec" }
 quanty-ql = { path = "../quanty-ql" }
 quanty-sqlite = { path = "../quanty-sqlite" }
 
 [dev-dependencies]
 quanty-ql = { path = "../quanty-ql" }
 quanty-core = { path = "../quanty-core" }
+quanty-exec = { path = "../quanty-exec" }

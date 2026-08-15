@@ -82,6 +82,7 @@ name = "quanty-import"
 version = "0.1.1"
 dependencies = [
  "quanty-core",
+ "quanty-exec",
  "quanty-ql",
  "quanty-sqlite",
 ]

@@ -14,5 +14,7 @@
 mod default;
 mod name;
 mod plan;
+mod run;
 
 pub use plan::{plan, ColumnPlan, ImportPlan, Note, Options, Problem, TablePlan, ValueSource};
+pub use run::{execute, ImportError, Report, TableReport};
