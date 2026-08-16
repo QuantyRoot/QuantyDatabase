@@ -253,7 +253,8 @@ quanty/
     quanty-exec/        catalog, planner, executor
     quanty/             public embedded API, re-exports, the crate users add
     quanty-derive/      ORM derive macros
-    quanty-server/      tokio server, protocol
+    quanty-proto/       wire protocol codec (bytes only, no I/O)
+    quanty-server/      reactor, connection state machine, write queue
     quanty-cli/         quanty binary (repl, import, branch, gc, serve)
   docs/
   tests/                cross-crate integration + crash harness
