@@ -40,6 +40,36 @@ Reading a frame therefore never allocates more than 16 MiB, and a decoder
 that is handed nonsense returns an error rather than panicking. Both
 properties are what the fuzzer checks.
 
+## Element limits
+
+A length field says how many *bytes* follow, and bytes cost one byte of
+memory each, so the frame cap alone bounds them. A count field says how
+many *structures* follow, and a structure costs more in memory than it does
+on the wire: an empty row is four bytes sent and 24 bytes held, a null
+value one byte sent and 32 held. A count bounded only by what fits in the
+frame therefore hands the sender that ratio as a multiplier, and 16 MiB of
+null tags becomes half a gigabyte of resident memory.
+
+So counts are capped by the protocol and not merely by the frame:
+
+```
+MAX_VALUES_PER_ROW    4096    values in a row, and so columns in a result
+MAX_ROWS_PER_BATCH   65536    rows in a single RowBatch
+MAX_LINES            65536    strings in a single Lines message
+```
+
+These are normative. Two implementations that disagree about them disagree
+about which frames are legal, so they are part of the format rather than a
+local defence. A message declaring more is answered with a protocol error
+and the connection closes.
+
+None of them limits a result set. A result is a sequence of batches and
+the sequence is unbounded; what is bounded is how much a single frame can
+commit the receiver to before it has seen any of it. With these caps the
+memory a decoder can be made to hold is bounded in absolute terms, around
+3.7 MiB at worst, rather than as a fraction of `MAX_BODY`. That number is
+measured, not argued: see the allocation test in quanty-proto.
+
 ## Handshake
 
 The handshake is fixed for all time and is the only part of this document
@@ -144,8 +174,10 @@ infinities survive the trip and no value changes meaning by being sent.
 the frame cap as a single message. Rows arrive as a sequence:
 
 ```
-RowsBegin   4 byte column count, then that many Text-encoded names
-RowBatch    4 byte row count, then rows, each a 4 byte value count
+RowsBegin   4 byte column count, at most MAX_VALUES_PER_ROW, then that
+            many Text-encoded names
+RowBatch    4 byte row count, at most MAX_ROWS_PER_BATCH, then rows,
+            each a 4 byte value count of at most MAX_VALUES_PER_ROW
             followed by that many values
 RowsEnd     empty
 ```
@@ -201,5 +233,6 @@ the format does not need to know the answer to be written down.
 ## Version history
 
 ```
-1  first version. Handshake, one request in flight, six value tags.
+1  first version. Handshake, one request in flight, six value tags,
+   element caps as above.
 ```

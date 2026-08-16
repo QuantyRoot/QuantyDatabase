@@ -14,6 +14,7 @@
 
 use std::fmt;
 
+/// Result of any codec operation.
 pub type Result<T> = std::result::Result<T, ProtoError>;
 
 /// A failure decoding or encoding protocol bytes.
@@ -23,9 +24,30 @@ pub type Result<T> = std::result::Result<T, ProtoError>;
 #[derive(Debug, Clone, PartialEq)]
 pub enum ProtoError {
     /// The buffer ended before the value being read did.
-    Truncated { needed: usize, available: usize },
-    /// A declared length exceeds what the protocol allows.
-    TooLarge { declared: u64, limit: u64 },
+    Truncated {
+        /// Bytes the read wanted.
+        needed: usize,
+        /// Bytes actually left.
+        available: usize,
+    },
+    /// A declared length exceeds what the protocol allows, or what the
+    /// remaining bytes could satisfy.
+    TooLarge {
+        /// What the wire claimed.
+        declared: u64,
+        /// What was permitted.
+        limit: u64,
+    },
+    /// A declared element count exceeds the protocol's cap for that
+    /// message. Distinct from `TooLarge` because the failure is different
+    /// in kind: the bytes might well be there, and the objection is to how
+    /// much memory holding them would cost.
+    TooManyElements {
+        /// What the wire claimed.
+        declared: u64,
+        /// What the protocol permits.
+        limit: u64,
+    },
     /// A tag or message type byte that this version does not define.
     UnknownTag(u8),
     /// A field held a value outside its permitted set, e.g. a bool that was
@@ -49,6 +71,9 @@ impl fmt::Display for ProtoError {
             }
             ProtoError::TooLarge { declared, limit } => {
                 write!(f, "declared length {declared} exceeds limit {limit}")
+            }
+            ProtoError::TooManyElements { declared, limit } => {
+                write!(f, "declared {declared} elements, protocol allows {limit}")
             }
             ProtoError::UnknownTag(t) => write!(f, "unknown tag 0x{t:02x}"),
             ProtoError::Malformed(what) => write!(f, "malformed {what}"),
@@ -90,6 +115,7 @@ pub enum ErrorCode {
 }
 
 impl ErrorCode {
+    /// The number that travels.
     pub fn as_u16(self) -> u16 {
         self as u16
     }

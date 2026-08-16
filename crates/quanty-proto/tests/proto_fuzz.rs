@@ -175,7 +175,7 @@ fn corpus() -> Vec<(u8, Vec<u8>)> {
         ClientMessage::QuerySql("select * from t".into()),
     ];
     for m in client.iter() {
-        out.push((m.msg_type(), m.body()));
+        out.push((m.msg_type(), m.body().expect("corpus must encode")));
     }
     let server = [
         ServerMessage::Ready,
@@ -202,7 +202,7 @@ fn corpus() -> Vec<(u8, Vec<u8>)> {
         },
     ];
     for m in server.iter() {
-        out.push((m.msg_type(), m.body()));
+        out.push((m.msg_type(), m.body().expect("corpus must encode")));
     }
     out
 }

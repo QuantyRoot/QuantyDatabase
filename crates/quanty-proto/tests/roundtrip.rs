@@ -4,9 +4,12 @@
 //! proves the format means what docs/PROTOCOL.md says it means.
 
 use quanty_core::Value;
+use quanty_proto::codec::Writer;
 use quanty_proto::error::ProtoError;
 use quanty_proto::frame::{FrameHeader, HEADER_LEN};
 use quanty_proto::message::{T_QUERY, T_ROW_BATCH};
+use quanty_proto::value::{encoded_row_len, encoded_value_len};
+use quanty_proto::write_value;
 use quanty_proto::{
     batch_rows, negotiate, ClientHello, ClientMessage, Refusal, ServerHello, ServerMessage,
     MAX_BODY, VERSION,
@@ -194,7 +197,7 @@ fn a_lying_length_costs_an_error_and_not_memory() {
 
 #[test]
 fn trailing_bytes_are_an_error() {
-    let mut body = ClientMessage::Query("get x".into()).body();
+    let mut body = ClientMessage::Query("get x".into()).body().unwrap();
     body.push(0);
     match ClientMessage::decode(T_QUERY, &body) {
         Err(ProtoError::TrailingBytes(1)) => {}
@@ -223,6 +226,46 @@ fn invalid_utf8_is_refused_not_replaced() {
         ClientMessage::decode(T_QUERY, &body),
         Err(ProtoError::BadUtf8)
     );
+}
+
+/// The size function is a second description of the encoder and could
+/// drift from it, which would silently produce oversized frames. This is
+/// what makes that impossible to ship.
+#[test]
+fn encoded_len_matches_encoder() {
+    let values = [
+        Value::Null,
+        Value::Bool(true),
+        Value::Int(-1),
+        Value::Float(0.5),
+        Value::Text(String::new()),
+        Value::Text("hello".into()),
+        Value::Bytes(vec![]),
+        Value::Bytes(vec![0; 300]),
+    ];
+    for v in &values {
+        let mut w = Writer::new();
+        write_value(&mut w, v);
+        let written = w.finish().unwrap().len();
+        assert_eq!(written, encoded_value_len(v), "size drifted for {v:?}");
+    }
+    let row: Vec<Value> = values.to_vec();
+    let mut w = Writer::new();
+    quanty_proto::value::write_row(&mut w, &row);
+    assert_eq!(w.finish().unwrap().len(), encoded_row_len(&row));
+}
+
+#[test]
+fn a_count_above_the_protocol_cap_is_refused() {
+    use quanty_proto::{MAX_ROWS_PER_BATCH, MAX_VALUES_PER_ROW};
+    // Encoding refuses it too, so a bad frame never leaves this process.
+    let rows: Vec<Vec<Value>> = (0..MAX_ROWS_PER_BATCH + 1).map(|_| vec![]).collect();
+    assert!(ServerMessage::RowBatch { rows }.encode().is_err());
+
+    let wide = vec![Value::Null; MAX_VALUES_PER_ROW + 1];
+    assert!(ServerMessage::RowBatch { rows: vec![wide] }
+        .encode()
+        .is_err());
 }
 
 #[test]

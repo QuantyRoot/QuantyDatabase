@@ -7,13 +7,7 @@
 
 use crate::codec::{Reader, Writer};
 use crate::error::{ProtoError, Result};
-
-/// Largest body this implementation will read or write, 16 MiB.
-///
-/// The reason a decoder may allocate from a length field at all. The
-/// number arrives from the network, so it is either capped before it
-/// reaches an allocator or it is a way to ask for arbitrary memory.
-pub const MAX_BODY: usize = 16 * 1024 * 1024;
+use crate::limits::MAX_BODY;
 
 /// Bytes on the wire before the body: type plus length.
 pub const HEADER_LEN: usize = 5;
@@ -21,19 +15,25 @@ pub const HEADER_LEN: usize = 5;
 /// The protocol version this build speaks.
 pub const VERSION: u16 = 1;
 
+/// The six bytes a client leads with.
 pub const MAGIC: &[u8; 6] = b"QUANTY";
 
-/// Nine bytes from the client, four back. Fixed forever.
+/// Nine bytes from the client. Fixed forever.
 pub const CLIENT_HELLO_LEN: usize = 9;
+/// Four bytes back from the server. Fixed forever.
 pub const SERVER_HELLO_LEN: usize = 4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// The five bytes in front of every body.
 pub struct FrameHeader {
+    /// Which message follows.
     pub msg_type: u8,
+    /// How many bytes of body follow, already checked against `MAX_BODY`.
     pub body_len: usize,
 }
 
 impl FrameHeader {
+    /// Serialize the header.
     pub fn encode(&self) -> [u8; HEADER_LEN] {
         let mut out = [0u8; HEADER_LEN];
         out[0] = self.msg_type;
@@ -64,12 +64,16 @@ impl FrameHeader {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Refusal {
+    /// The server no longer speaks that version.
     VersionTooOld = 0x01,
+    /// The server does not speak that version yet.
     VersionTooNew = 0x02,
+    /// The first six bytes were not ours.
     BadMagic = 0x03,
 }
 
 impl Refusal {
+    /// Map a byte from the wire back to a reason.
     pub fn from_u8(v: u8) -> Option<Self> {
         Some(match v {
             0x01 => Refusal::VersionTooOld,
@@ -82,11 +86,14 @@ impl Refusal {
 
 /// What the client sends first.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// What the client sends first.
 pub struct ClientHello {
+    /// Highest version the client can speak.
     pub version: u16,
 }
 
 impl ClientHello {
+    /// Serialize the nine byte hello.
     pub fn encode(&self) -> [u8; CLIENT_HELLO_LEN] {
         let mut out = [0u8; CLIENT_HELLO_LEN];
         out[0..6].copy_from_slice(MAGIC);
@@ -95,6 +102,7 @@ impl ClientHello {
         out
     }
 
+    /// Parse a nine byte hello.
     pub fn decode(bytes: &[u8; CLIENT_HELLO_LEN]) -> Result<Self> {
         let mut r = Reader::new(bytes);
         let magic = r.raw(MAGIC.len())?;
@@ -112,11 +120,17 @@ impl ClientHello {
 /// What the server sends back.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ServerHello {
-    Accepted { version: u16 },
+    /// Both sides will speak `version`.
+    Accepted {
+        /// The agreed version, never above what the client asked for.
+        version: u16,
+    },
+    /// The connection is about to close.
     Refused(Refusal),
 }
 
 impl ServerHello {
+    /// Serialize the four byte reply.
     pub fn encode(&self) -> [u8; SERVER_HELLO_LEN] {
         let mut out = [0u8; SERVER_HELLO_LEN];
         match self {
@@ -132,6 +146,7 @@ impl ServerHello {
         out
     }
 
+    /// Parse a four byte reply.
     pub fn decode(bytes: &[u8; SERVER_HELLO_LEN]) -> Result<Self> {
         match bytes[0] {
             0x01 => Ok(ServerHello::Accepted {
@@ -173,7 +188,7 @@ pub fn frame(msg_type: u8, body: &[u8]) -> Result<Vec<u8>> {
     let mut w = Writer::with_capacity(HEADER_LEN + body.len());
     w.u8(msg_type);
     w.u32(body.len() as u32);
-    let mut out = w.into_vec();
+    let mut out = w.finish()?;
     out.extend_from_slice(body);
     Ok(out)
 }
