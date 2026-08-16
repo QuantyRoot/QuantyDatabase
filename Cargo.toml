@@ -3,6 +3,7 @@ members = [
     "crates/quanty-core",
     "crates/quanty-ql",
     "crates/quanty-exec",
+    "crates/quanty-proto",
     "crates/quanty-sqlite",
     "crates/quanty-import",
     "crates/quanty-cli",

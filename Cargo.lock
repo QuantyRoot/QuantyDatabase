@@ -39,6 +39,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "quanty-proto"
+version = "0.2.0"
+dependencies = [
+ "quanty-core",
+]
+
+[[package]]
 name = "quanty-ql"
 version = "0.2.0"
 dependencies = [

@@ -1,0 +1,11 @@
+[package]
+name = "quanty-proto"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Wire protocol codec for QuantyDB"
+
+[dependencies]
+quanty-core = { path = "../quanty-core" }
