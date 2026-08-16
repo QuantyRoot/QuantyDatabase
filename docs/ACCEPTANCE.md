@@ -44,10 +44,10 @@ If the test runs in a VM it needs `tap` networking with `vhost-net`, and
 KVM. Without KVM the CPU is emulated and everything below is meaningless.
 Check `/dev/kvm` exists and is readable before anything else.
 
-## Setup A: cgroups, no virtualization
+## Constraining the server without virtualization
 
-Simplest, and the most faithful for the CPU question, because nothing sits
-between the two processes but the host's loopback. Use this first.
+The one to use. Also the most faithful for the CPU question, because
+nothing sits between the two processes but the host's loopback.
 
 ```
 # two cores for the server, 7 GiB to match a small cloud box
@@ -64,37 +64,15 @@ taskset -c 4-11 target/release/quanty-bench acceptance \
 Loopback is faster and more reliable than any real link, so the network is
 deliberately not the limit. That is the point: what is left is the server.
 
-## Setup B: QEMU, when the test should stay off your own kernel
+## If the test should stay off your own kernel
 
-Ten thousand sockets and a raised descriptor limit touch host state. If you
-would rather not do that to a desktop you are using, put the server in a VM.
-This also gives a known kernel rather than whatever the host is running.
-
-Requirements, all of them:
-
-- KVM. `ls -l /dev/kvm` must exist and be readable. On AMD this needs SVM
-  enabled in firmware and the `kvm_amd` module loaded.
-- `tap` networking with `vhost-net`. Not user mode. Not `-net user`.
-- vCPUs pinned to host cores that the client does not use.
-
-```
-qemu-system-x86_64 \
-  -enable-kvm -cpu host \
-  -smp 2 -m 4096 \
-  -drive file=accept.qcow2,if=virtio,cache=none \
-  -netdev tap,id=n0,ifname=tap0,script=no,downscript=no,vhost=on \
-  -device virtio-net-pci,netdev=n0 \
-  -nographic
-```
-
-Then pin the vCPU threads to cores 0 and 1 on the host, and run the client
-under `taskset -c 4-11` as above. QEMU exposes the vCPU thread ids on its
-monitor socket; pinning them is what makes `-smp 2` mean two cores rather
-than two threads sharing twelve.
-
-Note that the virtio path still costs something the cgroup setup does not.
-If setup A passes and setup B fails, the difference is the virtual NIC and
-should be reported as such rather than as a server regression.
+Ten thousand sockets and a raised descriptor limit touch host state, and a
+virtual machine keeps that off a desktop you are using. It costs a virtual
+network path that the cgroup setup does not have, and that path must be
+`tap` with `vhost-net` and KVM: QEMU's default user-mode networking is a
+TCP/IP stack running in userspace on one thread, which at ten thousand
+connections becomes the thing under test. Reach for this only if there is
+a reason to; setup A answers the question with less standing in the way.
 
 ## Host preparation, either way
 

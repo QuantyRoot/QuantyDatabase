@@ -1,0 +1,11 @@
+[package]
+name = "quanty-server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Reactor and connection handling for QuantyDB"
+
+[dependencies]
+quanty-proto = { path = "../quanty-proto" }

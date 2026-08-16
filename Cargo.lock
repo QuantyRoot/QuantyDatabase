@@ -53,5 +53,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "quanty-server"
+version = "0.2.0"
+dependencies = [
+ "quanty-proto",
+]
+
+[[package]]
 name = "quanty-sqlite"
 version = "0.2.0"
