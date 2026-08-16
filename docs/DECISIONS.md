@@ -542,7 +542,10 @@ transaction, as it should be. Against sqlite the gap on that workload is
 12.7 times rather than 294, which is the next thing to look at rather than
 the end of it.
 
-## ADR-022: The server has no dependencies either, so it is threads
+## ADR-022: The server has no dependencies either
+
+*The dependency decision below stands. Its conclusion that the server must
+therefore be thread per connection was wrong and is superseded by ADR-023.*
 
 Phase 5 was written as "binary protocol, tokio server". That line predates
 ADR-020, which took the workspace to zero dependencies by writing out the
@@ -595,3 +598,130 @@ Two things this record does not decide. The wire format lives in
 docs/PROTOCOL.md and is independent of the runtime; it would look the same
 under tokio. Where auth tokens are stored and how they are revoked is still
 open, and the protocol reserves room for it rather than answering it.
+
+## ADR-023: We write the reactor ourselves, so unsafe at one boundary
+
+ADR-022 answered "no tokio" and then drew a conclusion that does not
+follow. It reasoned that the standard library has no readiness primitive,
+that obtaining one means either the `libc` crate or hand-written `extern
+"C"` declarations, that ADR-016 and ADR-018 both refused unsafe, and that
+refusing it a third time was therefore consistent. **The third refusal was
+not consistent, and this record supersedes that part of ADR-022.**
+
+What the earlier two refused was unsafe as a *shortcut*: ADR-016 wanted a
+self-referential struct to avoid restructuring a transaction, ADR-018 the
+same at wider scope. In both, safe Rust could do the job and unsafe only
+did it with less work, and in both the blast radius was the write path,
+where a mistake is silent data corruption discovered later. Neither
+property holds here. There is no safe alternative that produces the
+capability at all, and the blast radius is a socket poll: the failure mode
+is a connection that hangs or an fd handled twice, found by the first test
+that opens two connections, not a page written wrong in a file somebody
+trusts.
+
+There is also a trust argument the earlier record missed. This workspace
+already depends on unsafe for every read and every fsync; it is std's
+unsafe, wrapped and audited. For files std supplies the wrapper. For
+`epoll` it does not. So the question was never whether to accept unsafe at
+the OS boundary, only whether to accept a wrapper we wrote or go without
+the capability.
+
+**We write it.** A reactor, a small one, with the syscalls declared by hand
+and every use above the boundary in safe Rust.
+
+The surface is fixed and short: `epoll_create1`, `epoll_ctl`, `epoll_wait`,
+`eventfd` and `eventfd_write` for cross-thread wakeups, and `setsockopt` for
+`SO_REUSEPORT`. Six functions and one struct layout. Socket lifetime stays
+with std, which owns the descriptors through `TcpStream` and `OwnedFd`, so
+we never construct or close an fd by hand and the one class of bug that
+would be ours to make is confined to registration.
+
+**The shape, and why it is less overhead than the thing we are not using.**
+N worker threads, each with its own epoll instance and its own listening
+socket via `SO_REUSEPORT`, each owning a disjoint set of connections. The
+kernel spreads accepts across the workers, so a connection is born on the
+thread that will serve it and is never handed anywhere. Nothing is shared
+between workers, so there is no work stealing, no cross-thread wakeup on the
+common path and no synchronization to pay for. Each connection is a small
+hand-written state machine, reading a header, reading a body, executing,
+writing a reply, with a partial-write buffer for the case where the socket
+takes less than we offered. That is what a general async runtime builds
+generically with wakers, pinned futures and dynamic dispatch, and what we
+need is specific enough to write directly. Timers ride on the `epoll_wait`
+timeout against a per-worker deadline heap, which is all phase 5 needs and
+costs one comparison per loop.
+
+Level-triggered first. Edge-triggered is faster and turns every missed
+drain into a hang rather than a slow path, and this project does not adopt
+the faster shape before a benchmark asks for it. That is ADR-016's rule and
+it applies to us here.
+
+**The price, and it is real.** `epoll` is Linux. The portable fallback is
+thread per connection, which is what ADR-022 proposed as the whole design
+and which survives here as the second implementation. That is not a
+consolation prize: two implementations behind one interface is a
+differential test, the same instrument the sqlite oracle tests already use,
+and the fallback is the one whose correctness is obvious. Every protocol
+level test runs against both, and a divergence is a bug in the reactor by
+definition. macOS keeps working without a second hand-written binding, and
+kqueue waits until somebody needs it in production rather than in principle.
+
+The other price is that the acceptance criterion is now the reactor's to
+meet rather than the thread pool's, and it is still unmeasured. The
+measurement moves earlier, not later: the 10k idle plus 1k QPS test lands
+with the first working listener, before the connection state machine grows
+anything worth optimizing, because it is the number that decides whether
+this record or its fallback is the design.
+
+## ADR-024: Writes queue behind one writer, with two deadlines
+
+ADR-003 gives the database one writer and ADR-021 makes an open transaction
+a suspended write batch. Neither says what a server does when a second
+connection wants to write while the first is mid-transaction, and with a
+reactor the naive answer is unavailable: a worker thread cannot block, it
+has other connections on it.
+
+**Writes go to a queue served by one writer thread. A connection waiting on
+that queue is parked, not blocked, and its worker moves on.** The reply is
+sent when the write completes, which is what the "one request in flight"
+rule in docs/PROTOCOL.md already lets us do: the client is not expecting
+anything else on that connection meanwhile.
+
+**Group commit falls out of this rather than being added to it.** The writer
+thread drains everything queued, applies it in one write batch and fsyncs
+once, then answers all of them. Under load the queue is deeper and the
+fsync is amortized over more statements, which is the behaviour worth
+having: the system gets more efficient exactly when it is busiest. The
+1k QPS in the acceptance criterion is a claim about that amortization more
+than about anything else.
+
+**Two deadlines, because there are two different waits and treating them
+alike gets one of them wrong.**
+
+The first is waiting for the writer. An autocommit statement queued behind
+other autocommit statements waits milliseconds, and waiting is right. It
+gets a generous deadline; if it expires, error `0x0007` and the client may
+retry. This is SQLite's `busy_timeout` and it is the correct model for a
+queue that drains on its own.
+
+The second is different in kind and is the one that actually bites in
+production: a connection that has run `begin`, holds the suspended batch,
+and then goes quiet. Nothing drains. A human left a session open, or a
+client crashed without closing its socket, and every writer behind it waits
+on something that may never come. So: **an idle-in-transaction deadline**.
+A connection holding an open transaction that sends nothing for the
+configured interval has it rolled back and is told so. Postgres carries
+`idle_in_transaction_session_timeout` for exactly this reason and it exists
+because the failure is common, not because it is clever. ADR-021 makes
+rolling back cheap for us, since a suspended batch has touched no disk.
+
+Two consequences worth stating rather than discovering.
+
+Ordering between connections is not promised. The writer applies in queue
+order, so two clients writing on two connections have whatever order the
+queue gave them. A client that needs an order has one connection or one
+transaction. This was already true and is now written down.
+
+The queue is a fairness surface. FIFO is the starting point because it is
+the one whose behaviour is predictable under overload; anything cleverer
+waits for a benchmark showing FIFO hurting, per ADR-016.
