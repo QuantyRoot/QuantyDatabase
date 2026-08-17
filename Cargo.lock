@@ -13,6 +13,7 @@ dependencies = [
  "quanty-core",
  "quanty-exec",
  "quanty-import",
+ "quanty-server",
  "quanty-sqlite",
 ]
 

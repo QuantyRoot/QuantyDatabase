@@ -1,28 +1,4 @@
 //! Protocol fuzzing.
-//!
-//! Three attack styles, all seeded and reproducible:
-//!
-//! 1. random byte soup fed straight to the decoders
-//! 2. structurally plausible frames with hostile lengths and counts
-//! 3. byte-level mutations of a corpus of valid encodings
-//!
-//! Two invariants, checked on every single input:
-//!
-//! - no decoder ever panics; garbage comes back as `Err`, always
-//! - whenever a decoder accepts an input, re-encoding it must produce
-//!   the same bytes again (encode . decode . encode == encode)
-//!
-//! The second one is what catches a decoder that is merely permissive. A
-//! codec that accepts a frame and then hands back something it would not
-//! itself have written is how two versions of a client end up disagreeing
-//! about a row.
-//!
-//! Memory is an invariant here too, not just time. A decoder that allocates
-//! from an untrusted length is a way to ask a server for gigabytes, so the
-//! hostile-length family below exists specifically to aim four billion at
-//! every length field in the format.
-//!
-//! Wall clock budget via QUANTY_FUZZ_SECS (default 20). CI uses 600.
 
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -54,23 +30,12 @@ impl Rng {
 }
 
 /// Every message type byte the protocol defines, plus neighbours in the
-/// reserved gaps so that "unknown type" is exercised as often as known.
 const TYPES: &[u8] = &[
     0x00, 0x0F, 0x10, 0x11, 0x12, 0x13, 0x14, 0x1F, 0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27,
     0x28, 0x2F, 0xEE, 0xFF,
 ];
 
 /// Feed one body to both decoders under every type byte.
-///
-/// Neither may panic. Whatever is accepted must survive a re-encode.
-///
-/// The comparison is on bytes rather than on the decoded values, and that
-/// is not a shortcut. `Value::Float(NaN)` is not equal to itself, so a
-/// value-level assertion here reports a difference on every NaN that
-/// crosses the wire while the bits are in fact intact. Bytes are the
-/// well-defined statement of the same invariant, and they prove something
-/// slightly stronger on top: that encoding is canonical, so one message has
-/// exactly one encoding.
 fn hammer(msg_type: u8, body: &[u8]) {
     if let Ok(m) = ClientMessage::decode(msg_type, body) {
         let once = m.encode().expect("an accepted message must be encodable");
@@ -97,8 +62,6 @@ fn hammer_handshake(rng: &mut Rng) {
     }
     let _ = ClientHello::decode(&hello);
 
-    // The same bytes with the magic corrected, so version handling gets
-    // exercised instead of every input dying at the magic check.
     hello[0..6].copy_from_slice(b"QUANTY");
     if let Ok(h) = ClientHello::decode(&hello) {
         let reply = quanty_proto::negotiate(h);
@@ -130,8 +93,6 @@ fn soup(rng: &mut Rng) {
 }
 
 /// Style 2: well-formed shapes with hostile numbers in the length and
-/// count fields. This is the family that would find an allocation driven
-/// by an attacker-chosen size.
 fn hostile_lengths(rng: &mut Rng) {
     let evil = [
         u32::MAX,
@@ -147,7 +108,6 @@ fn hostile_lengths(rng: &mut Rng) {
 
     let mut body = Vec::new();
     body.extend_from_slice(&n.to_le_bytes());
-    // A little plausible payload after the lie, sometimes.
     let extra = rng.below(24) as usize;
     for _ in 0..extra {
         body.push(rng.byte());
@@ -155,8 +115,6 @@ fn hostile_lengths(rng: &mut Rng) {
     let t = TYPES[rng.below(TYPES.len() as u64) as usize];
     hammer(t, &body);
 
-    // Nested: a row batch whose row count is honest but whose inner value
-    // count is not, and vice versa.
     let mut nested = Vec::new();
     nested.extend_from_slice(&1u32.to_le_bytes());
     nested.extend_from_slice(&n.to_le_bytes());
@@ -233,7 +191,6 @@ fn mutate(rng: &mut Rng, corpus: &[(u8, Vec<u8>)]) {
         _ => {}
     }
 
-    // Under its own type, and under a wrong one.
     hammer(*t, &body);
     hammer(TYPES[rng.below(TYPES.len() as u64) as usize], &body);
 }

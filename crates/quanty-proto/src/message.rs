@@ -1,9 +1,4 @@
 //! The messages themselves.
-//!
-//! Two enums rather than one, because the direction of travel is part of
-//! the type: a server cannot accidentally send a `Query` and a client
-//! cannot accidentally send `Rows`. The type bytes are listed in
-//! docs/PROTOCOL.md and the gaps between them are reserved.
 
 use quanty_core::Value;
 
@@ -45,7 +40,6 @@ pub const T_ERROR: u8 = 0x27;
 #[derive(Debug, Clone, PartialEq)]
 pub enum ClientMessage {
     /// An opaque token. What it means, where it is stored and how it is
-    /// revoked is deliberately not decided here; see docs/PROTOCOL.md.
     Auth(Vec<u8>),
     /// One QQL statement.
     Query(String),
@@ -94,10 +88,6 @@ pub enum ServerMessage {
 
 impl ServerMessage {
     /// Whether this message ends a request.
-    ///
-    /// A client sends one statement and reads until this returns true,
-    /// which is the whole of the "one request in flight" rule from
-    /// docs/PROTOCOL.md expressed as a function.
     pub fn is_terminal(&self) -> bool {
         matches!(
             self,
@@ -265,17 +255,6 @@ impl ServerMessage {
 const BATCH_BUDGET: usize = MAX_BODY - 4;
 
 /// Splits rows into batches that each fit inside a frame.
-///
-/// An iterator in and an iterator out, so a result set is never held twice.
-/// The engine materializes results today, which makes that saving
-/// theoretical for now, but the shape is the one a streaming executor needs
-/// and building the other one first would mean writing this twice. Taking
-/// `IntoIterator` costs nothing to a caller holding a `Vec`.
-///
-/// The sender chooses the split; the receiver sees only a sequence. A
-/// single row too large for any frame ends the iteration with an error
-/// rather than being dropped, because a result quietly missing a row is
-/// worse than one that failed.
 pub struct RowBatcher<I> {
     rows: I,
     pending: Vec<Vec<Value>>,
@@ -341,9 +320,6 @@ impl<I: Iterator<Item = Vec<Value>>> Iterator for RowBatcher<I> {
 }
 
 /// Batch a materialized result set, failing on the first row that cannot
-/// be sent.
-///
-/// Convenience over `RowBatcher` for callers that already hold every row.
 pub fn batch_rows(rows: Vec<Vec<Value>>) -> Result<Vec<ServerMessage>> {
     RowBatcher::new(rows).collect()
 }

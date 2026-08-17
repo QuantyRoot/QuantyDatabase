@@ -16,3 +16,6 @@ quanty-core = { path = "../quanty-core" }
 quanty-exec = { path = "../quanty-exec" }
 quanty-import = { path = "../quanty-import" }
 quanty-sqlite = { path = "../quanty-sqlite" }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+quanty-server = { path = "../quanty-server" }

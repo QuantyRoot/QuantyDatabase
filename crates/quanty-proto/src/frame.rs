@@ -1,9 +1,4 @@
 //! Frame headers and the handshake.
-//!
-//! See docs/PROTOCOL.md. A frame is a one byte message type, a four byte
-//! little endian body length, and the body. The handshake sits before all
-//! framing and is fixed for all time, because it is how the version gets
-//! agreed and so cannot itself be negotiable.
 
 use crate::codec::{Reader, Writer};
 use crate::error::{ProtoError, Result};
@@ -42,9 +37,6 @@ impl FrameHeader {
     }
 
     /// Decode a header and refuse anything over the cap.
-    ///
-    /// The caller reads exactly `body_len` bytes next, so this returning
-    /// `Ok` is what licenses that allocation.
     pub fn decode(bytes: &[u8; HEADER_LEN]) -> Result<Self> {
         let body_len = u32::from_le_bytes([bytes[1], bytes[2], bytes[3], bytes[4]]) as u64;
         if body_len > MAX_BODY as u64 {
@@ -161,10 +153,6 @@ impl ServerHello {
 }
 
 /// Decide what to answer a hello with.
-///
-/// Split out from any I/O so the version rule is testable on its own. The
-/// agreed version is never above what the client asked for, which is what
-/// lets a new server keep speaking to an old client.
 pub fn negotiate(hello: ClientHello) -> ServerHello {
     if hello.version == 0 {
         ServerHello::Refused(Refusal::VersionTooOld)

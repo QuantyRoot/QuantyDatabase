@@ -1,16 +1,4 @@
 //! Values on the wire.
-//!
-//! This is **not** `quanty_core::encoding`, and the difference is worth
-//! stating because the two look similar enough to be merged by someone in a
-//! hurry. That one exists to make memcmp match logical order, which is why
-//! it escapes zero bytes and flips sign bits. This one exists to round-trip
-//! a value across a socket, where nothing is ever compared as bytes.
-//!
-//! The tags below are defined here rather than imported from core on
-//! purpose. They happen to agree with core's today. Sharing the constants
-//! would mean a change to the on-disk format silently became a change to
-//! the protocol, and those two have separate version histories and separate
-//! compatibility promises. See docs/PROTOCOL.md.
 
 use quanty_core::Value;
 
@@ -73,12 +61,6 @@ pub fn read_value(r: &mut Reader<'_>) -> Result<Value> {
 }
 
 /// Bytes `write_value` will append for this value.
-///
-/// Used to split result sets into frames without encoding twice. It is a
-/// second description of the encoding above and so can drift from it, which
-/// would silently produce oversized frames; `encoded_len_matches_encoder`
-/// in tests/roundtrip.rs asserts the two agree for every variant, so the
-/// drift cannot be shipped.
 pub fn encoded_value_len(v: &Value) -> usize {
     1 + match v {
         Value::Null => 0,

@@ -1,16 +1,4 @@
 //! Errors for the wire protocol.
-//!
-//! Two separate things live here and they are not the same thing.
-//!
-//! `ProtoError` is a local failure: bytes arrived that this codec could not
-//! make sense of. It never crosses the wire.
-//!
-//! `ErrorCode` is the contract: a `u16` that does cross the wire, inside an
-//! `Error` message, and that a client is allowed to match on. The Rust enums
-//! in this workspace are internal and free to change shape between versions;
-//! these numbers are not. See docs/PROTOCOL.md.
-//!
-//! Hand rolled instead of pulling in thiserror, see ADR-008 and ADR-020.
 
 use std::fmt;
 
@@ -18,9 +6,6 @@ use std::fmt;
 pub type Result<T> = std::result::Result<T, ProtoError>;
 
 /// A failure decoding or encoding protocol bytes.
-///
-/// The invariant that matters, and the one the fuzzer checks: arbitrary
-/// bytes from a socket must surface as one of these, never as a panic.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ProtoError {
     /// The buffer ended before the value being read did.
@@ -31,7 +16,6 @@ pub enum ProtoError {
         available: usize,
     },
     /// A declared length exceeds what the protocol allows, or what the
-    /// remaining bytes could satisfy.
     TooLarge {
         /// What the wire claimed.
         declared: u64,
@@ -39,9 +23,6 @@ pub enum ProtoError {
         limit: u64,
     },
     /// A declared element count exceeds the protocol's cap for that
-    /// message. Distinct from `TooLarge` because the failure is different
-    /// in kind: the bytes might well be there, and the objection is to how
-    /// much memory holding them would cost.
     TooManyElements {
         /// What the wire claimed.
         declared: u64,
@@ -51,7 +32,6 @@ pub enum ProtoError {
     /// A tag or message type byte that this version does not define.
     UnknownTag(u8),
     /// A field held a value outside its permitted set, e.g. a bool that was
-    /// neither 0 nor 1.
     Malformed(&'static str),
     /// Text that claimed to be UTF-8 and was not.
     BadUtf8,
@@ -88,9 +68,6 @@ impl fmt::Display for ProtoError {
 impl std::error::Error for ProtoError {}
 
 /// The `u16` sent inside an `Error` message.
-///
-/// These numbers are the stable part of the protocol. Adding one is a
-/// compatible change; changing what an existing one means is not.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u16)]
 pub enum ErrorCode {
@@ -107,8 +84,6 @@ pub enum ErrorCode {
     /// The statement parsed and failed while running.
     Execution = 0x0006,
     /// The single writer (ADR-003) refused the statement rather than
-    /// queueing it. Reserved: see docs/PROTOCOL.md, the waiting policy is
-    /// still open.
     WriteQueue = 0x0007,
     /// The server is closing and will accept no more statements.
     ShuttingDown = 0x0008,
@@ -121,11 +96,6 @@ impl ErrorCode {
     }
 
     /// Map a number from the wire back to a code.
-    ///
-    /// An unknown code is not an error. A client built against version 1
-    /// may meet a server that has since added codes, and the sensible
-    /// reading of an unrecognized one is "some failure, see the message"
-    /// rather than a dropped connection.
     pub fn from_u16(v: u16) -> Option<Self> {
         Some(match v {
             0x0001 => ErrorCode::Protocol,

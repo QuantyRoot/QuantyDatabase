@@ -725,3 +725,27 @@ transaction. This was already true and is now written down.
 The queue is a fairness surface. FIFO is the starting point because it is
 the one whose behaviour is predictable under overload; anything cleverer
 waits for a benchmark showing FIFO hurting, per ADR-016.
+
+## ADR-025: EPOLLEXCLUSIVE distributes badly, so SO_REUSEPORT is next
+
+ADR-023 named `SO_REUSEPORT` for spreading accepts across workers. It was
+built with `EPOLLEXCLUSIVE` instead: every worker watches one shared
+listener and the kernel wakes exactly one of them per connection. That
+costs no syscalls we did not already have, where `SO_REUSEPORT` needs
+`socket`, `setsockopt`, `bind` and `listen` written by hand along with a
+`sockaddr`, and ADR-016 says not to buy the harder shape before something
+asks for it.
+
+Something asked. Five hundred connections against three workers landed
+354 / 82 / 64. The kernel wakes the first waiter on the queue and that is
+usually the same one, so a shared listener does not balance, it favours.
+
+This matters because of what the acceptance criterion measures. Ten
+thousand connections spread 70/20/10 across workers on two cores is not a
+two core test; it is a one core test with two idle helpers, and it would
+fail for a reason that has nothing to do with the reactor.
+
+So `SO_REUSEPORT` is now justified by a measurement rather than by
+preference, and it lands before the acceptance run. `EPOLLEXCLUSIVE` stays
+in place until then because it is correct, only unbalanced, and the tests
+that cover the accept path do not care which of the two is underneath.

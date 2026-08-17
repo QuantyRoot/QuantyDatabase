@@ -29,6 +29,7 @@ usage:
   quanty import <source.sqlite> <target.qdb> [--dry-run] [--strict]
   quanty run <database.qdb> <statement> [--sql]
   quanty shell <database.qdb> [--sql]
+  quanty serve <database.qdb> [--listen <addr>] [--workers <n>]
   quanty tables <database.qdb>
 
   create   make an empty database
@@ -40,6 +41,9 @@ usage:
   tables   list the tables in a database
 
   --sql    read the statement in sql rather than qql
+
+serve    --listen   address to bind, default 127.0.0.1:7878
+         --workers  event loop threads, default one per core
 ";
 
 fn main() -> ExitCode {
@@ -96,6 +100,8 @@ struct Flags {
     dry_run: bool,
     strict: bool,
     sql: bool,
+    listen: Option<String>,
+    workers: Option<usize>,
 }
 
 fn split_flags(args: &[String]) -> Result<(Vec<&str>, Flags), Failure> {
@@ -104,9 +110,34 @@ fn split_flags(args: &[String]) -> Result<(Vec<&str>, Flags), Failure> {
         dry_run: false,
         strict: false,
         sql: false,
+        listen: None,
+        workers: None,
     };
+    let mut expect: Option<&str> = None;
     for arg in args {
+        if let Some(name) = expect.take() {
+            match name {
+                "--listen" => flags.listen = Some(arg.clone()),
+                "--workers" => {
+                    let n = arg
+                        .parse::<usize>()
+                        .map_err(|_| usage(format!("--workers wants a number, got {arg}")))?;
+                    if n == 0 {
+                        return Err(usage("--workers must be at least 1"));
+                    }
+                    flags.workers = Some(n);
+                }
+                _ => unreachable!(),
+            }
+            continue;
+        }
         match arg.as_str() {
+            "--listen" | "--workers" => {
+                expect = Some(match arg.as_str() {
+                    "--listen" => "--listen",
+                    _ => "--workers",
+                })
+            }
             "--dry-run" => flags.dry_run = true,
             "--strict" => flags.strict = true,
             "--sql" => flags.sql = true,
@@ -143,6 +174,10 @@ fn run(args: &[String]) -> Result<(), Failure> {
             [database] => shell(Path::new(database), &flags),
             _ => Err(usage("shell takes a database")),
         },
+        "serve" => match rest {
+            [database] => serve(Path::new(database), &flags),
+            _ => Err(usage("serve takes a database")),
+        },
         "tables" => match rest {
             [database] => run_statement(
                 Path::new(database),
@@ -151,6 +186,8 @@ fn run(args: &[String]) -> Result<(), Failure> {
                     dry_run: false,
                     strict: false,
                     sql: false,
+                    listen: None,
+                    workers: None,
                 },
             ),
             _ => Err(usage("tables takes a database")),
@@ -325,4 +362,90 @@ fn shell(database: &Path, flags: &Flags) -> Result<(), Failure> {
 fn is_terminal() -> bool {
     use std::io::IsTerminal;
     std::io::stdin().is_terminal()
+}
+
+#[cfg(target_os = "linux")]
+fn serve(database: &Path, flags: &Flags) -> Result<(), Failure> {
+    use std::net::TcpListener;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use std::thread;
+    use std::time::Duration;
+
+    use quanty_server::{Idle, Worker};
+
+    if !database.exists() {
+        return Err(failed(format!("no database at {}", database.display())));
+    }
+    open(database)?;
+
+    let addr = flags.listen.as_deref().unwrap_or("127.0.0.1:7878");
+    let workers = match flags.workers {
+        Some(n) => n,
+        None => thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1),
+    };
+
+    let listener = TcpListener::bind(addr).map_err(|e| failed(format!("binding {addr}: {e}")))?;
+    listener
+        .set_nonblocking(true)
+        .map_err(|e| failed(format!("{addr}: {e}")))?;
+    let bound = listener
+        .local_addr()
+        .map_err(|e| failed(format!("{addr}: {e}")))?;
+    let listener = Arc::new(listener);
+
+    let running = Arc::new(AtomicBool::new(true));
+    let accepted = Arc::new(AtomicUsize::new(0));
+    let live: Arc<Vec<AtomicUsize>> = Arc::new((0..workers).map(|_| AtomicUsize::new(0)).collect());
+
+    let mut handles = Vec::with_capacity(workers);
+    for id in 0..workers {
+        let mut worker = Worker::new(listener.clone(), running.clone())
+            .map_err(|e| failed(format!("worker {id}: {e}")))?;
+        let running = running.clone();
+        let accepted = accepted.clone();
+        let live = live.clone();
+        handles.push(thread::spawn(move || {
+            let mut idle = Idle;
+            while running.load(Ordering::Relaxed) {
+                match worker.turn(200, &mut idle) {
+                    Ok(turn) => {
+                        if turn.accepted > 0 {
+                            accepted.fetch_add(turn.accepted, Ordering::Relaxed);
+                        }
+                        live[id].store(worker.len(), Ordering::Relaxed);
+                    }
+                    Err(e) => {
+                        eprintln!("worker {id}: {e}");
+                        break;
+                    }
+                }
+            }
+            worker.shutdown();
+        }));
+    }
+
+    emit(&format!("listening on {bound}, {workers} workers"))?;
+    emit("connections are accepted and held; statements are not served yet")?;
+
+    loop {
+        thread::sleep(Duration::from_secs(5));
+        let held: usize = live.iter().map(|c| c.load(Ordering::Relaxed)).sum();
+        let spread: Vec<usize> = live.iter().map(|c| c.load(Ordering::Relaxed)).collect();
+        emit(&format!(
+            "held={held} accepted={} spread={spread:?}",
+            accepted.load(Ordering::Relaxed)
+        ))?;
+        if handles.iter().all(|h| h.is_finished()) {
+            break;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn serve(_database: &Path, _flags: &Flags) -> Result<(), Failure> {
+    Err(failed("serve needs epoll and is linux only for now"))
 }

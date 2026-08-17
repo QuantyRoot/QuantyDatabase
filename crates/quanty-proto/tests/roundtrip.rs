@@ -1,7 +1,4 @@
 //! Round trips and the edges of the format.
-//!
-//! The fuzzer next door proves that garbage does not panic. This file
-//! proves the format means what docs/PROTOCOL.md says it means.
 
 use quanty_core::Value;
 use quanty_proto::codec::Writer;
@@ -44,7 +41,6 @@ fn client_messages_round_trip() {
         ClientMessage::Query("get users".into()),
         ClientMessage::QuerySql("select 1".into()),
         ClientMessage::Query(String::new()),
-        // Non-ASCII must survive; the repo is ASCII, the wire is not.
         ClientMessage::Query("get \u{263a} where name = 'zurich'".into()),
     ] {
         roundtrip_client(&m);
@@ -100,8 +96,6 @@ fn every_value_kind_survives() {
 
 #[test]
 fn float_edge_cases_keep_their_meaning() {
-    // Bits, not a rendering: these are exactly the values a decimal
-    // round trip would quietly destroy.
     for f in [f64::INFINITY, f64::NEG_INFINITY] {
         let m = ServerMessage::RowBatch {
             rows: vec![vec![Value::Float(f)]],
@@ -111,7 +105,6 @@ fn float_edge_cases_keep_their_meaning() {
         assert_eq!(back, m);
     }
 
-    // NaN is not equal to itself, so compare the bits.
     let m = ServerMessage::RowBatch {
         rows: vec![vec![Value::Float(f64::NAN)]],
     };
@@ -185,13 +178,9 @@ fn oversized_frame_is_refused_before_the_body_is_read() {
 
 #[test]
 fn a_lying_length_costs_an_error_and_not_memory() {
-    // Claims four billion bytes of text in a four byte body. If this
-    // allocated first and checked second, it would be a way to ask a
-    // server for memory.
     let body = u32::MAX.to_le_bytes().to_vec();
     assert!(ClientMessage::decode(T_QUERY, &body).is_err());
 
-    // Same trick one level down: a row batch claiming a huge row count.
     assert!(ServerMessage::decode(T_ROW_BATCH, &body).is_err());
 }
 
@@ -229,8 +218,6 @@ fn invalid_utf8_is_refused_not_replaced() {
 }
 
 /// The size function is a second description of the encoder and could
-/// drift from it, which would silently produce oversized frames. This is
-/// what makes that impossible to ship.
 #[test]
 fn encoded_len_matches_encoder() {
     let values = [
@@ -258,7 +245,6 @@ fn encoded_len_matches_encoder() {
 #[test]
 fn a_count_above_the_protocol_cap_is_refused() {
     use quanty_proto::{MAX_ROWS_PER_BATCH, MAX_VALUES_PER_ROW};
-    // Encoding refuses it too, so a bad frame never leaves this process.
     let rows: Vec<Vec<Value>> = (0..MAX_ROWS_PER_BATCH + 1).map(|_| vec![]).collect();
     assert!(ServerMessage::RowBatch { rows }.encode().is_err());
 
@@ -270,7 +256,6 @@ fn a_count_above_the_protocol_cap_is_refused() {
 
 #[test]
 fn batching_keeps_every_row_and_fits_every_frame() {
-    // Rows big enough that one frame cannot hold them all.
     let row = || vec![Value::Bytes(vec![7u8; 1024 * 1024])];
     let rows: Vec<Vec<Value>> = (0..40).map(|_| row()).collect();
     let batches = batch_rows(rows).expect("batch");
@@ -328,8 +313,6 @@ fn error_codes_survive_the_wire() {
     ] {
         assert_eq!(ErrorCode::from_u16(c.as_u16()), Some(c));
     }
-    // An unknown code is readable as "some failure", not a dropped
-    // connection: a version 1 client may meet a server that added codes.
     assert_eq!(ErrorCode::from_u16(0xFFFF), None);
     let m = ServerMessage::Error {
         code: 0xFFFF,
