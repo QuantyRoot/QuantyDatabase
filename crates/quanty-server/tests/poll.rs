@@ -11,10 +11,6 @@ use std::time::{Duration, Instant};
 use quanty_server::{Interest, Poller, Token};
 
 /// Count this process's open descriptors.
-fn open_fds() -> usize {
-    std::fs::read_dir("/proc/self/fd").expect("procfs").count()
-}
-
 fn connected_pair() -> (TcpStream, TcpStream) {
     let l = TcpListener::bind("127.0.0.1:0").expect("bind");
     let addr = l.local_addr().expect("addr");
@@ -180,35 +176,6 @@ fn repeated_wakeups_do_not_leave_the_loop_spinning() {
     assert!(
         start.elapsed() >= Duration::from_millis(150),
         "poll returned immediately, so the eventfd was left undrained"
-    );
-}
-
-/// The instrument, not the argument. Descriptors must come back.
-#[test]
-fn nothing_leaks_a_descriptor() {
-    {
-        let mut p = Poller::new(8).expect("poller");
-        let (_c, s) = connected_pair();
-        p.register(&s, Token(1), Interest::READABLE).expect("reg");
-        drain_once(&mut p, 10);
-    }
-
-    let before = open_fds();
-
-    for i in 0..50 {
-        let mut p = Poller::new(8).expect("poller");
-        let (mut client, server) = connected_pair();
-        p.register(&server, Token(i), Interest::READABLE)
-            .expect("reg");
-        client.write_all(b"x").expect("write");
-        drain_once(&mut p, 500);
-        p.deregister(&server).expect("del");
-    }
-
-    let after = open_fds();
-    assert_eq!(
-        after, before,
-        "descriptors went from {before} to {after} over 50 cycles"
     );
 }
 

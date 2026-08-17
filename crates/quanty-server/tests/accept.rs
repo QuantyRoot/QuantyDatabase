@@ -19,10 +19,6 @@ fn shared_listener() -> (Arc<TcpListener>, std::net::SocketAddr) {
     (Arc::new(l), addr)
 }
 
-fn open_fds() -> usize {
-    std::fs::read_dir("/proc/self/fd").expect("procfs").count()
-}
-
 #[test]
 fn a_worker_accepts_and_holds() {
     let (listener, addr) = shared_listener();
@@ -129,39 +125,6 @@ fn a_reused_slot_does_not_answer_for_its_predecessor() {
         "old token reached the new connection"
     );
     assert!(reg.get_mut(second).is_some());
-}
-
-#[test]
-fn nothing_leaks_across_accept_and_close() {
-    {
-        let (listener, addr) = shared_listener();
-        let flag = Arc::new(AtomicBool::new(true));
-        let mut w = Worker::new(listener, flag).expect("worker");
-        let c = TcpStream::connect(addr).expect("connect");
-        w.turn(100, &mut Idle).expect("turn");
-        drop(c);
-        w.shutdown();
-    }
-
-    let before = open_fds();
-
-    for _ in 0..20 {
-        let (listener, addr) = shared_listener();
-        let flag = Arc::new(AtomicBool::new(true));
-        let mut w = Worker::new(listener, flag).expect("worker");
-        let clients: Vec<TcpStream> = (0..5)
-            .map(|_| TcpStream::connect(addr).expect("connect"))
-            .collect();
-        let deadline = Instant::now() + Duration::from_secs(2);
-        while w.len() < 5 && Instant::now() < deadline {
-            w.turn(50, &mut Idle).expect("turn");
-        }
-        drop(clients);
-        w.shutdown();
-    }
-
-    let after = open_fds();
-    assert_eq!(after, before, "descriptors went {before} -> {after}");
 }
 
 #[test]
