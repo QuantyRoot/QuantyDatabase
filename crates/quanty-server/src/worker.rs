@@ -64,8 +64,21 @@ pub struct Worker {
 impl Worker {
     /// Build a worker over a listener shared with its peers.
     pub fn new(listener: Arc<TcpListener>, running: Arc<AtomicBool>) -> io::Result<Self> {
+        Self::build(listener, running, true)
+    }
+
+    /// Build a worker over a listener only it accepts from.
+    pub fn owning(listener: TcpListener, running: Arc<AtomicBool>) -> io::Result<Self> {
+        Self::build(Arc::new(listener), running, false)
+    }
+
+    fn build(
+        listener: Arc<TcpListener>,
+        running: Arc<AtomicBool>,
+        shared: bool,
+    ) -> io::Result<Self> {
         let poller = Poller::new(EVENTS_PER_TURN)?;
-        poller.register_listener(&*listener, LISTENER)?;
+        poller.register_listener(&*listener, LISTENER, shared)?;
         Ok(Worker {
             poller,
             listener,

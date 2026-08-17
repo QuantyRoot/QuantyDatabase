@@ -1,7 +1,7 @@
 //! The syscall boundary. The only unsafe code in this workspace.
 
 use std::io;
-use std::os::fd::{FromRawFd, OwnedFd, RawFd};
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 
 /// Close the descriptor on `exec`.
 const CLOEXEC: i32 = 0o2000000;
@@ -69,8 +69,22 @@ impl EpollEvent {
     }
 }
 
+/// Address families and socket options, Linux values.
+pub const AF_INET: u16 = 2;
+/// IPv6.
+pub const AF_INET6: u16 = 10;
+const SOCK_STREAM: i32 = 1;
+const SOCK_NONBLOCK: i32 = 0o4000;
+const SOL_SOCKET: i32 = 1;
+const SO_REUSEADDR: i32 = 2;
+const SO_REUSEPORT: i32 = 15;
+
 extern "C" {
     fn epoll_create1(flags: i32) -> i32;
+    fn socket(domain: i32, ty: i32, protocol: i32) -> i32;
+    fn setsockopt(fd: i32, level: i32, name: i32, value: *const u8, len: u32) -> i32;
+    fn bind(fd: i32, addr: *const u8, len: u32) -> i32;
+    fn listen(fd: i32, backlog: i32) -> i32;
     fn epoll_ctl(epfd: i32, op: i32, fd: i32, event: *mut EpollEvent) -> i32;
     fn epoll_wait(epfd: i32, events: *mut EpollEvent, maxevents: i32, timeout: i32) -> i32;
     fn eventfd(initval: u32, flags: i32) -> i32;
@@ -155,4 +169,46 @@ fn owned(fd: i32) -> io::Result<OwnedFd> {
     }
     // SAFETY: the kernel just returned this descriptor, nothing else holds
     Ok(unsafe { OwnedFd::from_raw_fd(fd) })
+}
+
+/// Create a non-blocking stream socket with the port sharing options set.
+pub fn reuseport_socket(family: u16) -> io::Result<OwnedFd> {
+    let domain = family as i32;
+    // SAFETY: no pointers; all arguments are kernel constants.
+    let fd = unsafe { socket(domain, SOCK_STREAM | CLOEXEC | SOCK_NONBLOCK, 0) };
+    let fd = owned(fd)?;
+    set_flag(fd.as_raw_fd(), SO_REUSEADDR)?;
+    set_flag(fd.as_raw_fd(), SO_REUSEPORT)?;
+    Ok(fd)
+}
+
+fn set_flag(fd: RawFd, name: i32) -> io::Result<()> {
+    let on: i32 = 1;
+    let bytes = on.to_ne_bytes();
+    // SAFETY: four bytes on this frame, which is the width these options take.
+    let rc = unsafe { setsockopt(fd, SOL_SOCKET, name, bytes.as_ptr(), bytes.len() as u32) };
+    if rc < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// Bind an already-configured socket to an encoded address.
+pub fn bind_to(fd: RawFd, addr: &[u8]) -> io::Result<()> {
+    // SAFETY: the slice outlives the call and its length is passed alongside.
+    let rc = unsafe { bind(fd, addr.as_ptr(), addr.len() as u32) };
+    if rc < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// Start accepting.
+pub fn listen_on(fd: RawFd, backlog: i32) -> io::Result<()> {
+    // SAFETY: no pointers.
+    let rc = unsafe { listen(fd, backlog) };
+    if rc < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
 }

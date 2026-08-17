@@ -208,3 +208,52 @@ fn a_handler_sees_what_the_peer_sent() {
     }
     assert_eq!(&echo.0, b"hello");
 }
+
+#[test]
+fn reuseport_spreads_where_a_shared_listener_does_not() {
+    use quanty_server::bind_reuseport;
+
+    let probe = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = probe.local_addr().expect("addr");
+    drop(probe);
+
+    let flag = Arc::new(AtomicBool::new(true));
+    let mut workers: Vec<Worker> = (0..4)
+        .map(|_| {
+            let l = bind_reuseport(addr).expect("reuseport");
+            l.set_nonblocking(true).expect("nonblocking");
+            Worker::owning(l, flag.clone()).expect("worker")
+        })
+        .collect();
+
+    let clients: Vec<TcpStream> = (0..200)
+        .map(|_| TcpStream::connect(addr).expect("connect"))
+        .collect();
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let total: usize = workers.iter().map(|w| w.len()).sum();
+        if total >= 200 || Instant::now() >= deadline {
+            break;
+        }
+        for w in workers.iter_mut() {
+            w.turn(20, &mut Idle).expect("turn");
+        }
+    }
+
+    let counts: Vec<usize> = workers.iter().map(|w| w.len()).collect();
+    let total: usize = counts.iter().sum();
+    assert_eq!(total, 200, "accepted {total} of 200, spread {counts:?}");
+    println!("reuseport spread: {counts:?}");
+
+    let worst = counts.iter().copied().max().expect("counts");
+    assert!(
+        worst * 2 <= total,
+        "one worker took {worst} of {total}, which is not a spread: {counts:?}"
+    );
+
+    drop(clients);
+    for w in workers.iter_mut() {
+        w.shutdown();
+    }
+}

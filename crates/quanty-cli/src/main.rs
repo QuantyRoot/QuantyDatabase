@@ -387,14 +387,11 @@ fn serve(database: &Path, flags: &Flags) -> Result<(), Failure> {
             .unwrap_or(1),
     };
 
-    let listener = TcpListener::bind(addr).map_err(|e| failed(format!("binding {addr}: {e}")))?;
-    listener
-        .set_nonblocking(true)
-        .map_err(|e| failed(format!("{addr}: {e}")))?;
-    let bound = listener
+    let probe = TcpListener::bind(addr).map_err(|e| failed(format!("binding {addr}: {e}")))?;
+    let bound = probe
         .local_addr()
         .map_err(|e| failed(format!("{addr}: {e}")))?;
-    let listener = Arc::new(listener);
+    drop(probe);
 
     let running = Arc::new(AtomicBool::new(true));
     let accepted = Arc::new(AtomicUsize::new(0));
@@ -402,7 +399,11 @@ fn serve(database: &Path, flags: &Flags) -> Result<(), Failure> {
 
     let mut handles = Vec::with_capacity(workers);
     for id in 0..workers {
-        let mut worker = Worker::new(listener.clone(), running.clone())
+        let own = quanty_server::bind_reuseport(bound)
+            .map_err(|e| failed(format!("worker {id} binding {bound}: {e}")))?;
+        own.set_nonblocking(true)
+            .map_err(|e| failed(format!("worker {id}: {e}")))?;
+        let mut worker = Worker::owning(own, running.clone())
             .map_err(|e| failed(format!("worker {id}: {e}")))?;
         let running = running.clone();
         let accepted = accepted.clone();

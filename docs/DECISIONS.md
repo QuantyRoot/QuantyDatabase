@@ -746,6 +746,15 @@ two core test; it is a one core test with two idle helpers, and it would
 fail for a reason that has nothing to do with the reactor.
 
 So `SO_REUSEPORT` is now justified by a measurement rather than by
-preference, and it lands before the acceptance run. `EPOLLEXCLUSIVE` stays
-in place until then because it is correct, only unbalanced, and the tests
-that cover the accept path do not care which of the two is underneath.
+preference. It landed in the same session: five hundred connections across
+the same three workers went 155 / 173 / 172, because the kernel hashes the
+four-tuple instead of waking whoever was first in the queue.
+
+The price is four more functions at the boundary ADR-023 opened, `socket`,
+`setsockopt`, `bind` and `listen`, plus a `sockaddr` encoded by hand. That
+takes it from six to ten. The descriptor still goes straight to
+`TcpListener::from_raw_fd`, so ownership and closing stay with the standard
+library and the new code is a bind sequence and nothing else.
+
+`EPOLLEXCLUSIVE` stays for the case of a listener genuinely shared, which
+the differential test against the thread fallback will want.

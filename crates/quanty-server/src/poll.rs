@@ -130,13 +130,22 @@ impl Poller {
     }
 
     /// Start watching a listening socket shared by every worker.
-    pub fn register_listener(&self, fd: &impl AsRawFd, token: Token) -> io::Result<()> {
+    pub fn register_listener(
+        &self,
+        fd: &impl AsRawFd,
+        token: Token,
+        shared: bool,
+    ) -> io::Result<()> {
+        let mut events = sys::EPOLLIN;
+        if shared {
+            events |= sys::EPOLLEXCLUSIVE;
+        }
         sys::ctl(
             self.epoll.as_raw_fd(),
             sys::EPOLL_CTL_ADD,
             fd.as_raw_fd(),
             sys::EpollEvent {
-                events: sys::EPOLLIN | sys::EPOLLEXCLUSIVE,
+                events,
                 data: token.0,
             },
         )

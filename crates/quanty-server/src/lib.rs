@@ -8,6 +8,9 @@
 mod sys;
 
 #[cfg(target_os = "linux")]
+pub mod listener;
+
+#[cfg(target_os = "linux")]
 pub mod poll;
 
 #[cfg(target_os = "linux")]
@@ -19,5 +22,7 @@ pub mod worker;
 #[cfg(target_os = "linux")]
 pub use poll::{Event, Interest, Poller, Token, Waker, WAKE_TOKEN};
 
+#[cfg(target_os = "linux")]
+pub use listener::bind_reuseport;
 #[cfg(target_os = "linux")]
 pub use worker::{Handler, Idle, Turn, Worker};
