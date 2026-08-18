@@ -7,6 +7,8 @@
 #[allow(unsafe_code)]
 mod sys;
 
+pub mod conn;
+
 #[cfg(target_os = "linux")]
 pub mod listener;
 
@@ -22,6 +24,7 @@ pub mod worker;
 #[cfg(target_os = "linux")]
 pub use poll::{Event, Interest, Poller, Token, Waker, WAKE_TOKEN};
 
+pub use conn::{Conn, Service, Step};
 #[cfg(target_os = "linux")]
 pub use listener::bind_reuseport;
 #[cfg(target_os = "linux")]
