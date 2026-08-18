@@ -1,10 +1,11 @@
 //! One event loop thread: accepts from the shared listener, owns what it accepts.
 
 use std::io;
-use std::net::{TcpListener, TcpStream};
+use std::net::TcpListener;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
+use crate::conn::{Service, Step};
 use crate::poll::{Event, Interest, Poller, Token, Waker};
 use crate::registry::Registry;
 
@@ -36,20 +37,15 @@ impl Turn {
     }
 }
 
-/// What a worker does with a connection that has something to say.
-pub trait Handler {
-    /// Called for each readiness event. Returning false closes the connection.
-    fn ready(&mut self, conn: &mut TcpStream, event: Event) -> bool;
-}
-
-/// A handler that accepts connections and never reads them.
+/// A service that answers nothing.
 ///
-/// What the 10k idle half of the acceptance criterion needs, and nothing more.
+/// What the idle half of the acceptance criterion needs: connections are
+/// accepted and held, and no statement ever arrives.
 pub struct Idle;
 
-impl Handler for Idle {
-    fn ready(&mut self, _conn: &mut TcpStream, event: Event) -> bool {
-        !event.is_error() && !event.is_read_closed()
+impl Service for Idle {
+    fn call(&mut self, _request: quanty_proto::ClientMessage) -> Vec<quanty_proto::ServerMessage> {
+        Vec::new()
     }
 }
 
@@ -103,7 +99,7 @@ impl Worker {
     }
 
     /// Run one turn of the loop.
-    pub fn turn(&mut self, timeout_ms: i32, handler: &mut impl Handler) -> io::Result<Turn> {
+    pub fn turn(&mut self, timeout_ms: i32, service: &mut impl Service) -> io::Result<Turn> {
         let mut events = Vec::new();
         self.poller.poll(timeout_ms, |e| events.push(e))?;
 
@@ -112,17 +108,17 @@ impl Worker {
             if event.token == LISTENER {
                 turn.add(self.accept_all()?);
             } else {
-                turn.add(self.dispatch(event, handler));
+                turn.add(self.dispatch(event, service));
             }
         }
         Ok(turn)
     }
 
     /// Run until the shared flag goes false.
-    pub fn run(&mut self, handler: &mut impl Handler) -> io::Result<Turn> {
+    pub fn run(&mut self, service: &mut impl Service) -> io::Result<Turn> {
         let mut total = Turn::default();
         while self.running.load(Ordering::Relaxed) {
-            total.add(self.turn(100, handler)?);
+            total.add(self.turn(100, service)?);
         }
         Ok(total)
     }
@@ -148,15 +144,54 @@ impl Worker {
         }
     }
 
-    fn dispatch(&mut self, event: Event, handler: &mut impl Handler) -> Turn {
+    fn dispatch(&mut self, event: Event, service: &mut impl Service) -> Turn {
         let mut turn = Turn::default();
+        let poller = &self.poller;
         let Some(conn) = self.conns.get_mut(event.token) else {
             turn.stale += 1;
             return turn;
         };
         turn.ready += 1;
-        let keep = handler.ready(&mut conn.socket, event);
-        if !keep {
+
+        let mut finished = event.is_error();
+        if !finished && event.is_readable() {
+            match conn.state.fill(&mut conn.socket) {
+                Ok(true) => {}
+                Ok(false) => conn.state.peer_done(),
+                Err(_) => finished = true,
+            }
+        }
+        while !finished {
+            let before = conn.state.buffered();
+            if conn.state.step(service) == Step::Closed {
+                finished = true;
+            }
+            if conn.state.flush(&mut conn.socket).is_err() {
+                finished = true;
+            }
+            if conn.state.is_finished() {
+                finished = true;
+            }
+            if finished || conn.state.wants_write() || conn.state.buffered() == before {
+                break;
+            }
+        }
+
+        if !finished {
+            let wanted = if conn.state.wants_write() {
+                Interest::both()
+            } else {
+                Interest::READABLE
+            };
+            if wanted != conn.interest {
+                match poller.reregister(&conn.socket, event.token, wanted) {
+                    Ok(()) => conn.interest = wanted,
+                    Err(_) => finished = true,
+                }
+            }
+        }
+
+        if finished {
             self.close(event.token);
             turn.closed += 1;
         }

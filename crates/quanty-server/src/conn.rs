@@ -33,6 +33,7 @@ enum Phase {
 /// Buffers and phase for one peer.
 pub struct Conn {
     phase: Phase,
+    input_closed: bool,
     inbuf: Vec<u8>,
     outbuf: Vec<u8>,
     outpos: usize,
@@ -49,7 +50,8 @@ impl Conn {
     pub fn new() -> Self {
         Conn {
             phase: Phase::Hello,
-            inbuf: Vec::with_capacity(1024),
+            input_closed: false,
+            inbuf: Vec::new(),
             outbuf: Vec::new(),
             outpos: 0,
         }
@@ -62,7 +64,25 @@ impl Conn {
 
     /// Whether the connection is finished and can be dropped.
     pub fn is_finished(&self) -> bool {
-        self.phase == Phase::Draining && !self.wants_write()
+        (self.phase == Phase::Draining || self.input_closed) && !self.wants_write()
+    }
+
+    /// Bytes read from the socket but not yet consumed.
+    ///
+    /// Level-triggered epoll reports what sits in the socket, not what sits
+    /// here, so a caller that stops after one step can be left holding a
+    /// complete request that nothing will ever wake it to finish.
+    pub fn buffered(&self) -> usize {
+        self.inbuf.len()
+    }
+
+    /// Note that the peer will send nothing further.
+    ///
+    /// Buffered input is still processed and pending output still goes out,
+    /// so a client that half-closes after a complete statement gets its
+    /// answer instead of losing it.
+    pub fn peer_done(&mut self) {
+        self.input_closed = true;
     }
 
     /// Read what the socket has. Returns false when the peer is done sending.

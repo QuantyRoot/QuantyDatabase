@@ -28,4 +28,4 @@ pub use conn::{Conn, Service, Step};
 #[cfg(target_os = "linux")]
 pub use listener::bind_reuseport;
 #[cfg(target_os = "linux")]
-pub use worker::{Handler, Idle, Turn, Worker};
+pub use worker::{Idle, Turn, Worker};

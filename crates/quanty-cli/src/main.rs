@@ -372,7 +372,18 @@ fn serve(database: &Path, flags: &Flags) -> Result<(), Failure> {
     use std::thread;
     use std::time::Duration;
 
-    use quanty_server::{Idle, Worker};
+    use quanty_proto::{ClientMessage, ErrorCode, ServerMessage};
+    use quanty_server::{Service, Worker};
+
+    struct NotYet;
+    impl Service for NotYet {
+        fn call(&mut self, _request: ClientMessage) -> Vec<ServerMessage> {
+            vec![ServerMessage::error(
+                ErrorCode::Execution,
+                "statements are not served yet",
+            )]
+        }
+    }
 
     if !database.exists() {
         return Err(failed(format!("no database at {}", database.display())));
@@ -409,9 +420,9 @@ fn serve(database: &Path, flags: &Flags) -> Result<(), Failure> {
         let accepted = accepted.clone();
         let live = live.clone();
         handles.push(thread::spawn(move || {
-            let mut idle = Idle;
+            let mut service = NotYet;
             while running.load(Ordering::Relaxed) {
-                match worker.turn(200, &mut idle) {
+                match worker.turn(200, &mut service) {
                     Ok(turn) => {
                         if turn.accepted > 0 {
                             accepted.fetch_add(turn.accepted, Ordering::Relaxed);
@@ -429,7 +440,7 @@ fn serve(database: &Path, flags: &Flags) -> Result<(), Failure> {
     }
 
     emit(&format!("listening on {bound}, {workers} workers"))?;
-    emit("connections are accepted and held; statements are not served yet")?;
+    emit("handshake and protocol are live; statements answer with an error until the executor is wired")?;
 
     loop {
         thread::sleep(Duration::from_secs(5));

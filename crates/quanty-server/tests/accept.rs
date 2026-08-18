@@ -169,47 +169,6 @@ fn accept(l: &TcpListener) -> (TcpStream, std::net::SocketAddr) {
 }
 
 #[test]
-fn a_handler_sees_what_the_peer_sent() {
-    struct Echo(Vec<u8>);
-    impl quanty_server::Handler for Echo {
-        fn ready(&mut self, conn: &mut TcpStream, event: quanty_server::Event) -> bool {
-            use std::io::Read;
-            if event.is_error() {
-                return false;
-            }
-            let mut buf = [0u8; 64];
-            match conn.read(&mut buf) {
-                Ok(0) => false,
-                Ok(n) => {
-                    self.0.extend_from_slice(&buf[..n]);
-                    true
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => true,
-                Err(_) => false,
-            }
-        }
-    }
-
-    let (listener, addr) = shared_listener();
-    let flag = Arc::new(AtomicBool::new(true));
-    let mut w = Worker::new(listener, flag).expect("worker");
-    let mut echo = Echo(Vec::new());
-
-    let mut c = TcpStream::connect(addr).expect("connect");
-    let deadline = Instant::now() + Duration::from_secs(3);
-    while w.is_empty() && Instant::now() < deadline {
-        w.turn(50, &mut echo).expect("turn");
-    }
-    c.write_all(b"hello").expect("write");
-
-    let deadline = Instant::now() + Duration::from_secs(3);
-    while echo.0.len() < 5 && Instant::now() < deadline {
-        w.turn(50, &mut echo).expect("turn");
-    }
-    assert_eq!(&echo.0, b"hello");
-}
-
-#[test]
 fn reuseport_spreads_where_a_shared_listener_does_not() {
     use quanty_server::bind_reuseport;
 
@@ -256,4 +215,102 @@ fn reuseport_spreads_where_a_shared_listener_does_not() {
     for w in workers.iter_mut() {
         w.shutdown();
     }
+}
+
+#[test]
+fn a_whole_request_crosses_a_real_socket() {
+    use quanty_proto::{ClientHello, ClientMessage, ServerMessage, VERSION};
+    use std::io::Read;
+
+    struct Echo;
+    impl quanty_server::Service for Echo {
+        fn call(&mut self, r: ClientMessage) -> Vec<ServerMessage> {
+            match r {
+                ClientMessage::Query(s) => vec![ServerMessage::Lines(vec![s])],
+                _ => vec![ServerMessage::Ok],
+            }
+        }
+    }
+
+    let (listener, addr) = shared_listener();
+    let flag = Arc::new(AtomicBool::new(true));
+    let mut w = Worker::new(listener, flag).expect("worker");
+    let mut svc = Echo;
+
+    let mut client = TcpStream::connect(addr).expect("connect");
+    client
+        .set_read_timeout(Some(Duration::from_millis(200)))
+        .expect("timeout");
+
+    let mut request = ClientHello { version: VERSION }.encode().to_vec();
+    request.extend_from_slice(&ClientMessage::Query("get users".into()).encode().unwrap());
+    client.write_all(&request).expect("write");
+
+    let mut got = Vec::new();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while got.len() < 4 + 5 + 5 + 4 + 9 && Instant::now() < deadline {
+        w.turn(20, &mut svc).expect("turn");
+        let mut buf = [0u8; 256];
+        match client.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => got.extend_from_slice(&buf[..n]),
+            Err(_) => {}
+        }
+    }
+
+    assert!(got.len() >= 4, "no handshake reply: {got:?}");
+    assert_eq!(got[0], 0x01, "handshake refused");
+    assert!(
+        got.windows(9).any(|w| w == b"get users"),
+        "the answer never came back: {} bytes",
+        got.len()
+    );
+}
+
+/// A drained output buffer must not stay registered for writability, or the
+/// loop spins at full speed on a connection with nothing to say.
+#[test]
+fn a_finished_reply_stops_asking_to_write() {
+    use quanty_proto::{ClientHello, ClientMessage, ServerMessage, VERSION};
+
+    struct Big;
+    impl quanty_server::Service for Big {
+        fn call(&mut self, _: ClientMessage) -> Vec<ServerMessage> {
+            vec![ServerMessage::Lines(
+                (0..2000).map(|i| format!("l{i}")).collect(),
+            )]
+        }
+    }
+
+    let (listener, addr) = shared_listener();
+    let flag = Arc::new(AtomicBool::new(true));
+    let mut w = Worker::new(listener, flag).expect("worker");
+    let mut svc = Big;
+
+    let mut client = TcpStream::connect(addr).expect("connect");
+    let mut request = ClientHello { version: VERSION }.encode().to_vec();
+    request.extend_from_slice(&ClientMessage::Query("big".into()).encode().unwrap());
+    client.write_all(&request).expect("write");
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        let turn = w.turn(20, &mut svc).expect("turn");
+        if turn.ready == 0 && turn.accepted == 0 {
+            break;
+        }
+        let mut buf = [0u8; 4096];
+        use std::io::Read;
+        client
+            .set_read_timeout(Some(Duration::from_millis(20)))
+            .ok();
+        let _ = client.read(&mut buf);
+    }
+
+    let start = Instant::now();
+    w.turn(200, &mut svc).expect("turn");
+    assert!(
+        start.elapsed() >= Duration::from_millis(150),
+        "the loop returned immediately, so something is still registered for \
+         writing with nothing to write"
+    );
 }

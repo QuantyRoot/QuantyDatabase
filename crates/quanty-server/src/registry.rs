@@ -2,7 +2,8 @@
 
 use std::net::TcpStream;
 
-use crate::poll::Token;
+use crate::conn::Conn;
+use crate::poll::{Interest, Token};
 
 /// A connection and the state a worker keeps beside it.
 pub struct Connection {
@@ -10,6 +11,15 @@ pub struct Connection {
     pub socket: TcpStream,
     /// Which slot this is, so a handler can hand the token back.
     pub token: Token,
+    /// Protocol state for this peer.
+    pub state: Conn,
+    /// What this socket is currently registered for.
+    ///
+    /// Tracked so the worker only calls into the kernel when the answer
+    /// changes. Leaving WRITABLE registered with an empty output buffer
+    /// makes epoll report readiness on every turn, which is a busy loop
+    /// that looks like load.
+    pub interest: Interest,
 }
 
 struct Slot {
@@ -60,7 +70,12 @@ impl Registry {
         let slot = &mut self.slots[index as usize];
         slot.generation = slot.generation.wrapping_add(1);
         let token = Token::new(index, slot.generation);
-        slot.conn = Some(Connection { socket, token });
+        slot.conn = Some(Connection {
+            socket,
+            token,
+            state: Conn::new(),
+            interest: Interest::READABLE,
+        });
         self.live += 1;
         token
     }
