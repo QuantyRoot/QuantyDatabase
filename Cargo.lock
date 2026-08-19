@@ -5,6 +5,9 @@ version = 3
 [[package]]
 name = "quanty-bench"
 version = "0.2.0"
+dependencies = [
+ "quanty-proto",
+]
 
 [[package]]
 name = "quanty-cli"

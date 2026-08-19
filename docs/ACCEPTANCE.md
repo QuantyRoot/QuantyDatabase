@@ -102,3 +102,30 @@ The continuous-integration job is not this test. It runs a shorter version
 on whatever runner it gets and checks the qualitative failures: descriptors
 that do not come back, memory that grows, connections that hang. It cannot
 validate the 2 vCPU number and does not claim to.
+
+## Measurements
+
+Each line is one run. A number without a machine attached is not a
+measurement, so the machine is part of the record.
+
+```
+2026-08-17  container, 1 core, client on the same core, NotYet service
+  2000 idle held, 800 qps, 30s, 0 failed, mean 56us, max 466us
+   200 idle held, 5000 qps, 15s, 0 failed, mean 190us, max 1105us
+   200 idle held, 20000 qps, 15s, 0 failed, mean 87us, max 2260us
+```
+
+What these show: the reactor and the protocol are not the limit at twenty
+times the rate the criterion asks for, on one core, with the load generator
+competing for it.
+
+What they do not show, and the distinction matters. No statement is
+executed: the service answers an error without touching the database, so
+this times the accept path, the frame codec and the event loop and nothing
+below them. The ten thousand idle connections have not been tried at full
+size here either, because the descriptor limit in this container is 20000
+and both ends of ten thousand connections need exactly that.
+
+Neither replaces the run described above on two dedicated cores. They are
+the floor: whatever the real number turns out to be, it is not being lost
+in framing.

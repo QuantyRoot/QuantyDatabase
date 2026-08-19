@@ -102,6 +102,7 @@ struct Flags {
     sql: bool,
     listen: Option<String>,
     workers: Option<usize>,
+    elchi: bool,
 }
 
 fn split_flags(args: &[String]) -> Result<(Vec<&str>, Flags), Failure> {
@@ -112,6 +113,7 @@ fn split_flags(args: &[String]) -> Result<(Vec<&str>, Flags), Failure> {
         sql: false,
         listen: None,
         workers: None,
+        elchi: false,
     };
     let mut expect: Option<&str> = None;
     for arg in args {
@@ -138,6 +140,7 @@ fn split_flags(args: &[String]) -> Result<(Vec<&str>, Flags), Failure> {
                     _ => "--workers",
                 })
             }
+            "--elchi" => flags.elchi = true,
             "--dry-run" => flags.dry_run = true,
             "--strict" => flags.strict = true,
             "--sql" => flags.sql = true,
@@ -154,8 +157,15 @@ fn split_flags(args: &[String]) -> Result<(Vec<&str>, Flags), Failure> {
 fn run(args: &[String]) -> Result<(), Failure> {
     let (positional, flags) = split_flags(args)?;
     let Some((command, rest)) = positional.split_first() else {
+        if flags.elchi {
+            return emit("<3");
+        }
         return Err(usage("no command given"));
     };
+
+    if flags.elchi {
+        return emit("<3");
+    }
 
     match *command {
         "create" => match rest {
@@ -188,6 +198,7 @@ fn run(args: &[String]) -> Result<(), Failure> {
                     sql: false,
                     listen: None,
                     workers: None,
+                    elchi: false,
                 },
             ),
             _ => Err(usage("tables takes a database")),

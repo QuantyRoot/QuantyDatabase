@@ -11,4 +11,9 @@ repository.workspace = true
 name = "quanty-bench"
 path = "src/main.rs"
 
+[[bin]]
+name = "quanty-acceptance"
+path = "src/bin/acceptance.rs"
+
 [dependencies]
+quanty-proto = { path = "../quanty-proto" }
