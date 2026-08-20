@@ -1,0 +1,24 @@
+[package]
+name = "quanty-service"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The executor thread that answers protocol requests for QuantyDB"
+
+[dependencies]
+quanty-core = { path = "../quanty-core" }
+quanty-exec = { path = "../quanty-exec" }
+quanty-proto = { path = "../quanty-proto" }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+quanty-server = { path = "../quanty-server" }
+
+[dev-dependencies]
+quanty-core = { path = "../quanty-core" }
+quanty-exec = { path = "../quanty-exec" }
+quanty-proto = { path = "../quanty-proto" }
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+quanty-server = { path = "../quanty-server" }

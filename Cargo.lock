@@ -18,6 +18,7 @@ dependencies = [
  "quanty-import",
  "quanty-proto",
  "quanty-server",
+ "quanty-service",
  "quanty-sqlite",
 ]
 
@@ -62,6 +63,16 @@ name = "quanty-server"
 version = "0.2.0"
 dependencies = [
  "quanty-proto",
+]
+
+[[package]]
+name = "quanty-service"
+version = "0.2.0"
+dependencies = [
+ "quanty-core",
+ "quanty-exec",
+ "quanty-proto",
+ "quanty-server",
 ]
 
 [[package]]
