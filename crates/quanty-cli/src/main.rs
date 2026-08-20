@@ -383,23 +383,13 @@ fn serve(database: &Path, flags: &Flags) -> Result<(), Failure> {
     use std::thread;
     use std::time::Duration;
 
-    use quanty_proto::{ClientMessage, ErrorCode, ServerMessage};
-    use quanty_server::{Service, Worker};
-
-    struct NotYet;
-    impl Service for NotYet {
-        fn call(&mut self, _request: ClientMessage) -> Vec<ServerMessage> {
-            vec![ServerMessage::error(
-                ErrorCode::Execution,
-                "statements are not served yet",
-            )]
-        }
-    }
+    use quanty_server::Worker;
+    use quanty_service::{Deadlines, Executor};
 
     if !database.exists() {
         return Err(failed(format!("no database at {}", database.display())));
     }
-    open(database)?;
+    let session = open(database)?;
 
     let addr = flags.listen.as_deref().unwrap_or("127.0.0.1:7878");
     let workers = match flags.workers {
@@ -419,6 +409,11 @@ fn serve(database: &Path, flags: &Flags) -> Result<(), Failure> {
     let accepted = Arc::new(AtomicUsize::new(0));
     let live: Arc<Vec<AtomicUsize>> = Arc::new((0..workers).map(|_| AtomicUsize::new(0)).collect());
 
+    // One thread owns the session; every worker submits to it. It is
+    // created before the workers and dropped after them, so no handle
+    // outlives the executor it points at.
+    let executor = Executor::spawn(session, Deadlines::default());
+
     let mut handles = Vec::with_capacity(workers);
     for id in 0..workers {
         let own = quanty_server::bind_reuseport(bound)
@@ -430,10 +425,10 @@ fn serve(database: &Path, flags: &Flags) -> Result<(), Failure> {
         let running = running.clone();
         let accepted = accepted.clone();
         let live = live.clone();
+        let dispatch = executor.handle();
         handles.push(thread::spawn(move || {
-            let mut service = NotYet;
             while running.load(Ordering::Relaxed) {
-                match worker.turn(200, &mut service) {
+                match worker.turn(200, &dispatch) {
                     Ok(turn) => {
                         if turn.accepted > 0 {
                             accepted.fetch_add(turn.accepted, Ordering::Relaxed);
@@ -446,12 +441,12 @@ fn serve(database: &Path, flags: &Flags) -> Result<(), Failure> {
                     }
                 }
             }
-            worker.shutdown();
+            worker.shutdown(&dispatch);
         }));
     }
 
     emit(&format!("listening on {bound}, {workers} workers"))?;
-    emit("handshake and protocol are live; statements answer with an error until the executor is wired")?;
+    emit(&format!("serving {}", database.display()))?;
 
     loop {
         thread::sleep(Duration::from_secs(5));

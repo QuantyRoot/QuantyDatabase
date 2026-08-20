@@ -18,5 +18,6 @@ quanty-import = { path = "../quanty-import" }
 quanty-sqlite = { path = "../quanty-sqlite" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
+quanty-service = { path = "../quanty-service" }
 quanty-server = { path = "../quanty-server" }
 quanty-proto = { path = "../quanty-proto" }
