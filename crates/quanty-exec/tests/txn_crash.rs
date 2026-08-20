@@ -66,7 +66,7 @@ fn txn_crash_child_entry() {
     writeln!(out, "READY").expect("write ready");
     out.flush().expect("flush ready");
 
-    for k in 1i64.. {
+    for k in 1i64..=i64::MAX {
         session.execute("begin").expect("begin");
         for id in ids_of(k) {
             session
