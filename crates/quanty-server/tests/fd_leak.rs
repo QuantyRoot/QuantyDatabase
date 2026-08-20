@@ -45,11 +45,11 @@ fn worker_cycle() {
         .collect();
     let deadline = Instant::now() + Duration::from_secs(3);
     while w.len() < 5 && Instant::now() < deadline {
-        w.turn(50, &mut Idle).expect("turn");
+        w.turn(50, &Idle).expect("turn");
     }
     assert_eq!(w.len(), 5, "accepted {} of 5", w.len());
     drop(clients);
-    w.shutdown();
+    w.shutdown(&Idle);
 }
 
 #[test]

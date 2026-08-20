@@ -10,7 +10,26 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use quanty_server::registry::Registry;
-use quanty_server::{Idle, Worker};
+use quanty_server::{ConnId, Dispatch, Idle, Job, Worker};
+
+/// A dispatcher that answers on the spot.
+///
+/// The worker still takes the long way round, through the outbox and a
+/// wakeup, so these tests exercise the asynchronous path even though
+/// nothing here actually waits.
+struct Answer<F>(F);
+
+impl<F> Dispatch for Answer<F>
+where
+    F: Fn(&quanty_proto::ClientMessage) -> Vec<quanty_proto::ServerMessage>,
+{
+    fn submit(&self, job: Job) {
+        let messages = (self.0)(&job.request);
+        let _ = job.answer(messages);
+    }
+
+    fn closed(&self, _id: ConnId) {}
+}
 
 fn shared_listener() -> (Arc<TcpListener>, std::net::SocketAddr) {
     let l = TcpListener::bind("127.0.0.1:0").expect("bind");
@@ -31,7 +50,7 @@ fn a_worker_accepts_and_holds() {
 
     let deadline = Instant::now() + Duration::from_secs(3);
     while w.len() < 8 && Instant::now() < deadline {
-        w.turn(100, &mut Idle).expect("turn");
+        w.turn(100, &Idle).expect("turn");
     }
 
     assert_eq!(w.len(), 8, "accepted {} of 8", w.len());
@@ -49,7 +68,7 @@ fn a_closed_peer_is_dropped_not_held() {
         .collect();
     let deadline = Instant::now() + Duration::from_secs(3);
     while w.len() < 4 && Instant::now() < deadline {
-        w.turn(100, &mut Idle).expect("turn");
+        w.turn(100, &Idle).expect("turn");
     }
     assert_eq!(w.len(), 4);
 
@@ -57,7 +76,7 @@ fn a_closed_peer_is_dropped_not_held() {
 
     let deadline = Instant::now() + Duration::from_secs(3);
     while !w.is_empty() && Instant::now() < deadline {
-        w.turn(100, &mut Idle).expect("turn");
+        w.turn(100, &Idle).expect("turn");
     }
     assert_eq!(w.len(), 0, "still holding {} dead connections", w.len());
 }
@@ -84,7 +103,7 @@ fn several_workers_share_one_listener() {
             break;
         }
         for w in workers.iter_mut() {
-            w.turn(20, &mut Idle).expect("turn");
+            w.turn(20, &Idle).expect("turn");
         }
     }
 
@@ -95,7 +114,7 @@ fn several_workers_share_one_listener() {
 
     drop(clients);
     for w in workers.iter_mut() {
-        w.shutdown();
+        w.shutdown(&Idle);
     }
 }
 
@@ -135,8 +154,8 @@ fn a_worker_stops_when_the_flag_drops() {
     let waker = w.waker();
 
     let h = thread::spawn(move || {
-        let mut idle = Idle;
-        w.run(&mut idle).expect("run")
+        let idle = Idle;
+        w.run(&idle).expect("run")
     });
 
     let _c = TcpStream::connect(addr).expect("connect");
@@ -196,7 +215,7 @@ fn reuseport_spreads_where_a_shared_listener_does_not() {
             break;
         }
         for w in workers.iter_mut() {
-            w.turn(20, &mut Idle).expect("turn");
+            w.turn(20, &Idle).expect("turn");
         }
     }
 
@@ -213,7 +232,7 @@ fn reuseport_spreads_where_a_shared_listener_does_not() {
 
     drop(clients);
     for w in workers.iter_mut() {
-        w.shutdown();
+        w.shutdown(&Idle);
     }
 }
 
@@ -222,20 +241,14 @@ fn a_whole_request_crosses_a_real_socket() {
     use quanty_proto::{ClientHello, ClientMessage, ServerMessage, VERSION};
     use std::io::Read;
 
-    struct Echo;
-    impl quanty_server::Service for Echo {
-        fn call(&mut self, r: ClientMessage) -> Vec<ServerMessage> {
-            match r {
-                ClientMessage::Query(s) => vec![ServerMessage::Lines(vec![s])],
-                _ => vec![ServerMessage::Ok],
-            }
-        }
-    }
+    let svc = Answer(|r: &ClientMessage| match r {
+        ClientMessage::Query(s) => vec![ServerMessage::Lines(vec![s.clone()])],
+        _ => vec![ServerMessage::Ok],
+    });
 
     let (listener, addr) = shared_listener();
     let flag = Arc::new(AtomicBool::new(true));
     let mut w = Worker::new(listener, flag).expect("worker");
-    let mut svc = Echo;
 
     let mut client = TcpStream::connect(addr).expect("connect");
     client
@@ -249,7 +262,7 @@ fn a_whole_request_crosses_a_real_socket() {
     let mut got = Vec::new();
     let deadline = Instant::now() + Duration::from_secs(5);
     while got.len() < 4 + 5 + 5 + 4 + 9 && Instant::now() < deadline {
-        w.turn(20, &mut svc).expect("turn");
+        w.turn(20, &svc).expect("turn");
         let mut buf = [0u8; 256];
         match client.read(&mut buf) {
             Ok(0) => break,
@@ -273,19 +286,15 @@ fn a_whole_request_crosses_a_real_socket() {
 fn a_finished_reply_stops_asking_to_write() {
     use quanty_proto::{ClientHello, ClientMessage, ServerMessage, VERSION};
 
-    struct Big;
-    impl quanty_server::Service for Big {
-        fn call(&mut self, _: ClientMessage) -> Vec<ServerMessage> {
-            vec![ServerMessage::Lines(
-                (0..2000).map(|i| format!("l{i}")).collect(),
-            )]
-        }
-    }
+    let svc = Answer(|_: &ClientMessage| {
+        vec![ServerMessage::Lines(
+            (0..2000).map(|i| format!("l{i}")).collect(),
+        )]
+    });
 
     let (listener, addr) = shared_listener();
     let flag = Arc::new(AtomicBool::new(true));
     let mut w = Worker::new(listener, flag).expect("worker");
-    let mut svc = Big;
 
     let mut client = TcpStream::connect(addr).expect("connect");
     let mut request = ClientHello { version: VERSION }.encode().to_vec();
@@ -294,8 +303,8 @@ fn a_finished_reply_stops_asking_to_write() {
 
     let deadline = Instant::now() + Duration::from_secs(5);
     while Instant::now() < deadline {
-        let turn = w.turn(20, &mut svc).expect("turn");
-        if turn.ready == 0 && turn.accepted == 0 {
+        let turn = w.turn(20, &svc).expect("turn");
+        if turn.ready == 0 && turn.accepted == 0 && turn.answered == 0 {
             break;
         }
         let mut buf = [0u8; 4096];
@@ -307,7 +316,7 @@ fn a_finished_reply_stops_asking_to_write() {
     }
 
     let start = Instant::now();
-    w.turn(200, &mut svc).expect("turn");
+    w.turn(200, &svc).expect("turn");
     assert!(
         start.elapsed() >= Duration::from_millis(150),
         "the loop returned immediately, so something is still registered for \

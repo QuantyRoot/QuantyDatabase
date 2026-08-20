@@ -8,19 +8,26 @@ use quanty_proto::{
     negotiate, ClientHello, ClientMessage, ErrorCode, ServerHello, ServerMessage, CLIENT_HELLO_LEN,
 };
 
-/// Turns a request into the messages that answer it.
-pub trait Service {
-    /// Answer one statement. An empty reply closes the connection.
-    fn call(&mut self, request: ClientMessage) -> Vec<ServerMessage>;
-}
-
 /// What the caller should do next.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Step {
     /// Keep going.
     Open,
     /// Everything is written and the peer asked to close.
     Closed,
+    /// A complete request is decoded and someone else must answer it.
+    ///
+    /// The connection stops reading until `resume` delivers the answer,
+    /// which is the "one request in flight" rule in docs/PROTOCOL.md.
+    Submit(ClientMessage),
+}
+
+/// What one pass over the input buffer produced.
+enum Decoded {
+    /// Not enough bytes, or the connection is done reading.
+    Stalled,
+    /// A request that needs an answer.
+    Request(ClientMessage),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -34,6 +41,7 @@ enum Phase {
 pub struct Conn {
     phase: Phase,
     input_closed: bool,
+    awaiting: bool,
     inbuf: Vec<u8>,
     outbuf: Vec<u8>,
     outpos: usize,
@@ -51,6 +59,7 @@ impl Conn {
         Conn {
             phase: Phase::Hello,
             input_closed: false,
+            awaiting: false,
             inbuf: Vec::new(),
             outbuf: Vec::new(),
             outpos: 0,
@@ -63,8 +72,30 @@ impl Conn {
     }
 
     /// Whether the connection is finished and can be dropped.
+    ///
+    /// A request still out with the executor keeps the connection alive
+    /// even after the peer has half-closed, so its answer is not dropped
+    /// on the floor.
     pub fn is_finished(&self) -> bool {
-        (self.phase == Phase::Draining || self.input_closed) && !self.wants_write()
+        (self.phase == Phase::Draining || self.input_closed)
+            && !self.wants_write()
+            && !self.awaiting
+    }
+
+    /// Whether a request is out and its answer has not come back.
+    pub fn is_awaiting(&self) -> bool {
+        self.awaiting
+    }
+
+    /// Deliver the answer to the request this connection submitted.
+    ///
+    /// An empty answer means there is nothing to say and leaves the
+    /// connection open.
+    pub fn resume(&mut self, messages: Vec<ServerMessage>) {
+        self.awaiting = false;
+        for message in messages {
+            self.push(message);
+        }
     }
 
     /// Bytes read from the socket but not yet consumed.
@@ -103,18 +134,25 @@ impl Conn {
     }
 
     /// Consume as much buffered input as the rules allow.
-    pub fn step(&mut self, service: &mut impl Service) -> Step {
+    pub fn step(&mut self) -> Step {
         loop {
-            if self.phase == Phase::Draining || self.wants_write() {
+            if self.phase == Phase::Draining || self.awaiting || self.wants_write() {
                 return self.state();
             }
-            let progressed = match self.phase {
-                Phase::Hello => self.step_hello(),
-                Phase::Frames => self.step_frame(service),
-                Phase::Draining => false,
-            };
-            if !progressed {
-                return self.state();
+            match self.phase {
+                Phase::Hello => {
+                    if !self.step_hello() {
+                        return self.state();
+                    }
+                }
+                Phase::Frames => match self.step_frame() {
+                    Decoded::Stalled => return self.state(),
+                    Decoded::Request(request) => {
+                        self.awaiting = true;
+                        return Step::Submit(request);
+                    }
+                },
+                Phase::Draining => return self.state(),
             }
         }
     }
@@ -153,9 +191,9 @@ impl Conn {
         }
     }
 
-    fn step_frame(&mut self, service: &mut impl Service) -> bool {
+    fn step_frame(&mut self) -> Decoded {
         if self.inbuf.len() < HEADER_LEN {
-            return false;
+            return Decoded::Stalled;
         }
         let mut head = [0u8; HEADER_LEN];
         head.copy_from_slice(&self.inbuf[..HEADER_LEN]);
@@ -164,7 +202,7 @@ impl Conn {
             Err(_) => return self.fail(ErrorCode::Protocol, "frame too large"),
         };
         if self.inbuf.len() < HEADER_LEN + header.body_len {
-            return false;
+            return Decoded::Stalled;
         }
 
         let body: Vec<u8> = self.inbuf[HEADER_LEN..HEADER_LEN + header.body_len].to_vec();
@@ -176,18 +214,15 @@ impl Conn {
         };
         if request == ClientMessage::Close {
             self.phase = Phase::Draining;
-            return false;
+            return Decoded::Stalled;
         }
-        for message in service.call(request) {
-            self.push(message);
-        }
-        true
+        Decoded::Request(request)
     }
 
-    fn fail(&mut self, code: ErrorCode, detail: &str) -> bool {
+    fn fail(&mut self, code: ErrorCode, detail: &str) -> Decoded {
         self.push(ServerMessage::error(code, detail));
         self.phase = Phase::Draining;
-        false
+        Decoded::Stalled
     }
 
     fn push(&mut self, message: ServerMessage) {

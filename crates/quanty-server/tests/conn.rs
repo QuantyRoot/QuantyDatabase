@@ -8,7 +8,7 @@ use quanty_proto::{
     ClientHello, ClientMessage, FrameHeader, ServerHello, ServerMessage, CLIENT_HELLO_LEN,
     SERVER_HELLO_LEN, VERSION,
 };
-use quanty_server::{Conn, Service, Step};
+use quanty_server::{Conn, Step};
 
 /// A socket that hands over `chunk` bytes per read and accepts `chunk` per
 /// write, then reports WouldBlock. One is the interesting value.
@@ -66,6 +66,12 @@ impl Write for Choked {
     }
 }
 
+/// What used to be the server's `Service` trait, kept here because these
+/// tests are about the state machine and not about who answers it.
+trait Service {
+    fn call(&mut self, request: ClientMessage) -> Vec<ServerMessage>;
+}
+
 struct Echo;
 
 impl Service for Echo {
@@ -94,7 +100,17 @@ fn pump(conn: &mut Conn, socket: &mut Choked, service: &mut impl Service) -> Ste
     for _ in 0..200_000 {
         let before = (socket.read_pos, socket.output.len(), conn.wants_write());
         let _ = conn.fill(socket).expect("fill");
-        step = conn.step(service);
+        step = match conn.step() {
+            // The worker sends this elsewhere and comes back later; here
+            // the answer is immediate, which is what the old synchronous
+            // service did and what these tests are written against.
+            Step::Submit(request) => {
+                let reply = service.call(request);
+                conn.resume(reply);
+                Step::Open
+            }
+            other => other,
+        };
         conn.flush(socket).expect("flush");
         if (socket.read_pos, socket.output.len(), conn.wants_write()) == before {
             idle += 1;

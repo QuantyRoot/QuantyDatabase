@@ -3,6 +3,7 @@
 use std::net::TcpStream;
 
 use crate::conn::Conn;
+use crate::dispatch::ConnId;
 use crate::poll::{Interest, Token};
 
 /// A connection and the state a worker keeps beside it.
@@ -11,6 +12,9 @@ pub struct Connection {
     pub socket: TcpStream,
     /// Which slot this is, so a handler can hand the token back.
     pub token: Token,
+    /// The name that outlives the slot, for whoever keeps state per
+    /// connection.
+    pub id: ConnId,
     /// Protocol state for this peer.
     pub state: Conn,
     /// What this socket is currently registered for.
@@ -73,6 +77,7 @@ impl Registry {
         slot.conn = Some(Connection {
             socket,
             token,
+            id: ConnId::next(),
             state: Conn::new(),
             interest: Interest::READABLE,
         });

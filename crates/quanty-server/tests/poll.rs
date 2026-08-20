@@ -135,6 +135,13 @@ fn interest_can_be_changed_and_withdrawn() {
     );
 }
 
+/// The wakeup is reported, not swallowed.
+///
+/// It used to be hidden inside `poll`, which left a worker no way to tell a
+/// turn that has answers waiting from one that has none. The alternative
+/// was to lock the outbox on every turn of every worker, against the
+/// executor thread, to nearly always find it empty. So the wake token now
+/// arrives as an event, and it stays distinguishable from a connection.
 #[test]
 fn a_parked_worker_can_be_woken_from_another_thread() {
     let mut p = Poller::new(8).expect("poller");
@@ -155,9 +162,11 @@ fn a_parked_worker_can_be_woken_from_another_thread() {
     rx.recv_timeout(Duration::from_secs(1)).expect("signalled");
 
     assert!(waited < Duration::from_secs(5), "wakeup did not arrive");
-    assert!(
-        evs.is_empty(),
-        "the wake token must not be dispatched to the handler: {evs:?}"
+    assert_eq!(evs.len(), 1, "expected exactly the wakeup: {evs:?}");
+    assert_eq!(
+        evs[0].0,
+        quanty_server::WAKE_TOKEN,
+        "the wakeup must not look like a connection"
     );
 }
 

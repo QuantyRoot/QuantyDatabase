@@ -202,7 +202,13 @@ impl Poller {
             });
         }
         if woken {
+            // Drain first, then report: a reply posted after the drain
+            // leaves the eventfd readable and earns another turn.
             sys::drain(self.wake.as_raw_fd())?;
+            f(Event {
+                token: WAKE_TOKEN,
+                flags: Interest::READABLE.0,
+            });
         }
         Ok(n)
     }
