@@ -953,6 +953,16 @@ writers go, and the first of them to commit kills the batch that was parked.
 The holder only moves for the connection whose transaction it is, and there
 is a test that fails without that.
 
+**Checked together, not only apart.** Parking, batching, both deadlines
+and this bypass each have a test of their own, and none of them reaches the
+state space they share. `crates/quanty-service/tests/soak.rs` runs six
+connections doing arbitrary things for a budget and checks four invariants
+that hold whichever way a race went: every request gets exactly one
+answer, the answer fits the question, waiting past the deadline is answered
+rather than hung, and the rows that survive are exactly the rows that were
+promised. It also asserts that it reached the contended paths at all,
+because a soak that quietly never contends would report success.
+
 **Conservative about what counts as a read.** `get`, `show tables` and
 `explain` only. `log` and `show branches` write nothing either, but they
 refuse to run inside a transaction, so they stay where the engine already

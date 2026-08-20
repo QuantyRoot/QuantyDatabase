@@ -112,6 +112,19 @@ jobs:
         env:
           QUANTY_FUZZ_SECS: "600"
 
+  server-soak:
+    name: server soak (10 min)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: hammer the executor from many connections
+        run: cargo test -p quanty-service --release --test soak -- --nocapture
+        env:
+          QUANTY_FUZZ_SECS: "600"
+
   proto-fuzz:
     name: protocol fuzz (10 min)
     runs-on: ubuntu-latest
