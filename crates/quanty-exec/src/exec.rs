@@ -35,6 +35,22 @@ struct Open {
     mutated: bool,
 }
 
+/// A connection's transaction, parked while another connection runs.
+///
+/// ADR-021 makes a suspended transaction a value that has touched no disk,
+/// so parking one is a move and dropping one is a rollback. The server
+/// needs this because one executor thread runs the statements of many
+/// connections and each of them keeps its own `begin`.
+#[derive(Default)]
+pub struct Parked(Option<Open>);
+
+impl Parked {
+    /// Whether a transaction is parked here.
+    pub fn is_open(&self) -> bool {
+        self.0.is_some()
+    }
+}
+
 pub struct Session<S: Storage> {
     db: Db<S>,
     /// The open `begin` transaction, suspended between statements, or
@@ -81,6 +97,23 @@ impl<S: Storage> Session<S> {
 
     pub fn db(&self) -> &Db<S> {
         &self.db
+    }
+
+    /// Whether a transaction is open on this session.
+    pub fn in_txn(&self) -> bool {
+        self.txn.is_some()
+    }
+
+    /// Take the open transaction out so another connection can use the
+    /// session. Nothing is committed and nothing is written.
+    pub fn park(&mut self) -> Parked {
+        Parked(self.txn.take())
+    }
+
+    /// Put a parked transaction back before running the next statement of
+    /// the connection it belongs to.
+    pub fn unpark(&mut self, parked: Parked) {
+        self.txn = parked.0;
     }
 
     /// Parse and execute one QQL statement. One statement is one

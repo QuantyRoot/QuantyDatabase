@@ -14,6 +14,6 @@ mod verify;
 
 pub use catalog::{Column, Table};
 pub use error::ExecError;
-pub use exec::{Output, Session};
+pub use exec::{Output, Parked, Session};
 pub use plan::{Access, AccessPlan};
 pub use verify::verify_indexes;
