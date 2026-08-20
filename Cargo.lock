@@ -3,6 +3,10 @@
 version = 3
 
 [[package]]
+name = "quanty-auth"
+version = "0.2.0"
+
+[[package]]
 name = "quanty-bench"
 version = "0.2.0"
 dependencies = [
@@ -15,6 +19,7 @@ dependencies = [
 name = "quanty-cli"
 version = "0.2.0"
 dependencies = [
+ "quanty-auth",
  "quanty-core",
  "quanty-exec",
  "quanty-import",
@@ -71,6 +76,7 @@ dependencies = [
 name = "quanty-service"
 version = "0.2.0"
 dependencies = [
+ "quanty-auth",
  "quanty-core",
  "quanty-exec",
  "quanty-proto",
