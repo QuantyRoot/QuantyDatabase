@@ -835,3 +835,52 @@ the plan rather than from the text, and ADR-016 wants the number first.
 for is here, one thread draining a queue, and batching several statements
 into one write and one fsync is a change to one function. It is also an
 optimization, and there is no measurement of what fsync costs here yet.
+
+## ADR-028: Group commit is worth building, and not for the fsync
+
+ADR-024 deferred group commit and ADR-027 deferred it again, both times for
+the same reason: ADR-016 wants the number first. `quanty-commit-cost` is
+that measurement. Batching k statements into one transaction is the same
+arithmetic as group commit at queue depth k, so the curve over k is the
+ceiling. On the development container, one core, overlay filesystem:
+
+```
+fsync                          155 us
+batch     per statement    statements/s
+    1          291.6 us            3429
+    2          152.7 us            6549
+    8           67.1 us           14902
+   64           28.1 us           35648
+  512           21.6 us           46355
+```
+
+**Thirteen times, so it gets built.** Per statement falls from 292 us to
+22 us, and most of the win is already there at a depth of 64, which is a
+queue depth an ordinary load reaches.
+
+**But the fsync is only half of what is being amortized.** The per commit
+overhead is about 270 us and the fsync is 155 us of it. The remaining
+115 us is the rest of the commit path, the copy on write page copying and
+the meta and commit records. ADR-024 described group commit as amortizing
+the fsync; that is true and it is not the whole reason. On a machine where
+fsync is cheaper than it is here, or on one where this container is lying
+about reaching a disk, there is still a commit path to amortize, so the
+conclusion does not depend on the number the container is least trusted to
+report.
+
+**The write amplification is the finding nobody asked for.** Two thousand
+statements at depth one leave 23 MB on disk, twelve kilobytes each, because
+every commit copies the path from root to leaf. Eight thousand at depth 512
+leave under a megabyte, a hundred bytes each. That is a hundredfold, and it
+lands on the disk and on garbage collection rather than on latency, which
+is why the throughput number alone would have understated this.
+
+**The machinery it needs is free.** Statements batched together must fail
+independently, so each needs a savepoint around it, and a savepoint that
+cost what it replaced would sink the idea. Measured below the statement
+layer, twenty thousand writes in one transaction cost 17.61 us each plain
+and 18.02 us each with a savepoint around every one. Two percent, against
+270 us saved per commit.
+
+The numbers above describe this container and are the shape of the answer,
+not its size. The acceptance machine gets its own run.

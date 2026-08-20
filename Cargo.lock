@@ -6,6 +6,8 @@ version = 3
 name = "quanty-bench"
 version = "0.2.0"
 dependencies = [
+ "quanty-core",
+ "quanty-exec",
  "quanty-proto",
 ]
 

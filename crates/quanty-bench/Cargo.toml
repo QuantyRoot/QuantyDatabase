@@ -15,5 +15,11 @@ path = "src/main.rs"
 name = "quanty-acceptance"
 path = "src/bin/acceptance.rs"
 
+[[bin]]
+name = "quanty-commit-cost"
+path = "src/bin/commit_cost.rs"
+
 [dependencies]
+quanty-core = { path = "../quanty-core" }
+quanty-exec = { path = "../quanty-exec" }
 quanty-proto = { path = "../quanty-proto" }
