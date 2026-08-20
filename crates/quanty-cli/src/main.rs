@@ -30,7 +30,9 @@ usage:
   quanty run <database.qdb> <statement> [--sql]
   quanty shell <database.qdb> [--sql]
   quanty serve <database.qdb> [--listen <addr>] [--workers <n>]
+                              [--tokens <file>]
   quanty tables <database.qdb>
+  quanty token <label>
 
   create   make an empty database
   import   read a sqlite file and write it into a new quanty database
@@ -39,11 +41,14 @@ usage:
   run      execute one statement and print the result
   shell    read statements from stdin, one per line
   tables   list the tables in a database
+  token    mint one and print it, with the line that accepts it
 
   --sql    read the statement in sql rather than qql
 
 serve    --listen   address to bind, default 127.0.0.1:7878
          --workers  event loop threads, default one per core
+         --tokens   file of accepted token hashes; without it the server
+                    requires no authentication and belongs on loopback
 ";
 
 fn main() -> ExitCode {
@@ -102,6 +107,7 @@ struct Flags {
     sql: bool,
     listen: Option<String>,
     workers: Option<usize>,
+    tokens: Option<String>,
     elchi: bool,
 }
 
@@ -113,6 +119,7 @@ fn split_flags(args: &[String]) -> Result<(Vec<&str>, Flags), Failure> {
         sql: false,
         listen: None,
         workers: None,
+        tokens: None,
         elchi: false,
     };
     let mut expect: Option<&str> = None;
@@ -120,6 +127,7 @@ fn split_flags(args: &[String]) -> Result<(Vec<&str>, Flags), Failure> {
         if let Some(name) = expect.take() {
             match name {
                 "--listen" => flags.listen = Some(arg.clone()),
+                "--tokens" => flags.tokens = Some(arg.clone()),
                 "--workers" => {
                     let n = arg
                         .parse::<usize>()
@@ -134,9 +142,10 @@ fn split_flags(args: &[String]) -> Result<(Vec<&str>, Flags), Failure> {
             continue;
         }
         match arg.as_str() {
-            "--listen" | "--workers" => {
+            "--listen" | "--workers" | "--tokens" => {
                 expect = Some(match arg.as_str() {
                     "--listen" => "--listen",
+                    "--tokens" => "--tokens",
                     _ => "--workers",
                 })
             }
@@ -188,6 +197,10 @@ fn run(args: &[String]) -> Result<(), Failure> {
             [database] => serve(Path::new(database), &flags),
             _ => Err(usage("serve takes a database")),
         },
+        "token" => match rest {
+            [label] => token(label),
+            _ => Err(usage("token takes a label")),
+        },
         "tables" => match rest {
             [database] => run_statement(
                 Path::new(database),
@@ -198,6 +211,7 @@ fn run(args: &[String]) -> Result<(), Failure> {
                     sql: false,
                     listen: None,
                     workers: None,
+                    tokens: None,
                     elchi: false,
                 },
             ),
@@ -376,6 +390,24 @@ fn is_terminal() -> bool {
 }
 
 #[cfg(target_os = "linux")]
+/// Print a new token and the line that makes a server accept it.
+///
+/// The token is printed once and stored nowhere: this is the only moment
+/// it exists in one place, which is the property that makes the file worth
+/// keeping only hashes.
+fn token(label: &str) -> Result<(), Failure> {
+    if label.split_whitespace().count() != 1 {
+        return Err(usage("a label is one word, it goes on the line as-is"));
+    }
+    let (token, line) = quanty_auth::mint(label)
+        .map_err(|e| failed(format!("could not read /dev/urandom: {e}")))?;
+    emit(&format!("token {token}"))?;
+    emit(&format!("line  {line}"))?;
+    emit("")?;
+    emit("give the token to its owner and append the line to --tokens.")?;
+    emit("the token is not stored anywhere; losing it means minting another.")
+}
+
 fn serve(database: &Path, flags: &Flags) -> Result<(), Failure> {
     use std::net::TcpListener;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -383,6 +415,7 @@ fn serve(database: &Path, flags: &Flags) -> Result<(), Failure> {
     use std::thread;
     use std::time::Duration;
 
+    use quanty_auth::Tokens;
     use quanty_server::Worker;
     use quanty_service::{Deadlines, Executor};
 
@@ -390,6 +423,15 @@ fn serve(database: &Path, flags: &Flags) -> Result<(), Failure> {
         return Err(failed(format!("no database at {}", database.display())));
     }
     let session = open(database)?;
+
+    // No token file means no authentication, which is a real configuration
+    // and the reason the default address is loopback (ADR-026).
+    let tokens = match &flags.tokens {
+        Some(path) => {
+            Some(Tokens::load(path).map_err(|e| failed(format!("token file {path}: {e}")))?)
+        }
+        None => None,
+    };
 
     let addr = flags.listen.as_deref().unwrap_or("127.0.0.1:7878");
     let workers = match flags.workers {
@@ -409,10 +451,19 @@ fn serve(database: &Path, flags: &Flags) -> Result<(), Failure> {
     let accepted = Arc::new(AtomicUsize::new(0));
     let live: Arc<Vec<AtomicUsize>> = Arc::new((0..workers).map(|_| AtomicUsize::new(0)).collect());
 
+    match &tokens {
+        Some(t) => emit(&format!(
+            "requiring a token, {} in force from {}",
+            t.len(),
+            t.path().display()
+        ))?,
+        None => emit("no authentication required; keep this on loopback")?,
+    }
+
     // One thread owns the session; every worker submits to it. It is
     // created before the workers and dropped after them, so no handle
     // outlives the executor it points at.
-    let executor = Executor::spawn(session, Deadlines::default());
+    let executor = Executor::spawn(session, Deadlines::default(), tokens);
 
     let mut handles = Vec::with_capacity(workers);
     for id in 0..workers {
