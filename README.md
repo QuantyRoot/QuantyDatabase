@@ -38,10 +38,18 @@ to the job instead of making you migrate between databases.
 - Need to store assets, search full text, keep history? Also the same
   engine. No sidecar systems.
 
-> Quanty is in early development. The design is done, the core is being
-> built, and nothing here is installable yet. This README describes where
-> the project is going. See [ROADMAP.md](docs/ROADMAP.md) for what's
+> Quanty is in early development. The storage core, both query front ends
+> and the network server work today; the rest of this README describes
+> where the project is going. See [ROADMAP.md](docs/ROADMAP.md) for what is
 > actually finished.
+
+**Written by one person, funded by nobody, and it depends on nothing.** The
+lock file holds this workspace and not one package besides. No company
+behind it, no sponsors, no roadmap written by someone else. If that sounds
+like a constraint, it is: the checksum, the locks, the epoll layer, the
+SHA-256 and the wire protocol are all written out here rather than pulled
+in, and each of those choices is argued and costed in
+[DECISIONS.md](docs/DECISIONS.md).
 
 ---
 
@@ -128,8 +136,8 @@ quanty merge app.qdb risky-migration     # or just delete the branch
 
 ### Server
 - `quanty serve` turns any db file into a network database
-- Async I/O, designed for thousands of concurrent connections
-- Small versioned binary protocol, token auth
+- An event loop written on epoll directly, no async runtime
+- Small versioned binary protocol, token auth, `quanty connect` to speak it
 
 ### SQLite compatibility
 - Direct `.sqlite` import, no SQLite dependency, we read the format ourselves
@@ -172,11 +180,23 @@ Pre-alpha, and further along than that sounds. What works today:
   with inner and left joins and multi-statement transactions
 - a `.sqlite` importer that reads the format directly, with no SQLite
   library underneath it, and a command line tool around it
+- a network server: `quanty serve` runs the same engine over a versioned
+  binary protocol, with token authentication, and `quanty connect` is the
+  client for it
 
 ```sh
 quanty import app.sqlite app.qdb
 quanty run app.qdb "get users { name } where score > 100"
+
+quanty serve app.qdb --tokens tokens.txt
+quanty connect 127.0.0.1:7878 "get users { name }" --token <token>
 ```
+
+The server is one event loop per worker on epoll, with the connection
+parked rather than blocked while a statement runs, and statements that
+arrive together share one commit and one fsync. Readers do not queue behind
+someone else's open transaction. What that costs and what it buys is
+measured in [ADR-028](docs/DECISIONS.md), not asserted.
 
 The importer reads what SQLite writes, including tables without rowids,
 uncheckpointed write-ahead logs, text in utf-16 and columns added by a
@@ -185,24 +205,31 @@ your behalf and what it tells you about afterwards.
 
 The test bar: property tests against a model, four fuzzers, golden query
 suites, an index consistency checker, row for row verification of an
-imported database against SQLite's own output, and a crash harness that
-kill -9s the process mid-write a thousand times per CI run.
+imported database against SQLite's own output, two crash harnesses that
+kill -9 the process mid-write a thousand times each per CI run, and a soak
+that runs many connections against the server at once and checks the
+promises that have to hold whichever way a race went.
 
-No dependencies. Not "few": the lock file holds this workspace and nothing
-else, so `cargo build` fetches nothing and the whole suite runs on a
-toolchain from 2023. The checksum and the locks under the storage core are
-written out rather than pulled in, and what that cost is measured and
-written down in [ADR-020](docs/DECISIONS.md).
+No dependencies. Not "few": the lock file holds eleven packages and all
+eleven are this workspace, so `cargo build` fetches nothing, there is no
+supply chain to audit, and the whole suite runs on a toolchain from 2023.
+What that costs is measured and written down in
+[ADR-020](docs/DECISIONS.md) rather than waved at.
 
-### v0.2.0 by the numbers
+### By the numbers
 
 | | |
 |---|---|
-| Rust, source | 15825 lines across 6 crates |
-| Rust, tests | 8082 lines, 271 test functions |
-| Design notes | 1851 lines, 20 decision records |
+| Rust, source | 21210 lines across 11 crates |
+| Rust, tests | 11704 lines, 373 test functions |
+| Design notes | 2816 lines, 29 decision records |
 | Dependencies | 0 |
-| CI per push | 8 jobs, including 3 fuzzers and 2000 kill -9s |
+| People | 1 |
+| Funding | none |
+| CI per push | 11 jobs, 4 fuzzers, 2000 kill -9s, a 10 minute server soak |
+
+More than one line of test for every two lines of code, and every one of
+them runs on every push.
 
 The acceptance runs behind phase 4, each an hour on one core:
 
@@ -212,13 +239,24 @@ The acceptance runs behind phase 4, each an hour on one core:
 | SQLite reader | 1831872 damaged files read, 12 billion cells, no panic |
 | chinook import | 15607 rows, every value compared against the source |
 
-What is not measured yet: speed. There is no benchmark against SQLite or
-anything else in this repo, so any claim about performance would be a guess
-and none is made.
+Speed, on one development core with the client on the same core, which
+makes these a floor and not a result:
+
+| | |
+|---|---|
+| Reads over the network | 20000 QPS, 0 errors, 45 us mean |
+| Writes over the network | 9357 statements/s, every one committed and fsynced |
+| Commit, in process | 292 us alone, 22 us when 512 share one |
+
+The last row is why group commit exists, and the reasoning from measurement
+to decision is [ADR-028](docs/DECISIONS.md). Numbers from a real machine
+land when phase 5's acceptance run does; these describe a container.
 
 Progress lives in [ROADMAP.md](docs/ROADMAP.md). Design notes live in
 [ARCHITECTURE.md](docs/ARCHITECTURE.md) and [DECISIONS.md](docs/DECISIONS.md)
-if you want to see how the sausage is made.
+if you want to see how the sausage is made. If you want to help, or just to
+know what the rules are before you open anything,
+[CONTRIBUTING.md](CONTRIBUTING.md) says both.
 
 Star the repo if you want to follow along. :3
 

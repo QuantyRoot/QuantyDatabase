@@ -121,8 +121,27 @@ the record of why each was hard:
 
 ## Phase 5: Server mode
 
-Binary protocol, tokio server, auth tokens, quanty-cli `serve` and remote
-repl, concurrent readers with single writer queueing, group commit.
+This line used to say "tokio server". ADR-020 had already taken the
+workspace to zero dependencies and nobody reconciled the two; ADR-022 did,
+and chose threads over a runtime. ADR-023 then overturned its own reasoning
+and wrote the epoll syscalls out by hand after all, which is the honest
+version of what happened and is why both records are still here.
+
+Binary protocol, an epoll event loop per worker, auth tokens, `quanty
+serve` and `quanty connect`, single writer queueing, group commit.
+
+- [x] versioned binary protocol and codec (`quanty-proto`, ADR-023)
+- [x] the reactor: epoll, one listener per worker, connections parked
+      rather than blocked (`quanty-server`, ADR-025)
+- [x] the executor: one thread owns the session, transactions park per
+      connection (`quanty-service`, ADR-027)
+- [x] group commit, measured into existence rather than assumed (ADR-028)
+- [x] readers do not queue behind someone else's transaction (ADR-029)
+- [x] token auth, stored beside the database and never in it (ADR-026)
+- [x] `quanty connect`, held to the same output as the local path
+- [ ] concurrent readers: they no longer stall, but they still serialize
+      over one thread. Whether they should run in parallel is the open
+      question in ADR-029 and it needs a machine with more than one core
 
 Acceptance:
 - [ ] 10k idle connections + 1k active mixed QPS on a 2 vCPU box, stable
@@ -215,6 +234,30 @@ Open, and to be decided rather than assumed here:
 - whether `quanty-derive` ships with it or follows later. A derive macro
   means a proc-macro crate, and writing one without `syn` and `quote` is a
   dependency question under ADR-020, not a detail.
+
+## Unscheduled and blocking: fetching things over the network
+
+`quanty update` is meant to pull releases from GitHub, and that is a
+product decision, not an open question. What is open is how, because
+GitHub serves nothing over plain HTTP and answers a request for it with a
+redirect to HTTPS.
+
+That leaves the workspace one problem it has never had before: TLS. Writing
+it out, the way the checksum and the epoll layer and SHA-256 were written
+out, is five to fifteen thousand lines, which is more than the storage core
+and the query layer put together. It is also the one area where code that
+is wrong and clever looks exactly like code that is right: a timing leak in
+a signature check passes every test that exists.
+
+Two things make it smaller than it sounds. Only the client half is needed.
+And confidentiality is worth almost nothing here, because a public release
+artifact is public: what matters is that the bytes are the ones that were
+published, which is a signature over the artifact rather than a secure
+channel to fetch it. That is how apt has worked for twenty years.
+
+So it belongs in a phase of its own, with an ADR, and with interoperability
+against the real GitHub as the acceptance criterion rather than against a
+server written by the same hand.
 
 ## Known problems, measured
 

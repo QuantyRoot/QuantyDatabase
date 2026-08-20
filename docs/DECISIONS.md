@@ -4,6 +4,38 @@ Short ADRs. Newest at the bottom. If a decision gets reversed, strike it
 through and add a new entry, never silently edit history. (Fitting, for this
 project.)
 
+## Index
+
+- [ADR-001](#adr-001-rust) Rust
+- [ADR-002](#adr-002-copy-on-write-storage-instead-of-update-in-place--wal) Copy-on-write storage instead of update-in-place + WAL
+- [ADR-003](#adr-003-single-writer-in-v1) Single writer in v1
+- [ADR-004](#adr-004-own-query-language-first-sql-as-a-second-front-end) Own query language first, SQL as a second front end
+- [ADR-005](#adr-005-parse-the-sqlite-file-format-ourselves-for-import) Parse the SQLite file format ourselves for import
+- [ADR-006](#adr-006-own-binary-protocol-for-server-mode-postgres-wire-later) Own binary protocol for server mode, Postgres wire later
+- [ADR-007](#adr-007-no-mmap-by-default) No mmap by default
+- [ADR-008](#adr-008-dependency-budget) Dependency budget
+- [ADR-009](#adr-009-honesty-rule-for-public-claims) Honesty rule for public claims
+- [ADR-010](#adr-010-space-reclamation-waits-for-retention-phase-3) Space reclamation waits for retention (phase 3)
+- [ADR-011](#adr-011-branch-pointers-live-outside-the-versioned-trees) Branch pointers live outside the versioned trees
+- [ADR-012](#adr-012-no-format-migrations-before-10) No format migrations before 1.0
+- [ADR-013](#adr-013-the-msrv-claim-covers-the-test-suite-not-just-the-build) The MSRV claim covers the test suite, not just the build
+- [ADR-014](#adr-014-the-sql-dialect-borrows-the-engines-semantics) The SQL dialect borrows the engine's semantics
+- [ADR-015](#adr-015-joins-live-in-the-ast-and-probes-are-only-shortcuts) Joins live in the AST, and probes are only shortcuts
+- [ADR-016](#adr-016-an-open-transaction-is-a-replayed-statement-list-for-now) An open transaction is a replayed statement list, for now
+- [ADR-017](#adr-017-not-and-and-or-cannot-be-names) `not`, `and` and `or` cannot be names
+- [ADR-018](#adr-018-extensions-are-rust-code-linked-at-build-time) Extensions are Rust code linked at build time
+- [ADR-019](#adr-019-the-declared-type-proposes-the-stored-data-decides) The declared type proposes, the stored data decides
+- [ADR-020](#adr-020-the-core-has-no-dependencies-either) The core has no dependencies either
+- [ADR-021](#adr-021-an-open-transaction-is-a-suspended-write-batch) An open transaction is a suspended write batch
+- [ADR-022](#adr-022-the-server-has-no-dependencies-either) The server has no dependencies either
+- [ADR-023](#adr-023-we-write-the-reactor-ourselves-so-unsafe-at-one-boundary) We write the reactor ourselves, so unsafe at one boundary
+- [ADR-024](#adr-024-writes-queue-behind-one-writer-with-two-deadlines) Writes queue behind one writer, with two deadlines
+- [ADR-025](#adr-025-epollexclusive-distributes-badly-so-so_reuseport-is-next) EPOLLEXCLUSIVE distributes badly, so SO_REUSEPORT is next
+- [ADR-026](#adr-026-auth-tokens-live-outside-the-versioned-data) Auth tokens live outside the versioned data
+- [ADR-027](#adr-027-one-executor-thread-owns-the-session-transactions-park) One executor thread owns the session, transactions park
+- [ADR-028](#adr-028-group-commit-is-worth-building-and-not-for-the-fsync) Group commit is worth building, and not for the fsync
+- [ADR-029](#adr-029-reads-go-past-an-open-transaction) Reads go past an open transaction
+
 ## ADR-001: Rust
 
 Memory safety in a pager/B-tree is worth a lot, the ecosystem for this niche

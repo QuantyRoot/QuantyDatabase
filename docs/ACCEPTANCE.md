@@ -103,28 +103,58 @@ on whatever runner it gets and checks the qualitative failures: descriptors
 that do not come back, memory that grows, connections that hang. It cannot
 validate the 2 vCPU number and does not claim to.
 
+## Where each criterion stands
+
+- `[ ]` **10k idle + 1k mixed QPS on 2 vCPU, 30 min, no leaks.** Not run.
+  Needs a machine; a container with one core cannot answer it, and the
+  descriptor limit here cannot hold both ends of ten thousand connections.
+- `[ ]` **kill -9 under write load, reopen, zero corruption.** Not run at
+  the server level. The pager and the transaction layer each have a harness
+  that does this a thousand times per CI run, but nothing yet kills a
+  serving process mid-commit and then checks that every write a client was
+  told had succeeded is still there. That check is the interesting one,
+  because it is the durability promise crossing the protocol boundary.
+- `[ ]` **Versioned handshake, old client against new server fails
+  cleanly.** The handshake is nine bytes out and four back and is frozen by
+  design, and `ServerHello::Refused` exists for exactly this. It is covered
+  by unit tests on the codec, but no test has yet put a client that speaks
+  an older version in front of a running server.
+
 ## Measurements
 
 Each line is one run. A number without a machine attached is not a
 measurement, so the machine is part of the record.
 
 ```
-2026-08-17  container, 1 core, client on the same core, NotYet service
+2026-08-17  container, 1 core, client on the same core, no execution
   2000 idle held, 800 qps, 30s, 0 failed, mean 56us, max 466us
    200 idle held, 5000 qps, 15s, 0 failed, mean 190us, max 1105us
    200 idle held, 20000 qps, 15s, 0 failed, mean 87us, max 2260us
+
+2026-08-20  container, 1 core, client on the same core, statements executed
+   200 idle held,  2000 qps, 10s, 0 failed, mean 140us, max  697us
+   200 idle held,  5000 qps, 15s, 0 failed, mean  94us, max 3527us
+   200 idle held, 20000 qps, 15s, 0 failed, mean  45us, max 24479us
+     0 idle,      writes, 32 active, 15s, 0 failed, 9357 stmt/s, mean 3418us
 ```
 
 What these show: the reactor and the protocol are not the limit at twenty
 times the rate the criterion asks for, on one core, with the load generator
-competing for it.
+competing for it. The second block is the same paths with the engine
+actually behind them, so a read reaches the B-tree and a write commits and
+fsyncs before its answer goes out.
 
-What they do not show, and the distinction matters. No statement is
-executed: the service answers an error without touching the database, so
-this times the accept path, the frame codec and the event loop and nothing
-below them. The ten thousand idle connections have not been tried at full
-size here either, because the descriptor limit in this container is 20000
-and both ends of ten thousand connections need exactly that.
+Do not read the second block as "the executor made it faster". The first
+block executed nothing, and the two were taken on a container where the
+load generator and the server fight over one core; the means moved for
+reasons that have nothing to do with either being better. The write line is
+the one worth keeping: 9357 statements per second, every one of them
+durable, is what group commit bought and it is measured in ADR-028 from
+the other side too.
+
+What they do not show. The ten thousand idle connections have not been
+tried at full size here, because the descriptor limit in this container is
+20000 and both ends of ten thousand connections need exactly that.
 
 Neither replaces the run described above on two dedicated cores. They are
 the floor: whatever the real number turns out to be, it is not being lost

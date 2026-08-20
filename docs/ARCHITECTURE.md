@@ -205,13 +205,36 @@ tree. Schema changes are therefore branchable and time travelable for free.
 
 ## Server mode
 
-- tokio, one task per connection, shared engine handle
-- own binary protocol: length prefixed frames, request id, msgpack payloads
-  (simple, debuggable, versioned handshake). Postgres wire protocol is a
-  separate future front end, not the native protocol.
-- auth: per-database tokens for v1, users/roles later
-- connection scaling target: 10k mostly idle connections on a small VPS
-  without falling over. Readers scale naturally (lock free), writers queue.
+Built, and different from what this section first planned. The plan said
+tokio and msgpack; ADR-020 had already taken the workspace to zero
+dependencies, so ADR-022 chose threads, and ADR-023 overturned it again and
+wrote the epoll syscalls out by hand. What exists:
+
+- an event loop per worker on epoll, level triggered, each with its own
+  listening socket via `SO_REUSEPORT` (ADR-025). A shared listener with
+  `EPOLLEXCLUSIVE` was tried first and distributed 354/82/64 across three
+  workers; the replacement does 155/173/172
+- own binary protocol, length prefixed frames, versioned handshake, and a
+  codec of its own rather than msgpack. The wire encoding deliberately does
+  not share constants with the key encoding in the core, so a change to the
+  file format cannot become a silent protocol change
+- one executor thread owns the session; a connection's open transaction is
+  parked in and out around each statement (ADR-027). A connection waiting
+  on a statement is parked, not blocked, so its worker serves others
+- statements that arrive together share one transaction, one write and one
+  fsync, each with a savepoint of its own (ADR-028). Measured at thirteen
+  times on the write path before it was built
+- readers do not queue behind another connection's open transaction, since
+  a read commits nothing and cannot invalidate a parked batch (ADR-029)
+- auth: token hashes in a file beside the database, never inside it,
+  because branching and `as of` would make "revoked" true only at the tip
+  of one branch (ADR-026)
+- `quanty connect` speaks the protocol, and its output is held byte for
+  byte against the local path
+
+Still open: every statement crosses the one executor thread, reads
+included. They no longer stall, but they do not run in parallel either,
+and whether they should is a measurement that needs more than one core.
 
 ## SQLite compatibility
 
@@ -254,16 +277,28 @@ quanty/
     quanty/             public embedded API, re-exports, the crate users add
     quanty-derive/      ORM derive macros
     quanty-proto/       wire protocol codec (bytes only, no I/O)
-    quanty-server/      reactor, connection state machine, write queue
-    quanty-cli/         quanty binary (repl, import, branch, gc, serve)
+    quanty-server/      reactor, connection state machine, dispatch
+    quanty-service/     the executor thread, write queue, group commit
+    quanty-auth/        sha256 and the token file
+    quanty-sqlite/      reader for the SQLite file format
+    quanty-import/      turns a SQLite database into a QuantyDB one
+    quanty-bench/       timing against SQLite, load generator, commit cost
+    quanty-cli/         quanty binary (repl, import, branch, gc,
+                        serve, connect, token)
   docs/
   tests/                cross-crate integration + crash harness
 ```
 
-Dependency budget for quanty-core: as close to zero as possible. crc32c,
-blake3, maybe parking_lot. No tokio, no serde in the core. The core must
-compile to WASM later, keep it std-only and io-abstracted (a `Storage` trait
-over file/mmap/memory backends from day one).
+`quanty/` and `quanty-derive/` are still unbuilt; the roadmap says why and
+what waits on them.
+
+There is no dependency budget, because there are no dependencies. This
+section used to name crc32c, blake3 and parking_lot; ADR-020 wrote out the
+parts of them this project actually needed and the lock file has held
+nothing but this workspace since. SHA-256 for token hashing followed the
+same route later, checked against the published vectors. The core stays
+std-only and io-abstracted behind a `Storage` trait over file and memory
+backends, which is also what keeps a WASM build possible.
 
 ## Performance notes (for later, do not gold plate early)
 
