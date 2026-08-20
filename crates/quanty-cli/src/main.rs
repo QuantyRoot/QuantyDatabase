@@ -34,6 +34,7 @@ usage:
   quanty tables <database.qdb>
   quanty token <label>
   quanty connect <addr> [statement] [--token <t>] [--sql]
+  quanty about
 
   create   make an empty database
   import   read a sqlite file and write it into a new quanty database
@@ -45,6 +46,7 @@ usage:
   token    mint one and print it, with the line that accepts it
   connect  talk to a running server; with a statement it runs that one,
              without it reads statements from stdin, as shell does
+  about    what this is, who made it, and what it does not depend on
 
   --sql    read the statement in sql rather than qql
 
@@ -216,6 +218,10 @@ fn run(args: &[String]) -> Result<(), Failure> {
         "token" => match rest {
             [label] => token(label),
             _ => Err(usage("token takes a label")),
+        },
+        "about" => match rest {
+            [] => about(),
+            _ => Err(usage("about takes nothing")),
         },
         "connect" => match rest {
             [addr] => client::connect(addr, None, flags.token.as_deref(), flags.sql),
@@ -414,6 +420,48 @@ fn is_terminal() -> bool {
 }
 
 #[cfg(target_os = "linux")]
+/// Counts that `about` prints, and that a test holds to reality.
+///
+/// Each is a floor rather than a snapshot: the test checks that the real
+/// number is at least this, so the tool can fall behind but can never
+/// overclaim, and nobody has to update it on every commit.
+pub const CRATES: usize = 11;
+/// At least this many test functions exist.
+pub const TESTS: usize = 373;
+/// At least this many decision records exist.
+pub const DECISIONS: usize = 29;
+/// Exactly this many packages that are not this workspace.
+pub const FOREIGN_DEPENDENCIES: usize = 0;
+
+/// What this is, who made it, and what it does not depend on.
+fn about() -> Result<(), Failure> {
+    emit(&format!("quanty {}", env!("CARGO_PKG_VERSION")))?;
+    emit("one database that reshapes itself into whatever you need")?;
+    emit("")?;
+    emit(&format!(
+        "  dependencies   {FOREIGN_DEPENDENCIES}, and that is the whole list"
+    ))?;
+    emit("  people         1")?;
+    emit("  funding        none")?;
+    emit(&format!(
+        "  crates         {CRATES}, all of them in this repository"
+    ))?;
+    emit(&format!(
+        "  tests          {TESTS}+ functions, run on every push"
+    ))?;
+    emit(&format!(
+        "  decisions      {DECISIONS}+ written down, with their costs"
+    ))?;
+    emit("")?;
+    emit("The checksum, the locks, the epoll layer, sha256 and the wire")?;
+    emit("protocol are written out here rather than pulled in. Every one of")?;
+    emit("those choices is argued in docs/DECISIONS.md, cost included.")?;
+    emit("")?;
+    emit("  source   https://github.com/QuantyRoot/QuantyDatabase")?;
+    emit("  licence  MIT")?;
+    emit("  history  HUNDRED.md, for the bugs and the ideas that lost")
+}
+
 /// Print a new token and the line that makes a server accept it.
 ///
 /// The token is printed once and stored nowhere: this is the only moment

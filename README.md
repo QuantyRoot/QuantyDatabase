@@ -258,6 +258,10 @@ if you want to see how the sausage is made. If you want to help, or just to
 know what the rules are before you open anything,
 [CONTRIBUTING.md](CONTRIBUTING.md) says both.
 
+The hundredth commit has a page of its own in [HUNDRED.md](HUNDRED.md):
+the bugs worth remembering, the ideas that lost, and what one person with
+no dependencies and no funding has to show for a hundred commits.
+
 Star the repo if you want to follow along. :3
 
 ---
