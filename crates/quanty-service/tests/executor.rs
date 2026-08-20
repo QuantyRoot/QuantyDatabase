@@ -332,10 +332,16 @@ fn a_bad_statement_in_a_batch_leaves_its_neighbours_alone() {
     assert_eq!(reader.reply(Duration::from_secs(5)), ServerMessage::RowsEnd);
 }
 
-/// A `begin` arriving in the same turn as ordinary statements must not be
-/// swept into their transaction: it opens one of its own.
+/// A `begin` must never be swept into a batch.
+///
+/// It cannot be tested by racing a `begin` against an ordinary statement:
+/// if the `begin` wins, the other statement is correctly blocked behind it
+/// and never answers, so the test would be demanding something the design
+/// forbids. Queueing both behind a third connection removes the race, and
+/// the batch size says what happened: nine statements are waiting and the
+/// largest batch must not reach nine.
 #[test]
-fn a_begin_in_the_same_turn_still_takes_the_queue() {
+fn a_begin_is_never_swept_into_a_batch() {
     let server = Server::start(patient());
     let mut setup = server.client();
     assert_eq!(
@@ -343,27 +349,49 @@ fn a_begin_in_the_same_turn_still_takes_the_queue() {
         ServerMessage::Ok
     );
 
-    let mut first = server.client();
-    let mut holder = server.client();
-    let mut behind = server.client();
-    first.send("put t { id: 1, n: 1 }");
-    holder.send("begin");
-    behind.send("put t { id: 2, n: 2 }");
+    let mut blocker = server.client();
+    assert_eq!(blocker.ask("begin"), ServerMessage::Ok);
 
-    assert!(
-        matches!(
-            first.reply(Duration::from_secs(5)),
-            ServerMessage::Count { .. }
-        ),
-        "the statement before the begin did not run"
+    let mut writers: Vec<_> = (0..8).map(|_| server.client()).collect();
+    for (i, client) in writers.iter_mut().enumerate() {
+        client.send(&format!("put t {{ id: {i}, n: {i} }}"));
+    }
+    std::thread::sleep(Duration::from_millis(300));
+
+    // Sent last, so it sits at the back of the queue behind all eight.
+    let mut opener = server.client();
+    opener.send("begin");
+    std::thread::sleep(Duration::from_millis(300));
+
+    assert_eq!(blocker.ask("rollback"), ServerMessage::Ok);
+
+    for (i, client) in writers.iter_mut().enumerate() {
+        assert!(
+            matches!(client.reply(Duration::from_secs(10)), ServerMessage::Count { n, .. } if n == 1),
+            "write {i} never ran"
+        );
+    }
+    assert_eq!(
+        opener.reply(Duration::from_secs(10)),
+        ServerMessage::Ok,
+        "the begin did not open a transaction of its own"
     );
-    assert_eq!(holder.reply(Duration::from_secs(5)), ServerMessage::Ok);
+
+    let largest = server.stats().largest_batch.load(Ordering::Relaxed);
+    assert!(largest >= 2, "nothing was batched at all");
+    assert!(
+        largest <= 8,
+        "the begin was swept into a batch of {largest}"
+    );
+
+    // It really does hold the queue now.
+    let mut behind = server.client();
+    behind.send("put t { id: 99, n: 99 }");
     assert!(
         behind.answered(Duration::from_millis(300)).is_none(),
-        "the statement after the begin ran anyway"
+        "the statement did not wait for the transaction the begin opened"
     );
-
-    assert_eq!(holder.ask("rollback"), ServerMessage::Ok);
+    assert_eq!(opener.ask("rollback"), ServerMessage::Ok);
     assert!(
         matches!(
             behind.reply(Duration::from_secs(5)),
