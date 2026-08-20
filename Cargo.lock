@@ -74,6 +74,7 @@ dependencies = [
  "quanty-core",
  "quanty-exec",
  "quanty-proto",
+ "quanty-ql",
  "quanty-server",
 ]
 

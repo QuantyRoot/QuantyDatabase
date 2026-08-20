@@ -20,6 +20,9 @@ struct Options {
     active: usize,
     qps: u64,
     duration: Duration,
+    /// What the active connections send. `{n}` becomes a number unique to
+    /// each request, so a write load does not fight over one key.
+    statement: String,
 }
 
 impl Default for Options {
@@ -30,6 +33,7 @@ impl Default for Options {
             active: 32,
             qps: 1000,
             duration: Duration::from_secs(1800),
+            statement: "get t".to_string(),
         }
     }
 }
@@ -63,6 +67,10 @@ fn parse() -> Result<Options, String> {
             "--connections" => o.idle = value()?.parse().map_err(|_| "bad --connections")?,
             "--active" => o.active = value()?.parse().map_err(|_| "bad --active")?,
             "--qps" => o.qps = value()?.parse().map_err(|_| "bad --qps")?,
+            "--statement" => o.statement = value()?,
+            // `{n}` in the statement becomes a number unique to the sender,
+            // which is how a write load avoids fighting over one key.
+            "--writes" => o.statement = "put t { id: {n}, n: {n} }".to_string(),
             "--duration" => {
                 let raw = value()?;
                 o.duration = parse_duration(&raw)?;
@@ -170,10 +178,12 @@ fn run() -> Result<(), String> {
     let per_thread_qps = (opts.qps / opts.active.max(1) as u64).max(1);
 
     let mut workers = Vec::with_capacity(opts.active);
-    for _ in 0..opts.active {
+    for id in 0..opts.active as u64 {
         let counters = counters.clone();
         let running = running.clone();
+        let template = opts.statement.clone();
         workers.push(thread::spawn(move || {
+            let mut serial: u64 = 0;
             let mut socket =
                 match TcpStream::connect(addr).and_then(|mut s| handshake(&mut s).map(|_| s)) {
                     Ok(s) => s,
@@ -193,7 +203,13 @@ fn run() -> Result<(), String> {
                 next += gap;
 
                 let sent_at = Instant::now();
-                let request = match ClientMessage::Query("get t".into()).encode() {
+                serial += 1;
+                let source = if template.contains("{n}") {
+                    template.replace("{n}", &format!("{}", id * 10_000_000 + serial))
+                } else {
+                    template.clone()
+                };
+                let request = match ClientMessage::Query(source).encode() {
                     Ok(bytes) => bytes,
                     Err(_) => break,
                 };

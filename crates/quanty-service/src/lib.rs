@@ -34,4 +34,4 @@ mod answer;
 mod executor;
 
 #[cfg(target_os = "linux")]
-pub use executor::{Deadlines, Executor, Handle, BUSY_TIMEOUT, IDLE_IN_TXN};
+pub use executor::{Deadlines, Executor, Handle, Stats, BUSY_TIMEOUT, IDLE_IN_TXN, MAX_BATCH};

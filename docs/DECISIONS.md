@@ -884,3 +884,18 @@ and 18.02 us each with a savepoint around every one. Two percent, against
 
 The numbers above describe this container and are the shape of the answer,
 not its size. The acceptance machine gets its own run.
+
+**Built, and measured again from outside.** A write load through the
+server, thirty two active connections on the same core as the load
+generator, answers 9357 statements per second. The in process baseline in
+the table above, one commit per statement and no sockets at all, is 3429.
+Doing strictly more work per statement and still going two and a half times
+faster is the batching, since nothing else changed.
+
+Two limits the implementation puts on itself. A statement that manages its
+own commit, `begin`, `commit` and the branch statements, runs alone,
+because inside a transaction they either refuse or mean something else. And
+nobody in a batch is answered until the commit succeeds: a read batched
+with a write may have seen that write, so reporting its rows before the
+shared commit is durable would promise something the server could still
+take back.

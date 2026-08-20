@@ -3,22 +3,83 @@
 use quanty_core::{Storage, Value};
 use quanty_exec::{ExecError, Output, Session};
 use quanty_proto::{batch_rows, ClientMessage, ErrorCode, ServerMessage};
+use quanty_ql::ast::Statement;
+use quanty_ql::ParseError;
 
-/// Run one request against a session that is ready for it.
-pub(crate) fn answer<S: Storage>(
-    session: &mut Session<S>,
-    request: &ClientMessage,
-) -> Vec<ServerMessage> {
-    match request {
+/// What the executor may do with a statement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Kind {
+    /// Can share a commit with its neighbours in the queue.
+    Batchable,
+    /// Opens a transaction, so this connection holds the queue afterwards.
+    Begins,
+    /// Closes one.
+    Ends,
+    /// Manages its own commit and cannot run inside a transaction.
+    Alone,
+}
+
+/// A parsed request, ready to run.
+pub(crate) struct Parsed {
+    pub(crate) statement: Statement,
+    pub(crate) kind: Kind,
+}
+
+/// Parse a request, or the messages that say why it could not be.
+///
+/// Parsing happens here rather than inside `Session::execute` because the
+/// executor has to know what a statement is before deciding whether it can
+/// share a commit with the one behind it.
+pub(crate) fn parse(request: &ClientMessage) -> Result<Option<Parsed>, Vec<ServerMessage>> {
+    let parsed = match request {
         // No authentication is required yet, so a token is accepted
         // without being looked at. ADR-026 decides where tokens will live;
         // until it is built, saying `Ready` is what this server means.
-        ClientMessage::Auth(_) => vec![ServerMessage::Ready],
-        ClientMessage::Query(source) => render(session.execute(source)),
-        ClientMessage::QuerySql(source) => render(session.execute_sql(source)),
+        ClientMessage::Auth(_) => return Ok(None),
+        ClientMessage::Query(source) => quanty_ql::parse(source),
+        ClientMessage::QuerySql(source) => quanty_ql::parse_sql(source),
         // The connection handles `Close` itself and never submits one.
-        ClientMessage::Close => Vec::new(),
+        ClientMessage::Close => return Ok(None),
+    };
+    match parsed {
+        Ok(statement) => {
+            let kind = classify(&statement);
+            Ok(Some(Parsed { statement, kind }))
+        }
+        Err(e) => Err(failed(ErrorCode::Parse, parse_message(&e))),
     }
+}
+
+fn parse_message(e: &ParseError) -> String {
+    ExecError::from(e.clone()).to_string()
+}
+
+fn classify(statement: &Statement) -> Kind {
+    match statement {
+        Statement::Begin => Kind::Begins,
+        Statement::Commit | Statement::Rollback => Kind::Ends,
+        // These manage commits at the database level and refuse to run
+        // inside a transaction, so batching them would break them.
+        Statement::Branch { .. }
+        | Statement::Switch { .. }
+        | Statement::Merge { .. }
+        | Statement::DropBranch { .. }
+        | Statement::ShowBranches
+        | Statement::Log
+        | Statement::Gc { .. } => Kind::Alone,
+        Statement::Explain(inner) => classify(inner),
+        _ => Kind::Batchable,
+    }
+}
+
+/// Run one parsed statement against a session that is ready for it.
+pub(crate) fn answer<S: Storage>(session: &mut Session<S>, parsed: &Parsed) -> Vec<ServerMessage> {
+    render(session.execute_ast(&parsed.statement))
+}
+
+/// The reply to a request that never reaches the engine.
+pub(crate) fn ready() -> Vec<ServerMessage> {
+    vec![ServerMessage::Ready]
 }
 
 /// An error the executor produced rather than the engine.

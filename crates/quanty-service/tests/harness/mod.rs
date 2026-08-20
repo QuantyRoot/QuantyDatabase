@@ -21,7 +21,7 @@ use quanty_proto::{
     ClientHello, ClientMessage, ServerHello, ServerMessage, SERVER_HELLO_LEN, VERSION,
 };
 use quanty_server::Worker;
-use quanty_service::{Deadlines, Executor};
+use quanty_service::{Deadlines, Executor, Stats};
 
 /// A running server, and the thread that turns its loop.
 pub struct Server {
@@ -63,6 +63,11 @@ impl Server {
             worker: Some(handle),
             _executor: executor,
         }
+    }
+
+    /// What the executor has done so far.
+    pub fn stats(&self) -> std::sync::Arc<Stats> {
+        self._executor.stats()
     }
 
     /// A connected client that has finished the handshake.

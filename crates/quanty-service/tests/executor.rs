@@ -4,6 +4,7 @@
 
 mod harness;
 
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use quanty_proto::{ErrorCode, ServerMessage};
@@ -278,5 +279,178 @@ fn a_connection_that_vanishes_releases_the_queue() {
         next.ask("table t { id: int @key, a: int }"),
         ServerMessage::Ok,
         "the queue stayed shut after the holder went away"
+    );
+}
+
+/// The promise that makes batching allowed: statements sharing a commit
+/// still fail on their own.
+#[test]
+fn a_bad_statement_in_a_batch_leaves_its_neighbours_alone() {
+    let server = Server::start(patient());
+    let mut setup = server.client();
+    assert_eq!(
+        setup.ask("table t { id: int @key, n: int }"),
+        ServerMessage::Ok
+    );
+
+    // Sent without waiting, so they reach the executor together and share
+    // a turn. The duplicate key in the middle is the one that must fail.
+    let mut a = server.client();
+    let mut b = server.client();
+    let mut c = server.client();
+    a.send("put t { id: 1, n: 1 }");
+    b.send("put t { id: 1, n: 2 }, { id: 1, n: 3 }");
+    c.send("put t { id: 2, n: 2 }");
+
+    assert!(
+        matches!(a.reply(Duration::from_secs(5)), ServerMessage::Count { n, .. } if n == 1),
+        "the first write did not land"
+    );
+    let middle = b.reply(Duration::from_secs(5));
+    assert!(
+        is_error(&middle, ErrorCode::Execution),
+        "the duplicate key should have failed, got {middle:?}"
+    );
+    assert!(
+        matches!(c.reply(Duration::from_secs(5)), ServerMessage::Count { n, .. } if n == 1),
+        "the third write was taken down with the failing one"
+    );
+
+    // Exactly the two good rows are there, and the failed statement wrote
+    // nothing at all.
+    let mut reader = server.client();
+    assert_eq!(
+        reader.ask("get t"),
+        ServerMessage::RowsBegin {
+            columns: vec!["id".into(), "n".into()]
+        }
+    );
+    match reader.reply(Duration::from_secs(5)) {
+        ServerMessage::RowBatch { rows } => assert_eq!(rows.len(), 2, "{rows:?}"),
+        other => panic!("expected two rows, got {other:?}"),
+    }
+    assert_eq!(reader.reply(Duration::from_secs(5)), ServerMessage::RowsEnd);
+}
+
+/// A `begin` arriving in the same turn as ordinary statements must not be
+/// swept into their transaction: it opens one of its own.
+#[test]
+fn a_begin_in_the_same_turn_still_takes_the_queue() {
+    let server = Server::start(patient());
+    let mut setup = server.client();
+    assert_eq!(
+        setup.ask("table t { id: int @key, n: int }"),
+        ServerMessage::Ok
+    );
+
+    let mut first = server.client();
+    let mut holder = server.client();
+    let mut behind = server.client();
+    first.send("put t { id: 1, n: 1 }");
+    holder.send("begin");
+    behind.send("put t { id: 2, n: 2 }");
+
+    assert!(
+        matches!(
+            first.reply(Duration::from_secs(5)),
+            ServerMessage::Count { .. }
+        ),
+        "the statement before the begin did not run"
+    );
+    assert_eq!(holder.reply(Duration::from_secs(5)), ServerMessage::Ok);
+    assert!(
+        behind.answered(Duration::from_millis(300)).is_none(),
+        "the statement after the begin ran anyway"
+    );
+
+    assert_eq!(holder.ask("rollback"), ServerMessage::Ok);
+    assert!(
+        matches!(
+            behind.reply(Duration::from_secs(5)),
+            ServerMessage::Count { .. }
+        ),
+        "the queued statement never ran"
+    );
+}
+
+/// Many statements at once must answer the same as one at a time.
+#[test]
+fn a_batch_answers_the_same_as_one_at_a_time() {
+    let server = Server::start(patient());
+    let mut setup = server.client();
+    assert_eq!(
+        setup.ask("table t { id: int @key, n: int }"),
+        ServerMessage::Ok
+    );
+
+    let mut clients: Vec<_> = (0..24).map(|_| server.client()).collect();
+    for (i, client) in clients.iter_mut().enumerate() {
+        client.send(&format!("put t {{ id: {i}, n: {i} }}"));
+    }
+    for (i, client) in clients.iter_mut().enumerate() {
+        assert!(
+            matches!(client.reply(Duration::from_secs(10)), ServerMessage::Count { n, .. } if n == 1),
+            "write {i} did not report one row"
+        );
+    }
+
+    let mut reader = server.client();
+    assert_eq!(
+        reader.ask("get t"),
+        ServerMessage::RowsBegin {
+            columns: vec!["id".into(), "n".into()]
+        }
+    );
+    match reader.reply(Duration::from_secs(5)) {
+        ServerMessage::RowBatch { rows } => assert_eq!(rows.len(), 24),
+        other => panic!("expected 24 rows, got {other:?}"),
+    }
+    assert_eq!(reader.reply(Duration::from_secs(5)), ServerMessage::RowsEnd);
+}
+
+/// That a batch forms at all, forced rather than hoped for.
+///
+/// Statements arriving on their own may well be picked up one at a time,
+/// which would let every test above pass without a single shared commit
+/// ever happening. Blocking them behind an open transaction removes the
+/// timing from the question: when it closes, everything waiting is ready
+/// in the same turn and has to share one commit.
+#[test]
+fn statements_released_together_share_one_commit() {
+    let server = Server::start(patient());
+    let mut setup = server.client();
+    assert_eq!(
+        setup.ask("table t { id: int @key, n: int }"),
+        ServerMessage::Ok
+    );
+
+    let mut holder = server.client();
+    assert_eq!(holder.ask("begin"), ServerMessage::Ok);
+
+    let mut waiting: Vec<_> = (0..12).map(|_| server.client()).collect();
+    for (i, client) in waiting.iter_mut().enumerate() {
+        client.send(&format!("put t {{ id: {i}, n: {i} }}"));
+    }
+    // Give them time to reach the executor and pile up behind the holder.
+    std::thread::sleep(Duration::from_millis(200));
+    let before = server.stats().largest_batch.load(Ordering::Relaxed);
+
+    assert_eq!(holder.ask("commit"), ServerMessage::Ok);
+    for (i, client) in waiting.iter_mut().enumerate() {
+        assert!(
+            matches!(client.reply(Duration::from_secs(10)), ServerMessage::Count { n, .. } if n == 1),
+            "write {i} did not run after the transaction closed"
+        );
+    }
+
+    let stats = server.stats();
+    let largest = stats.largest_batch.load(Ordering::Relaxed);
+    assert!(
+        largest > before && largest > 1,
+        "nothing was batched: largest was {before} before and {largest} after"
+    );
+    assert!(
+        stats.batched.load(Ordering::Relaxed) >= largest as u64,
+        "the batched count does not agree with the largest batch"
     );
 }

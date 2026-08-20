@@ -11,6 +11,7 @@ description = "The executor thread that answers protocol requests for QuantyDB"
 quanty-core = { path = "../quanty-core" }
 quanty-exec = { path = "../quanty-exec" }
 quanty-proto = { path = "../quanty-proto" }
+quanty-ql = { path = "../quanty-ql" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 quanty-server = { path = "../quanty-server" }
