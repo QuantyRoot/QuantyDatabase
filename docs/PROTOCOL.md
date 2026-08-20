@@ -236,8 +236,17 @@ because branching and `as of` would otherwise make "revoked" true only at
 the tip of one branch. The token stays opaque on the wire either way, so
 the format did not need the answer to be written down.
 
-Until that store exists the server requires no authentication and answers
-`Auth` with `Ready` without reading the token.
+A server started without a token file requires no authentication and
+answers `Auth` with `Ready` without reading the token. That is a real
+configuration, not a placeholder, and it is why the default address is
+loopback.
+
+A server started with one answers `Auth` with `Ready` or with `0x0004`,
+and answers everything else with `0x0003` until a token has been accepted.
+Authentication is per connection: a token accepted on one says nothing
+about any other. It is checked when `Auth` arrives, so revoking a token
+shuts out new connections rather than cutting off one that is already
+talking.
 
 ## Version history
 

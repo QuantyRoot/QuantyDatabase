@@ -790,7 +790,26 @@ there is no guessing attack for a work factor to slow down. ADR-020 keeps
 dependencies out of the workspace, so the hash is one we write against
 published test vectors, and that is a slice of its own.
 
-**Until it is built the server requires no authentication.** `Auth` is
+**Built.** `quanty serve --tokens <file>` requires a token; without the
+flag nothing changes for anyone. `quanty token <label>` mints one and
+prints it once, together with the line to append. The file is looked at
+again once a second, so deleting a line shuts the door on a running
+server. A file that has become unreadable or malformed leaves the last
+good set in force: falling open is worse, and falling over is worse still.
+
+Two things it does not promise, written down rather than discovered. The
+check happens when `Auth` arrives, so revoking a token shuts out new
+connections and does not cut off one that is already talking. And a
+refused token is not a ban: the connection stays open and may try again,
+because the alternative is a server that a typo can lock you out of.
+
+SHA-256 is written out in `quanty-auth` because ADR-020 keeps dependencies
+out. It is checked against the published vectors, the million byte one
+included, and against a separate implementation at every length around the
+block and padding boundaries, which is the only way to cover inputs the
+standard does not publish.
+
+**Without a token file the server requires no authentication.** `Auth` is
 answered with `Ready` without the token being looked at, which is exactly
 the "a server that does not require it" case docs/PROTOCOL.md already
 describes. That is a real configuration and not a placeholder, but it is
