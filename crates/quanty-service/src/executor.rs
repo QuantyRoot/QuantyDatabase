@@ -7,13 +7,18 @@ use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+use quanty_auth::Tokens;
 use quanty_core::Storage;
 use quanty_exec::{Parked, Session};
-use quanty_proto::{ErrorCode, ServerMessage};
+use quanty_proto::{ClientMessage, ErrorCode, ServerMessage};
 use quanty_ql::ast::Statement;
 use quanty_server::{ConnId, Dispatch, Job};
 
 use crate::answer::{answer, failed, parse, ready, Kind, Parsed};
+
+/// How often the token file is looked at again, so a revoked token stops
+/// working without the server being restarted.
+const TOKEN_RELOAD: Duration = Duration::from_secs(1);
 
 /// How long a statement waits for the writer before it is refused.
 pub const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -82,14 +87,18 @@ pub struct Executor {
 
 impl Executor {
     /// Start a thread that owns `session` and answers what is sent to it.
-    pub fn spawn<S>(session: Session<S>, deadlines: Deadlines) -> Executor
+    ///
+    /// Without `tokens` the server requires no authentication, which is the
+    /// case docs/PROTOCOL.md already describes and the reason `quanty serve`
+    /// belongs on a loopback address until one is given.
+    pub fn spawn<S>(session: Session<S>, deadlines: Deadlines, tokens: Option<Tokens>) -> Executor
     where
         S: Storage + Send + 'static,
     {
         let (tx, rx) = mpsc::channel();
         let stats = Arc::new(Stats::default());
         let mine = Arc::clone(&stats);
-        let thread = thread::spawn(move || State::new(session, deadlines, mine).run(rx));
+        let thread = thread::spawn(move || State::new(session, deadlines, tokens, mine).run(rx));
         Executor {
             tx: Some(tx),
             thread: Some(thread),
@@ -173,6 +182,8 @@ enum Either {
 /// What the executor keeps for one connection.
 #[derive(Default)]
 struct ConnState {
+    /// Whether it has shown a token this server accepts.
+    authenticated: bool,
     /// Its transaction while another connection is running.
     parked: Parked,
     /// Why its transaction is gone, to be reported at its next statement.
@@ -189,11 +200,20 @@ struct State<S: Storage> {
     ready: Vec<Pending>,
     /// Blocked behind the open transaction, oldest first.
     blocked: Vec<Pending>,
+    /// The tokens this server accepts, if it requires any.
+    tokens: Option<Tokens>,
+    /// When the token file was last looked at again.
+    checked: Instant,
     stats: Arc<Stats>,
 }
 
 impl<S: Storage> State<S> {
-    fn new(session: Session<S>, deadlines: Deadlines, stats: Arc<Stats>) -> Self {
+    fn new(
+        session: Session<S>,
+        deadlines: Deadlines,
+        tokens: Option<Tokens>,
+        stats: Arc<Stats>,
+    ) -> Self {
         State {
             session,
             deadlines,
@@ -201,6 +221,8 @@ impl<S: Storage> State<S> {
             holder: None,
             ready: Vec::new(),
             blocked: Vec::new(),
+            tokens,
+            checked: Instant::now(),
             stats,
         }
     }
@@ -255,6 +277,21 @@ impl<S: Storage> State<S> {
     }
 
     fn accept(&mut self, job: Job) {
+        if let ClientMessage::Auth(token) = &job.request {
+            let verdict = self.authenticate(job.id, token);
+            let _ = job.answer(verdict);
+            return;
+        }
+        // Nothing but `Auth` is answered before a token has been shown, so
+        // an unauthenticated connection cannot parse, queue or run
+        // anything.
+        if !self.is_authenticated(job.id) {
+            let _ = job.answer(failed(
+                ErrorCode::NotAuthenticated,
+                "this server requires a token; send Auth first",
+            ));
+            return;
+        }
         let work = match parse(&job.request) {
             Ok(Some(parsed)) => Either::Run(parsed),
             Ok(None) => Either::Say(ready()),
@@ -270,6 +307,48 @@ impl<S: Storage> State<S> {
         } else {
             self.blocked.push(pending);
         }
+    }
+
+    /// Check a token and remember the answer for this connection.
+    ///
+    /// The file is re-read when it has changed, so a revoked token stops
+    /// working within a second rather than at the next restart. A file that
+    /// has become unreadable or malformed leaves the last good set in
+    /// force: falling open would be worse and falling over would be worse
+    /// still.
+    fn authenticate(&mut self, id: ConnId, token: &[u8]) -> Vec<ServerMessage> {
+        if self.tokens.is_none() {
+            self.conns.entry(id).or_default().authenticated = true;
+            return ready();
+        }
+        if self.checked.elapsed() >= TOKEN_RELOAD {
+            self.checked = Instant::now();
+            if let Some(tokens) = self.tokens.as_mut() {
+                let _ = tokens.reload_if_changed();
+            }
+        }
+        let accepted = self
+            .tokens
+            .as_ref()
+            .map(|t| t.accepts(token))
+            .unwrap_or(false);
+        if accepted {
+            self.conns.entry(id).or_default().authenticated = true;
+            ready()
+        } else {
+            // No detail: which part of a rejected token was wrong is
+            // exactly what an attacker would like to be told.
+            failed(ErrorCode::AuthFailed, "the token was not accepted")
+        }
+    }
+
+    fn is_authenticated(&self, id: ConnId) -> bool {
+        self.tokens.is_none()
+            || self
+                .conns
+                .get(&id)
+                .map(|c| c.authenticated)
+                .unwrap_or(false)
     }
 
     /// Whether this can run while things are as they are.

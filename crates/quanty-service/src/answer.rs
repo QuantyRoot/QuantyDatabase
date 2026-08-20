@@ -35,9 +35,7 @@ pub(crate) struct Parsed {
 /// share a commit with the one behind it.
 pub(crate) fn parse(request: &ClientMessage) -> Result<Option<Parsed>, Vec<ServerMessage>> {
     let parsed = match request {
-        // No authentication is required yet, so a token is accepted
-        // without being looked at. ADR-026 decides where tokens will live;
-        // until it is built, saying `Ready` is what this server means.
+        // Handled by the executor, which is what holds the token file.
         ClientMessage::Auth(_) => return Ok(None),
         ClientMessage::Query(source) => quanty_ql::parse(source),
         ClientMessage::QuerySql(source) => quanty_ql::parse_sql(source),

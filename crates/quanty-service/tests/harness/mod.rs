@@ -6,6 +6,9 @@
 //! apart, cannot be asked of the pieces one at a time.
 
 #![cfg(target_os = "linux")]
+// Each test binary compiles its own copy of this module, so a helper only
+// one of them needs looks dead to the others.
+#![allow(dead_code)]
 
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
@@ -14,6 +17,7 @@ use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+use quanty_auth::Tokens;
 use quanty_core::{Db, MemStorage};
 use quanty_exec::Session;
 use quanty_proto::frame::{FrameHeader, HEADER_LEN};
@@ -27,6 +31,7 @@ use quanty_service::{Deadlines, Executor, Stats};
 pub struct Server {
     addr: SocketAddr,
     running: Arc<AtomicBool>,
+    needs_auth: bool,
     worker: Option<JoinHandle<()>>,
     /// Dropped last, after the worker thread is joined, so no handle
     /// outlives the executor it points at.
@@ -34,11 +39,17 @@ pub struct Server {
 }
 
 impl Server {
-    /// Start one on an in-memory database.
+    /// Start one on an in-memory database, requiring no authentication.
     pub fn start(deadlines: Deadlines) -> Server {
+        Server::with_tokens(deadlines, None)
+    }
+
+    /// Start one that only talks to holders of a listed token.
+    pub fn with_tokens(deadlines: Deadlines, tokens: Option<Tokens>) -> Server {
         let db = Db::in_memory().expect("in-memory db");
         let session: Session<MemStorage> = Session::new(db);
-        let executor = Executor::spawn(session, deadlines);
+        let needs_auth = tokens.is_some();
+        let executor = Executor::spawn(session, deadlines, tokens);
 
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
         let addr = listener.local_addr().expect("addr");
@@ -60,6 +71,7 @@ impl Server {
         Server {
             addr,
             running,
+            needs_auth,
             worker: Some(handle),
             _executor: executor,
         }
@@ -95,6 +107,22 @@ impl Server {
         assert_eq!(client.reply(Duration::from_secs(5)), ServerMessage::Ready);
         client
     }
+
+    /// A connected client that has also shown a token.
+    pub fn client_with(&self, token: &str) -> Client {
+        let mut client = self.client();
+        assert_eq!(
+            client.authenticate(token),
+            ServerMessage::Ready,
+            "the token was refused"
+        );
+        client
+    }
+
+    /// Whether this server was given a token file.
+    pub fn needs_auth(&self) -> bool {
+        self.needs_auth
+    }
 }
 
 impl Drop for Server {
@@ -113,6 +141,15 @@ pub struct Client {
 }
 
 impl Client {
+    /// Show a token and read the verdict.
+    pub fn authenticate(&mut self, token: &str) -> ServerMessage {
+        let bytes = ClientMessage::Auth(token.as_bytes().to_vec())
+            .encode()
+            .expect("encode");
+        self.socket.write_all(&bytes).expect("write");
+        self.reply(Duration::from_secs(5))
+    }
+
     /// Send a QQL statement without waiting for the answer.
     pub fn send(&mut self, statement: &str) {
         let bytes = ClientMessage::Query(statement.into())

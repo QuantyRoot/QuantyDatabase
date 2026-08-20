@@ -8,6 +8,7 @@ repository.workspace = true
 description = "The executor thread that answers protocol requests for QuantyDB"
 
 [dependencies]
+quanty-auth = { path = "../quanty-auth" }
 quanty-core = { path = "../quanty-core" }
 quanty-exec = { path = "../quanty-exec" }
 quanty-proto = { path = "../quanty-proto" }
@@ -17,6 +18,7 @@ quanty-ql = { path = "../quanty-ql" }
 quanty-server = { path = "../quanty-server" }
 
 [dev-dependencies]
+quanty-auth = { path = "../quanty-auth" }
 quanty-core = { path = "../quanty-core" }
 quanty-exec = { path = "../quanty-exec" }
 quanty-proto = { path = "../quanty-proto" }
