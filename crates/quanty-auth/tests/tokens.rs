@@ -135,3 +135,76 @@ fn a_minted_token_verifies_against_its_own_line() {
     assert!(tokens.accepts(token.as_bytes()));
     assert!(!tokens.accepts(other.as_bytes()));
 }
+
+#[cfg(unix)]
+mod permissions {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    fn chmod(path: &std::path::Path, mode: u32) {
+        let mut perms = fs::metadata(path).expect("stat").permissions();
+        perms.set_mode(mode);
+        fs::set_permissions(path, perms).expect("chmod");
+    }
+
+    /// Anyone who can write to the file can add their own line, which is a
+    /// way in rather than a credential store.
+    #[test]
+    fn a_file_others_can_write_to_is_refused() {
+        let dir = Dir::new("writable");
+        let path = dir.write("tokens", &line_for("secret", "one"));
+
+        chmod(&path, 0o600);
+        assert!(Tokens::load(&path).is_ok(), "0600 should be fine");
+
+        chmod(&path, 0o666);
+        let err = Tokens::load(&path).expect_err("0666 should be refused");
+        assert!(err.to_string().contains("chmod"), "{err}");
+
+        chmod(&path, 0o620);
+        assert!(
+            Tokens::load(&path).is_err(),
+            "group writable should be refused too"
+        );
+    }
+
+    /// Readable is not refused: the file holds hashes of full entropy
+    /// tokens, which are not worth reading. It is worth saying though.
+    #[test]
+    fn a_file_others_can_read_is_allowed_and_noted() {
+        let dir = Dir::new("readable");
+        let path = dir.write("tokens", &line_for("secret", "one"));
+
+        chmod(&path, 0o600);
+        let tight = Tokens::load(&path).expect("load");
+        assert!(!tight.permissive());
+
+        chmod(&path, 0o644);
+        let loose = Tokens::load(&path).expect("load");
+        assert!(loose.permissive(), "0644 should have been noted");
+        assert!(loose.accepts(b"secret"), "and it still works");
+    }
+
+    /// The check runs on every read, so loosening the file at runtime is
+    /// caught rather than only at startup.
+    #[test]
+    fn loosening_it_later_is_caught_on_reload() {
+        let dir = Dir::new("later");
+        let path = dir.write("tokens", &line_for("secret", "one"));
+        chmod(&path, 0o600);
+        let mut tokens = Tokens::load(&path).expect("load");
+
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        fs::write(&path, line_for("secret", "one")).expect("rewrite");
+        chmod(&path, 0o666);
+
+        assert!(
+            tokens.reload_if_changed().is_err(),
+            "a file that became writable was reloaded anyway"
+        );
+        assert!(
+            tokens.accepts(b"secret"),
+            "and the last good set stays in force"
+        );
+    }
+}

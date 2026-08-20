@@ -476,11 +476,16 @@ fn serve(database: &Path, flags: &Flags) -> Result<(), Failure> {
     let live: Arc<Vec<AtomicUsize>> = Arc::new((0..workers).map(|_| AtomicUsize::new(0)).collect());
 
     match &tokens {
-        Some(t) => emit(&format!(
-            "requiring a token, {} in force from {}",
-            t.len(),
-            t.path().display()
-        ))?,
+        Some(t) => {
+            emit(&format!(
+                "requiring a token, {} in force from {}",
+                t.len(),
+                t.path().display()
+            ))?;
+            if t.permissive() {
+                emit("note: the token file is readable by others; chmod 600 it")?;
+            }
+        }
         None => emit("no authentication required; keep this on loopback")?,
     }
 

@@ -797,6 +797,13 @@ again once a second, so deleting a line shuts the door on a running
 server. A file that has become unreadable or malformed leaves the last
 good set in force: falling open is worse, and falling over is worse still.
 
+The file's own permissions are part of the credential. A token file that
+anyone can write to is a way in rather than a store, since anyone can add
+their own line, so it is refused outright and refused again on every
+reload. A file that anyone can read only earns a note at startup: it holds
+hashes of full entropy tokens, which are not worth reading, but it is
+rarely what someone meant.
+
 Two things it does not promise, written down rather than discovered. The
 check happens when `Auth` arrives, so revoking a token shuts out new
 connections and does not cut off one that is already talking. And a

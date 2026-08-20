@@ -14,6 +14,8 @@ use crate::sha256::{from_hex, sha256, to_hex};
 pub enum TokensError {
     /// The file could not be read.
     Io(io::Error),
+    /// Someone other than the owner can write to it.
+    Writable,
     /// A line was not a hash and a label.
     Malformed {
         /// One based, so it matches an editor.
@@ -27,6 +29,11 @@ impl fmt::Display for TokensError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             TokensError::Io(e) => write!(f, "{e}"),
+            TokensError::Writable => write!(
+                f,
+                "anyone can write to it, so anyone can grant themselves \
+                 access; chmod go-w it"
+            ),
             TokensError::Malformed { line, detail } => write!(f, "line {line}: {detail}"),
         }
     }
@@ -45,6 +52,7 @@ pub struct Tokens {
     path: PathBuf,
     accepted: HashSet<[u8; 32]>,
     seen: Option<SystemTime>,
+    permissive: bool,
 }
 
 impl Tokens {
@@ -55,6 +63,7 @@ impl Tokens {
             path,
             accepted: HashSet::new(),
             seen: None,
+            permissive: false,
         };
         tokens.read()?;
         Ok(tokens)
@@ -95,8 +104,20 @@ impl Tokens {
         Ok(true)
     }
 
+    /// Whether anyone but the owner can read it.
+    ///
+    /// Not an error: the file holds hashes, and a hash of a full entropy
+    /// token is not worth reading. Worth saying out loud all the same,
+    /// because a credential file that everyone can read is rarely what
+    /// someone meant.
+    pub fn permissive(&self) -> bool {
+        self.permissive
+    }
+
     fn read(&mut self) -> Result<(), TokensError> {
         let stamp = modified(&self.path);
+        refuse_if_writable(&self.path)?;
+        self.permissive = readable_by_others(&self.path);
         let text = fs::read_to_string(&self.path).map_err(TokensError::Io)?;
         let mut accepted = HashSet::new();
         for (index, raw) in text.lines().enumerate() {
@@ -122,6 +143,42 @@ impl Tokens {
         self.seen = stamp;
         Ok(())
     }
+}
+
+/// A token file others can write to is a way in, not a credential store.
+///
+/// Refused rather than warned about, because the safe direction for a
+/// credential file is to stop. Reading it is a different matter and only
+/// earns a note.
+#[cfg(unix)]
+fn refuse_if_writable(path: &Path) -> Result<(), TokensError> {
+    use std::os::unix::fs::PermissionsExt;
+    let mode = fs::metadata(path)
+        .map_err(TokensError::Io)?
+        .permissions()
+        .mode();
+    if mode & 0o022 != 0 {
+        return Err(TokensError::Writable);
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn refuse_if_writable(_path: &Path) -> Result<(), TokensError> {
+    Ok(())
+}
+
+#[cfg(unix)]
+fn readable_by_others(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    fs::metadata(path)
+        .map(|m| m.permissions().mode() & 0o044 != 0)
+        .unwrap_or(false)
+}
+
+#[cfg(not(unix))]
+fn readable_by_others(_path: &Path) -> bool {
+    false
 }
 
 fn modified(path: &Path) -> Option<SystemTime> {
