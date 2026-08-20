@@ -211,11 +211,11 @@ enums are internal and free to change shape; the codes are not.
 0x0008  server shutting down
 ```
 
-`0x0007` is reserved rather than specified. ADR-003 gives the database one
-writer, so the server serializes writers, and whether a client that waits
-too long is told to retry or simply waits is an open question tied to how
-`SuspendedTx` behaves when a connection holds an open transaction. The code
-exists so that answering it later does not need a version bump.
+`0x0007` means the statement waited for the writer past the server's
+deadline and did not run. Retrying is correct and is what the code is for.
+ADR-024 sets the deadline and ADR-027 records that in the first
+implementation every statement waits behind an open transaction, reads
+included, not only writers.
 
 ## Authentication
 
@@ -225,10 +225,14 @@ auth answers `0x0003` to any `Query` that arrives before a successful
 `Auth`; a server that does not require it may send `Ready` unprompted after
 the handshake.
 
-**Where tokens are stored and how they are revoked is not decided here.**
-That is an open question for phase 5 and the token stays opaque on purpose:
-every answer to it that has been raised so far fits behind these bytes, so
-the format does not need to know the answer to be written down.
+**Where tokens are stored and how they are revoked is decided in ADR-026,
+not here.** They live in a file beside the database rather than in it,
+because branching and `as of` would otherwise make "revoked" true only at
+the tip of one branch. The token stays opaque on the wire either way, so
+the format did not need the answer to be written down.
+
+Until that store exists the server requires no authentication and answers
+`Auth` with `Ready` without reading the token.
 
 ## Version history
 

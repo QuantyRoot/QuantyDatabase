@@ -758,3 +758,80 @@ library and the new code is a bind sequence and nothing else.
 
 `EPOLLEXCLUSIVE` stays for the case of a listener genuinely shared, which
 the differential test against the thread fallback will want.
+
+## ADR-026: Auth tokens live outside the versioned data
+
+The protocol carries an opaque token and docs/PROTOCOL.md deliberately does
+not say where it is kept. Phase 5 has to answer that, and the branching and
+time travel this database is built on rule out the obvious answer.
+
+**Credentials are not versioned.** Put token hashes in an ordinary table and
+"revoked" becomes true only at the tip of one branch. ADR-005 gives every
+reader `as of <commit>`, so a revoked hash stays readable in history, and
+ADR-009 gives anyone a branch from before the revocation where the token
+still works. Those two features are the point of the product, so the
+credential store is what has to move.
+
+**So tokens live in a file beside the database, not inside it.** One line
+per token: a hash and a label, ASCII, in the style of `authorized_keys`.
+The server reads it at startup and again when its mtime changes. Revoking a
+token is deleting a line, it takes effect without a running server, and it
+cannot be undone by switching branches or reading history.
+
+The cost is a second place where durability matters, which ADR-002 would
+otherwise argue against. It is worth it here because the failure modes are
+the ones we want: a truncated or unreadable token file means no client
+authenticates, which is the safe direction, and it means no write path from
+client statements into the credential store at all.
+
+**The token is hashed, not encrypted, and not run through a slow KDF.** A
+token is generated with full entropy rather than chosen by a human, so
+there is no guessing attack for a work factor to slow down. ADR-020 keeps
+dependencies out of the workspace, so the hash is one we write against
+published test vectors, and that is a slice of its own.
+
+**Until it is built the server requires no authentication.** `Auth` is
+answered with `Ready` without the token being looked at, which is exactly
+the "a server that does not require it" case docs/PROTOCOL.md already
+describes. That is a real configuration and not a placeholder, but it is
+the reason `quanty serve` belongs on a loopback address until this is done.
+
+## ADR-027: One executor thread owns the session, transactions park
+
+ADR-024 puts a queue in front of one writer. What it does not say is how
+the engine is held, and the code answers that more narrowly than expected.
+
+**A shared database was tried and rejected.** The natural shape is
+`Arc<Db>` with a session per connection. `Db::gc` takes `&mut self` on
+purpose: outstanding snapshots borrow the database, so the borrow checker
+proves reader quiescence before a page is reused. Behind an `Arc` that
+proof is unavailable and `gc` becomes unreachable, and `gc` is a statement
+in the language. The compile-time proof is worth more than the shape.
+
+**So there is one session, and the per-connection part of it parks.** A
+session is a database plus at most one open transaction, and only the
+second half belongs to a connection. ADR-021 already made a suspended
+transaction a value that has touched no disk, so moving it in and out
+around each statement costs nothing and dropping it is a rollback. The
+executor thread owns the session and a table of parked transactions.
+
+**Everything serializes, reads included, and that is the price.** A
+connection holding an open transaction makes every other connection wait,
+not only the writers ADR-024 was thinking about. This is measured, not
+assumed: a read issued while another connection has a transaction open does
+not return until that transaction closes. Two consequences follow.
+
+The idle-in-transaction deadline is short, ten seconds rather than the off
+by default Postgres can afford, because here one forgotten `begin` is a
+server-wide stall rather than one blocked writer.
+
+And the thing to measure next is named: whether a read can bypass the queue
+and run against a snapshot while a transaction is parked. It is safe in
+principle, since a snapshot commits nothing and cannot invalidate the
+parked batch, but it needs the executor to tell a read from a write from
+the plan rather than from the text, and ADR-016 wants the number first.
+
+**Group commit is deferred for the same reason.** The shape ADR-024 asked
+for is here, one thread draining a queue, and batching several statements
+into one write and one fsync is a change to one function. It is also an
+optimization, and there is no measurement of what fsync costs here yet.
