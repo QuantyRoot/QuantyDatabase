@@ -63,8 +63,18 @@ pub struct Session<S: Storage> {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Output {
     Ok,
-    Count { verb: &'static str, n: u64 },
-    Rows(Vec<Vec<Value>>),
+    Count {
+        verb: &'static str,
+        n: u64,
+    },
+    Rows {
+        /// One name per column, in the order the values arrive. Qualified
+        /// as `table.column` when a statement reads from more than one
+        /// table, bare otherwise.
+        columns: Vec<String>,
+        /// The rows themselves.
+        rows: Vec<Vec<Value>>,
+    },
     Lines(Vec<String>),
 }
 
@@ -73,7 +83,7 @@ impl Output {
         match self {
             Output::Ok => "ok".to_string(),
             Output::Count { verb, n } => format!("{verb} {n}"),
-            Output::Rows(rows) => {
+            Output::Rows { rows, .. } => {
                 let lines: Vec<String> = rows
                     .iter()
                     .map(|row| {
@@ -419,6 +429,7 @@ fn run_get<V: View>(view: &V, get: &Get) -> Result<Output, ExecError> {
     if let Some(limit) = get.limit {
         rows.truncate(limit as usize);
     }
+    let mut columns: Vec<String> = table.columns.iter().map(|c| c.name.clone()).collect();
     if let Some(cols) = &get.projection {
         let positions: Vec<usize> = cols
             .iter()
@@ -428,8 +439,9 @@ fn run_get<V: View>(view: &V, get: &Get) -> Result<Output, ExecError> {
             .into_iter()
             .map(|row| positions.iter().map(|&p| row[p].clone()).collect())
             .collect();
+        columns = positions.iter().map(|&p| columns[p].clone()).collect();
     }
-    Ok(Output::Rows(rows))
+    Ok(Output::Rows { columns, rows })
 }
 
 fn fetch_rows<V: View>(view: &V, table: &Table, plan: &AccessPlan) -> Result<Fetched, ExecError> {
@@ -521,6 +533,21 @@ impl Bound {
 
     /// Resolve a reference against the first `upto` tables. Unqualified
     /// names must be unambiguous within that scope.
+    /// Every column of every table, qualified, in value order.
+    ///
+    /// Qualified even for one table, because a join and a single table read
+    /// go through different functions and only the join can arrive here.
+    fn column_names(&self) -> Vec<String> {
+        self.tables
+            .iter()
+            .flat_map(|t| {
+                t.columns
+                    .iter()
+                    .map(move |c| format!("{}.{}", t.name, c.name))
+            })
+            .collect()
+    }
+
     fn resolve_within(&self, r: &ColumnRef, upto: usize) -> Result<usize, ExecError> {
         match &r.table {
             Some(t) => {
@@ -663,6 +690,7 @@ fn run_join_get<V: View>(view: &V, get: &Get) -> Result<Output, ExecError> {
     if let Some(limit) = get.limit {
         rows.truncate(limit as usize);
     }
+    let mut columns = bound.column_names();
     if let Some(cols) = &get.projection {
         let positions: Vec<usize> = cols
             .iter()
@@ -672,8 +700,9 @@ fn run_join_get<V: View>(view: &V, get: &Get) -> Result<Output, ExecError> {
             .into_iter()
             .map(|row| positions.iter().map(|&p| row[p].clone()).collect())
             .collect();
+        columns = positions.iter().map(|&p| columns[p].clone()).collect();
     }
-    Ok(Output::Rows(rows))
+    Ok(Output::Rows { columns, rows })
 }
 
 /// One join step. The strategy only decides which right rows become

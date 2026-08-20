@@ -31,7 +31,7 @@ impl Rng {
 
 fn rows(output: Output) -> Vec<Vec<quanty_core::Value>> {
     match output {
-        Output::Rows(rows) => rows,
+        Output::Rows { rows, .. } => rows,
         other => panic!("expected rows, got {other:?}"),
     }
 }

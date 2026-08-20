@@ -59,13 +59,54 @@ fn a_statement_runs_and_its_answer_comes_back() {
     assert_eq!(
         client.ask("get t"),
         ServerMessage::RowsBegin {
-            columns: Vec::new()
-        }
+            columns: vec!["id".into(), "a".into()]
+        },
+        "the result set arrived without its column names"
     );
     match client.reply(Duration::from_secs(5)) {
         ServerMessage::RowBatch { rows } => assert_eq!(rows.len(), 1),
         other => panic!("expected a row batch, got {other:?}"),
     }
+    assert_eq!(client.reply(Duration::from_secs(5)), ServerMessage::RowsEnd);
+}
+
+/// A projection reorders and narrows the header with the values, and a
+/// join qualifies it. A header that does not follow the values is worse
+/// than no header at all.
+#[test]
+fn the_column_names_follow_the_projection_and_the_join() {
+    let server = Server::start(patient());
+    let mut client = server.client();
+    assert_eq!(
+        client.ask("table users { id: int @key, name: text }"),
+        ServerMessage::Ok
+    );
+    assert_eq!(
+        client.ask("table cities { id: int @key, name: text }"),
+        ServerMessage::Ok
+    );
+
+    assert_eq!(
+        client.ask("get users { name, id }"),
+        ServerMessage::RowsBegin {
+            columns: vec!["name".into(), "id".into()]
+        },
+        "the header kept table order instead of following the projection"
+    );
+    assert_eq!(client.reply(Duration::from_secs(5)), ServerMessage::RowsEnd);
+
+    assert_eq!(
+        client.ask("get users join cities on users.id = cities.id"),
+        ServerMessage::RowsBegin {
+            columns: vec![
+                "users.id".into(),
+                "users.name".into(),
+                "cities.id".into(),
+                "cities.name".into()
+            ]
+        },
+        "a join must qualify its names, two of them are 'name'"
+    );
     assert_eq!(client.reply(Duration::from_secs(5)), ServerMessage::RowsEnd);
 }
 
@@ -127,7 +168,7 @@ fn an_uncommitted_write_is_not_visible_to_anyone_else() {
     assert_eq!(
         b.reply(Duration::from_secs(5)),
         ServerMessage::RowsBegin {
-            columns: Vec::new()
+            columns: vec!["id".into(), "a".into()]
         }
     );
     assert_eq!(
@@ -213,7 +254,7 @@ fn a_transaction_left_open_in_silence_is_rolled_back() {
     assert_eq!(
         reader.ask("get t"),
         ServerMessage::RowsBegin {
-            columns: Vec::new()
+            columns: vec!["id".into(), "a".into()]
         }
     );
     assert_eq!(

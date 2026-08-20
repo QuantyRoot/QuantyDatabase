@@ -38,21 +38,13 @@ fn render(result: Result<Output, ExecError>) -> Vec<ServerMessage> {
             n,
         }],
         Output::Lines(lines) => vec![ServerMessage::Lines(lines)],
-        Output::Rows(rows) => rows_or_error(rows),
+        Output::Rows { columns, rows } => rows_or_error(columns, rows),
     }
 }
 
 /// A result set, or the error that describes why it could not be framed.
-///
-/// **The column names are empty because the engine has none to give.**
-/// `Output::Rows` carries values and no header, so this sends the count
-/// zero rather than inventing `col0`, `col1`. Naming columns is a change to
-/// what the executor returns, not to this translation, and it is the
-/// follow-up this comment exists to point at.
-fn rows_or_error(rows: Vec<Vec<Value>>) -> Vec<ServerMessage> {
-    let mut out = vec![ServerMessage::RowsBegin {
-        columns: Vec::new(),
-    }];
+fn rows_or_error(columns: Vec<String>, rows: Vec<Vec<Value>>) -> Vec<ServerMessage> {
+    let mut out = vec![ServerMessage::RowsBegin { columns }];
     match batch_rows(rows) {
         Ok(batches) => out.extend(batches),
         Err(e) => {

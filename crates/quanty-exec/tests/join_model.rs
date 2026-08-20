@@ -100,7 +100,7 @@ fn reference_join(
 
 fn rows_of(output: Output) -> Vec<Vec<Value>> {
     match output {
-        Output::Rows(rows) => rows,
+        Output::Rows { rows, .. } => rows,
         other => panic!("expected rows, got {:?}", other.render()),
     }
 }
@@ -109,7 +109,13 @@ fn rows_of(output: Output) -> Vec<Vec<Value>> {
 fn canon(mut rows: Vec<Vec<Value>>) -> Vec<String> {
     let mut lines: Vec<String> = rows
         .drain(..)
-        .map(|r| Output::Rows(vec![r]).render())
+        .map(|r| {
+            Output::Rows {
+                columns: Vec::new(),
+                rows: vec![r],
+            }
+            .render()
+        })
         .collect();
     lines.sort();
     lines

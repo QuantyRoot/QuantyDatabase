@@ -182,6 +182,11 @@ RowBatch    4 byte row count, at most MAX_ROWS_PER_BATCH, then rows,
 RowsEnd     empty
 ```
 
+Names are bare when a statement reads one table and qualified as
+`table.column` when it reads several, because a join of two tables with a
+`name` column each would otherwise send the same header twice. A projection
+narrows and reorders the header with the values it selects.
+
 A `RowBatch` is sized by the sender to stay under `MAX_BODY` and carries at
 least one row. Zero rows is a valid result: `RowsBegin` then `RowsEnd`. An
 `Error` may replace any `RowBatch`, which is how a failure partway through

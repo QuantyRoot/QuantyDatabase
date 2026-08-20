@@ -221,7 +221,7 @@ fn imported_rows(
         .execute(&format!("get {table} {{ {list} }}"))
         .unwrap_or_else(|e| panic!("reading {table}: {e}"))
     {
-        quanty_exec::Output::Rows(rows) => rows,
+        quanty_exec::Output::Rows { rows, .. } => rows,
         other => panic!("expected rows, got {other:?}"),
     }
 }

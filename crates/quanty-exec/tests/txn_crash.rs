@@ -167,7 +167,7 @@ fn verify(path: &std::path::Path, acked: u64, iter: u64) {
     let mut session = Session::new(db);
 
     let rows = match session.execute("get t") {
-        Ok(Output::Rows(rows)) => rows,
+        Ok(Output::Rows { rows, .. }) => rows,
         Ok(other) => panic!("iter {iter}: expected rows, got {:?}", other.render()),
         // the table itself is committed before the first transaction, so a
         // kill can land before it exists; nothing to verify then
