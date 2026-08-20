@@ -236,6 +236,11 @@ because branching and `as of` would otherwise make "revoked" true only at
 the tip of one branch. The token stays opaque on the wire either way, so
 the format did not need the answer to be written down.
 
+`quanty connect <addr>` is a client for this protocol, and its output is
+held byte for byte against `quanty run` on the same database. Anything the
+wire loses or garbles shows up as a difference without the test needing to
+know the right answer.
+
 A server started without a token file requires no authentication and
 answers `Auth` with `Ready` without reading the token. That is a real
 configuration, not a placeholder, and it is why the default address is

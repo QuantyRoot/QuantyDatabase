@@ -16,4 +16,5 @@ pub use catalog::{Column, Table};
 pub use error::ExecError;
 pub use exec::{Output, Parked, Session};
 pub use plan::{Access, AccessPlan};
+pub use value_ops::render as render_value;
 pub use verify::verify_indexes;

@@ -33,6 +33,7 @@ usage:
                               [--tokens <file>]
   quanty tables <database.qdb>
   quanty token <label>
+  quanty connect <addr> [statement] [--token <t>] [--sql]
 
   create   make an empty database
   import   read a sqlite file and write it into a new quanty database
@@ -42,14 +43,21 @@ usage:
   shell    read statements from stdin, one per line
   tables   list the tables in a database
   token    mint one and print it, with the line that accepts it
+  connect  talk to a running server; with a statement it runs that one,
+             without it reads statements from stdin, as shell does
 
   --sql    read the statement in sql rather than qql
+
+connect  --token    the token to show, if the server requires one
 
 serve    --listen   address to bind, default 127.0.0.1:7878
          --workers  event loop threads, default one per core
          --tokens   file of accepted token hashes; without it the server
                     requires no authentication and belongs on loopback
 ";
+
+#[cfg(target_os = "linux")]
+mod client;
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -64,6 +72,7 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
         Err(Failure::PipeClosed) => ExitCode::SUCCESS,
+        Err(Failure::Refused) => ExitCode::FAILURE,
     }
 }
 
@@ -75,6 +84,9 @@ enum Failure {
     /// Whoever was reading our output stopped, as `head` does. Nothing
     /// went wrong and there is nobody left to tell.
     PipeClosed,
+    /// A server refused a statement and has already said why, so there is
+    /// nothing to add beyond the exit code.
+    Refused,
 }
 
 fn usage(message: impl Into<String>) -> Failure {
@@ -108,6 +120,7 @@ struct Flags {
     listen: Option<String>,
     workers: Option<usize>,
     tokens: Option<String>,
+    token: Option<String>,
     elchi: bool,
 }
 
@@ -120,6 +133,7 @@ fn split_flags(args: &[String]) -> Result<(Vec<&str>, Flags), Failure> {
         listen: None,
         workers: None,
         tokens: None,
+        token: None,
         elchi: false,
     };
     let mut expect: Option<&str> = None;
@@ -128,6 +142,7 @@ fn split_flags(args: &[String]) -> Result<(Vec<&str>, Flags), Failure> {
             match name {
                 "--listen" => flags.listen = Some(arg.clone()),
                 "--tokens" => flags.tokens = Some(arg.clone()),
+                "--token" => flags.token = Some(arg.clone()),
                 "--workers" => {
                     let n = arg
                         .parse::<usize>()
@@ -142,10 +157,11 @@ fn split_flags(args: &[String]) -> Result<(Vec<&str>, Flags), Failure> {
             continue;
         }
         match arg.as_str() {
-            "--listen" | "--workers" | "--tokens" => {
+            "--listen" | "--workers" | "--tokens" | "--token" => {
                 expect = Some(match arg.as_str() {
                     "--listen" => "--listen",
                     "--tokens" => "--tokens",
+                    "--token" => "--token",
                     _ => "--workers",
                 })
             }
@@ -201,6 +217,13 @@ fn run(args: &[String]) -> Result<(), Failure> {
             [label] => token(label),
             _ => Err(usage("token takes a label")),
         },
+        "connect" => match rest {
+            [addr] => client::connect(addr, None, flags.token.as_deref(), flags.sql),
+            [addr, statement] => {
+                client::connect(addr, Some(statement), flags.token.as_deref(), flags.sql)
+            }
+            _ => Err(usage("connect takes an address and an optional statement")),
+        },
         "tables" => match rest {
             [database] => run_statement(
                 Path::new(database),
@@ -212,6 +235,7 @@ fn run(args: &[String]) -> Result<(), Failure> {
                     listen: None,
                     workers: None,
                     tokens: None,
+                    token: None,
                     elchi: false,
                 },
             ),
