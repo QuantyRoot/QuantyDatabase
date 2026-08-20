@@ -815,7 +815,8 @@ transaction a value that has touched no disk, so moving it in and out
 around each statement costs nothing and dropping it is a rollback. The
 executor thread owns the session and a table of parked transactions.
 
-**Everything serializes, reads included, and that is the price.** A
+**Everything serializes, reads included, and that is the price.** (The
+stall this describes is removed by ADR-029; the serialization is not.) A
 connection holding an open transaction makes every other connection wait,
 not only the writers ADR-024 was thinking about. This is measured, not
 assumed: a read issued while another connection has a transaction open does
@@ -899,3 +900,41 @@ nobody in a batch is answered until the commit succeeds: a read batched
 with a write may have seen that write, so reporting its rows before the
 shared commit is durable would promise something the server could still
 take back.
+
+## ADR-029: Reads go past an open transaction
+
+Partially supersedes ADR-027, which recorded that every statement waits
+behind an open transaction and named this as the thing to fix.
+
+**A read cannot hurt a parked transaction.** ADR-021 suspends a write batch
+by releasing the writer lock and keeping the pending pages in memory, and
+resuming fails only if another writer has committed since. A read commits
+nothing, so it cannot be that writer. It reads the committed head, which is
+what it would have read had it waited, so nothing about the answer changes
+either.
+
+**Making it wait was the expensive half of ADR-027.** One connection that
+runs `begin` and stops talking stalled every other connection on the
+server, reads included, until the idle-in-transaction deadline expired.
+That is why the deadline was set to ten seconds. With reads going past it
+bounds only how long writers wait, so it goes back to thirty.
+
+**This is not the throughput question, and that one stays open.** Nothing
+here runs in parallel: reads still cross the one executor thread, one at a
+time, in arrival order. What was removed is a stall, not a serialization.
+Whether readers should run on their own threads against shared snapshots is
+still the open question ADR-027 named, it is still an optimization, and
+ADR-016 still wants a measurement that a single core cannot produce.
+
+**The bookkeeping this needs is easy to get wrong.** A statement that ends
+without an open transaction used to mean nobody holds one. That stops being
+true when a read from another connection runs while a transaction is
+parked: recording it the naive way clears the holder, lets the waiting
+writers go, and the first of them to commit kills the batch that was parked.
+The holder only moves for the connection whose transaction it is, and there
+is a test that fails without that.
+
+**Conservative about what counts as a read.** `get`, `show tables` and
+`explain` only. `log` and `show branches` write nothing either, but they
+refuse to run inside a transaction, so they stay where the engine already
+puts them rather than being reclassified from outside it.

@@ -145,10 +145,14 @@ fn the_next_connection_gets_a_clean_transaction_slot() {
     assert_eq!(b.ask("rollback"), ServerMessage::Ok);
 }
 
-/// A write inside someone else's open transaction is not there yet, and the
-/// reader that asks for it waits rather than seeing half of it.
+/// A read does not wait for someone else's transaction, and does not see
+/// what is pending inside it either.
+///
+/// Waiting would be the safe-looking answer and it is the wrong one: a read
+/// commits nothing, so it cannot invalidate the parked batch, and making it
+/// queue turns one forgotten `begin` into a server-wide stall.
 #[test]
-fn an_uncommitted_write_is_not_visible_to_anyone_else() {
+fn a_read_runs_past_an_open_transaction_without_seeing_into_it() {
     let server = Server::start(patient());
     let mut a = server.client();
     assert_eq!(a.ask("table t { id: int @key, a: int }"), ServerMessage::Ok);
@@ -160,14 +164,11 @@ fn an_uncommitted_write_is_not_visible_to_anyone_else() {
 
     let mut b = server.client();
     b.send("get t");
-    assert!(
-        b.answered(Duration::from_millis(200)).is_none(),
-        "the read ran while a transaction was open"
-    );
-
-    assert_eq!(a.ask("rollback"), ServerMessage::Ok);
+    let head = b
+        .answered(Duration::from_millis(500))
+        .expect("the read waited for a transaction it has nothing to do with");
     assert_eq!(
-        b.reply(Duration::from_secs(5)),
+        head,
         ServerMessage::RowsBegin {
             columns: vec!["id".into(), "a".into()]
         }
@@ -175,8 +176,23 @@ fn an_uncommitted_write_is_not_visible_to_anyone_else() {
     assert_eq!(
         b.reply(Duration::from_secs(5)),
         ServerMessage::RowsEnd,
-        "the rolled back row was visible"
+        "the read saw a row that is not committed yet"
     );
+
+    // And once it is committed, the same read finds it.
+    assert_eq!(a.ask("commit"), ServerMessage::Ok);
+    let mut c = server.client();
+    assert_eq!(
+        c.ask("get t"),
+        ServerMessage::RowsBegin {
+            columns: vec!["id".into(), "a".into()]
+        }
+    );
+    match c.reply(Duration::from_secs(5)) {
+        ServerMessage::RowBatch { rows } => assert_eq!(rows.len(), 1),
+        other => panic!("expected the committed row, got {other:?}"),
+    }
+    assert_eq!(c.reply(Duration::from_secs(5)), ServerMessage::RowsEnd);
 }
 
 /// A connection holding a transaction makes others wait rather than
@@ -480,5 +496,64 @@ fn statements_released_together_share_one_commit() {
     assert!(
         stats.batched.load(Ordering::Relaxed) >= largest as u64,
         "the batched count does not agree with the largest batch"
+    );
+}
+
+/// A read running past an open transaction must not release the writers
+/// waiting behind it.
+///
+/// The read leaves no transaction of its own, so the naive bookkeeping
+/// records that no transaction is open at all. The next writer would then
+/// run and commit, and the parked batch would be dead on arrival.
+#[test]
+fn a_read_passing_by_does_not_let_the_writers_go() {
+    let server = Server::start(patient());
+    let mut holder = server.client();
+    assert_eq!(
+        holder.ask("table t { id: int @key, n: int }"),
+        ServerMessage::Ok
+    );
+    assert_eq!(holder.ask("begin"), ServerMessage::Ok);
+    assert!(
+        matches!(
+            holder.ask("put t { id: 1, n: 1 }"),
+            ServerMessage::Count { .. }
+        ),
+        "the write inside the transaction failed"
+    );
+
+    let mut writer = server.client();
+    writer.send("put t { id: 2, n: 2 }");
+    assert!(
+        writer.answered(Duration::from_millis(300)).is_none(),
+        "the writer ran while a transaction was open"
+    );
+
+    // The read goes past. Everything above must still be true afterwards.
+    let mut reader = server.client();
+    assert_eq!(
+        reader.ask("get t"),
+        ServerMessage::RowsBegin {
+            columns: vec!["id".into(), "n".into()]
+        }
+    );
+    assert_eq!(reader.reply(Duration::from_secs(5)), ServerMessage::RowsEnd);
+
+    assert!(
+        writer.answered(Duration::from_millis(300)).is_none(),
+        "the read released the writer waiting behind the transaction"
+    );
+
+    assert_eq!(
+        holder.ask("commit"),
+        ServerMessage::Ok,
+        "the transaction was invalidated while it was parked"
+    );
+    assert!(
+        matches!(
+            writer.reply(Duration::from_secs(5)),
+            ServerMessage::Count { .. }
+        ),
+        "the writer never ran after the transaction closed"
     );
 }

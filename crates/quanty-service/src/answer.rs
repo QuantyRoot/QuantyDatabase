@@ -9,6 +9,9 @@ use quanty_ql::ParseError;
 /// What the executor may do with a statement.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Kind {
+    /// Writes nothing, so it may run while another connection holds a
+    /// transaction. There is no commit to share, so it is never batched.
+    Reads,
     /// Can share a commit with its neighbours in the queue.
     Batchable,
     /// Opens a transaction, so this connection holds the queue afterwards.
@@ -56,6 +59,10 @@ fn parse_message(e: &ParseError) -> String {
 
 fn classify(statement: &Statement) -> Kind {
     match statement {
+        // Conservative on purpose: `log` and `show branches` write nothing
+        // either, but they refuse to run inside a transaction, so they stay
+        // where the engine already puts them.
+        Statement::Get(_) | Statement::ShowTables | Statement::Explain(_) => Kind::Reads,
         Statement::Begin => Kind::Begins,
         Statement::Commit | Statement::Rollback => Kind::Ends,
         // These manage commits at the database level and refuse to run
@@ -67,7 +74,6 @@ fn classify(statement: &Statement) -> Kind {
         | Statement::ShowBranches
         | Statement::Log
         | Statement::Gc { .. } => Kind::Alone,
-        Statement::Explain(inner) => classify(inner),
         _ => Kind::Batchable,
     }
 }

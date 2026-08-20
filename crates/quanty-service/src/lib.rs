@@ -12,15 +12,19 @@
 //! entirely. So there is one session, and the per-connection part of it,
 //! the open transaction, is parked in and out around each statement.
 //!
-//! **Reads serialize too, and that is the price.** Every statement crosses
-//! this thread, so a long read delays the next statement on every other
-//! connection. ADR-016 forbids optimizing that away before a measurement
-//! says how much it costs, and no such measurement exists yet.
+//! **Everything crosses this one thread, and that is the price.** A long
+//! statement delays the next one on every other connection. ADR-016 forbids
+//! optimizing that away before a measurement says what it costs, and the
+//! measurement that would settle it needs more than one core.
 //!
-//! Group commit is the same story from the other side. The shape ADR-024
-//! wants is here, a queue drained by one writer, but batching several
-//! statements into one write and one fsync is a change to `drain` that
-//! belongs with the number that justifies it.
+//! What did get fixed is the sharper version of it: a connection holding an
+//! open transaction used to make every other connection wait, reads
+//! included. Reads go past now, because a read commits nothing and so
+//! cannot invalidate the parked batch (ADR-029).
+//!
+//! Group commit is here, measured into existence by ADR-028: a turn of
+//! statements shares one transaction, one write and one fsync, each with a
+//! savepoint of its own so one failure does not take the rest down.
 //!
 //! This crate is where the reactor meets the engine: `quanty-server` knows
 //! nothing about statements and `quanty-exec` knows nothing about sockets.

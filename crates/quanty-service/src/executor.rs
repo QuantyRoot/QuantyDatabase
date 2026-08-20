@@ -20,11 +20,11 @@ pub const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// How long a connection may hold an open transaction in silence.
 ///
-/// Short, because in this first throw an open transaction stalls every
-/// other connection, reads included. Postgres can afford to leave its
-/// equivalent off by default; a server where one idle `begin` is a
-/// server-wide stall cannot.
-pub const IDLE_IN_TXN: Duration = Duration::from_secs(10);
+/// It was ten seconds while an open transaction stalled reads too, which
+/// made one forgotten `begin` a server-wide stall. Reads go past now
+/// (ADR-029), so this only bounds how long writers wait, and thirty
+/// seconds is the ordinary answer to that.
+pub const IDLE_IN_TXN: Duration = Duration::from_secs(30);
 
 /// How many statements may share one commit.
 ///
@@ -265,9 +265,32 @@ impl<S: Storage> State<S> {
             job,
             work,
         };
+        if self.runnable_now(&pending) {
+            self.ready.push(pending);
+        } else {
+            self.blocked.push(pending);
+        }
+    }
+
+    /// Whether this can run while things are as they are.
+    ///
+    /// A connection holding a transaction blocks the writers behind it,
+    /// which is ADR-024, but not the readers: a read commits nothing, so it
+    /// cannot invalidate the parked batch, and it sees the committed head
+    /// rather than anything the holder has pending. A request that never
+    /// reaches the engine, an `Auth` or one that did not parse, has nothing
+    /// to wait for either.
+    fn runnable_now(&self, pending: &Pending) -> bool {
         match self.holder {
-            Some((holder, _)) if holder != pending.job.id => self.blocked.push(pending),
-            _ => self.ready.push(pending),
+            None => true,
+            Some((holder, _)) => holder == pending.job.id || !Self::touches_data(pending),
+        }
+    }
+
+    fn touches_data(pending: &Pending) -> bool {
+        match &pending.work {
+            Either::Run(parsed) => parsed.kind != Kind::Reads,
+            Either::Say(_) => false,
         }
     }
 
@@ -280,6 +303,14 @@ impl<S: Storage> State<S> {
             if self.ready.is_empty() {
                 return;
             }
+            // Whatever is at the front and cannot run yet goes back to
+            // waiting: a `begin` earlier in this turn may have taken the
+            // queue since this was queued as ready.
+            if !self.runnable_now(&self.ready[0]) {
+                let pending = self.ready.remove(0);
+                self.blocked.push(pending);
+                continue;
+            }
             let batch = self.next_batch();
             if batch <= 1 {
                 let pending = self.ready.remove(0);
@@ -287,12 +318,6 @@ impl<S: Storage> State<S> {
             } else {
                 let group: Vec<Pending> = self.ready.drain(..batch).collect();
                 self.grouped(group);
-            }
-            // A statement that opened a transaction owns the queue now, so
-            // whatever was ready behind it has to wait after all.
-            if self.holder.is_some() {
-                self.blocked.append(&mut self.ready);
-                return;
             }
         }
     }
@@ -304,6 +329,11 @@ impl<S: Storage> State<S> {
     /// and the branch statements manage their own commits, so each of them
     /// runs on its own.
     fn next_batch(&self) -> usize {
+        // A batch opens a transaction of its own, which cannot happen while
+        // a connection already holds one.
+        if self.holder.is_some() {
+            return 0;
+        }
         let mut n = 0;
         for pending in &self.ready {
             let batchable = match &pending.work {
@@ -398,13 +428,17 @@ impl<S: Storage> State<S> {
         };
         let parked = self.session.park();
 
+        // Only this connection's own transaction moves the holder. A read
+        // that ran past someone else's must not clear it, or the writers
+        // waiting behind it would be let go and the parked batch would be
+        // invalidated by the first of them to commit.
         let open = parked.is_open();
         self.conns.entry(id).or_default().parked = parked;
-        self.holder = if open {
-            Some((id, Instant::now()))
-        } else {
-            None
-        };
+        if open {
+            self.holder = Some((id, Instant::now()));
+        } else if matches!(self.holder, Some((holder, _)) if holder == id) {
+            self.holder = None;
+        }
 
         let _ = pending.job.answer(messages);
     }
