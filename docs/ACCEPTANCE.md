@@ -99,13 +99,23 @@ Thirty minutes of "no descriptor or memory growth" is a claim about a
 curve, not about the last line. Sample it in a third shell:
 
 ```
-SRV=$(pgrep -f 'quanty serve')
 while :; do
-  echo "$(date +%H:%M:%S) rss_kb=$(grep VmRSS /proc/$SRV/status | tr -dc 0-9) \
+  SRV=$(pgrep -f 'quanty serve /tmp/accept.qdb' | tail -1)
+  if [ -z "$SRV" ]; then
+    echo "$(date +%H:%M:%S) no server"
+  else
+    echo "$(date +%H:%M:%S) pid=$SRV \
+rss_kb=$(grep VmRSS /proc/$SRV/status | tr -dc 0-9) \
 fds=$(ls /proc/$SRV/fd | wc -l)"
+  fi
   sleep 30
 done | tee /tmp/accept-watch.log
 ```
+
+The process id is looked up on every pass and printed, rather than
+captured once before the loop. Restarting the server between attempts is
+normal, and a watcher holding the old id reports `rss_kb= fds=0` for half
+an hour without ever saying that it lost the process.
 
 Descriptors should climb to roughly the connection count and then sit
 flat. Resident memory should flatten too. A slow rise in either across
