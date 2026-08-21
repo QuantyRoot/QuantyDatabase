@@ -5,6 +5,17 @@ on:
     branches: [main]
   pull_request:
 
+# The toolchain is pinned, not tracked.
+#
+# `-D warnings` turns every lint into a build failure, so following stable
+# means every Rust release can break a commit that has nothing to do with
+# it. That is exactly how 1.98 broke this file: it added
+# `for_unbounded_range`, and a test loop that had been correct for weeks
+# stopped compiling on an unrelated push.
+#
+# Raising this is a deliberate act with its own commit, which is where the
+# new lints get read and dealt with. The MSRV job below is pinned for a
+# different reason: it is the promise, not the ceiling.
 env:
   CARGO_TERM_COLOR: always
 
@@ -14,7 +25,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.98.0
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
@@ -31,7 +42,7 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.98.0
       - uses: Swatinem/rust-cache@v2
       - name: kill -9 the pager a thousand times
         run: cargo test -p quanty-core --test crash_harness -- --nocapture
@@ -44,7 +55,7 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.98.0
       - uses: Swatinem/rust-cache@v2
       - name: kill -9 inside an open transaction a thousand times
         run: cargo test -p quanty-exec --test txn_crash -- --nocapture
@@ -68,7 +79,7 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.98.0
       - uses: Swatinem/rust-cache@v2
       - name: 1M key bulk load and scan
         run: cargo test -p quanty-core --release --test heavy -- --ignored --nocapture
@@ -79,7 +90,7 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.98.0
       - uses: Swatinem/rust-cache@v2
       - name: fuzz the QQL parser
         run: cargo test -p quanty-ql --release --test parser_fuzz -- --nocapture
@@ -92,7 +103,7 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.98.0
       - uses: Swatinem/rust-cache@v2
       - name: fuzz the SQL parser
         run: cargo test -p quanty-ql --release --test sql_parser_fuzz -- --nocapture
@@ -105,7 +116,7 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.98.0
       - uses: Swatinem/rust-cache@v2
       - name: fuzz the SQLite reader
         run: cargo test -p quanty-sqlite --release --test reader_fuzz -- --nocapture
@@ -118,7 +129,7 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.98.0
       - uses: Swatinem/rust-cache@v2
       - name: hammer the executor from many connections
         run: cargo test -p quanty-service --release --test soak -- --nocapture
@@ -131,7 +142,7 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.98.0
       - uses: Swatinem/rust-cache@v2
       - name: fuzz the wire protocol
         run: cargo test -p quanty-proto --release --test proto_fuzz -- --nocapture
@@ -144,7 +155,7 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.98.0
       - uses: Swatinem/rust-cache@v2
       - name: install sqlite3
         run: sudo apt-get update && sudo apt-get install -y sqlite3

@@ -91,3 +91,18 @@ replays the run exactly.
 Reformatting for its own sake, renames without a reason, and dependencies.
 Beyond that, ask in an issue before writing something large; the roadmap
 is opinionated and it is easier to say no to an idea than to a weekend.
+
+## The toolchain is pinned
+
+CI runs on a named Rust version, not on `stable`. With `-D warnings` every
+new lint is a build failure, so tracking stable means an unrelated commit
+can be broken by a release that happened between two pushes. That is not
+hypothetical: 1.98 added `for_unbounded_range` and a test loop that had
+been correct for weeks stopped compiling on a commit that only deleted a
+file.
+
+Raising the pin is a deliberate change with a commit of its own, where the
+new lints get read and dealt with rather than discovered by whoever pushed
+next. The minimum supported version is pinned for the opposite reason: it
+is a promise to people on older toolchains, and lowering it is a decision,
+not a convenience.
