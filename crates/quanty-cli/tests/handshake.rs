@@ -16,7 +16,7 @@
 mod common;
 
 use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::TcpStream;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -31,14 +31,6 @@ fn quanty(args: &[&str]) -> std::process::Output {
         .expect("the binary runs")
 }
 
-fn free_port() -> u16 {
-    TcpListener::bind("127.0.0.1:0")
-        .expect("bind")
-        .local_addr()
-        .expect("addr")
-        .port()
-}
-
 struct Served {
     child: Child,
     addr: String,
@@ -46,26 +38,66 @@ struct Served {
 
 impl Served {
     fn start(database: &str) -> Served {
-        for _ in 0..5 {
-            let addr = format!("127.0.0.1:{}", free_port());
-            let child = Command::new(env!("CARGO_BIN_EXE_quanty"))
-                .args(["serve", database, "--listen", &addr, "--workers", "1"])
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .spawn()
-                .expect("the binary runs");
-            let deadline = Instant::now() + Duration::from_secs(10);
-            while Instant::now() < deadline {
-                if TcpStream::connect(&addr).is_ok() {
-                    return Served { child, addr };
-                }
-                std::thread::sleep(Duration::from_millis(20));
+        // Port zero: the kernel picks and the server prints what it got.
+        //
+        // Asking for a free port by binding one and letting it go again is
+        // a race, and `SO_REUSEPORT` makes it a quiet one: two servers can
+        // hold the same port, a test connects to the wrong one, and the
+        // failure surfaces later as a refused connection when the other
+        // test tears its server down.
+        let args = vec![
+            "serve",
+            database,
+            "--listen",
+            "127.0.0.1:0",
+            "--workers",
+            "1",
+        ];
+        let mut child = Command::new(env!("CARGO_BIN_EXE_quanty"))
+            .args(&args)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("the binary runs");
+
+        let stdout = child.stdout.take().expect("piped");
+        let mut reader = std::io::BufReader::new(stdout);
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let mut addr = String::new();
+        while Instant::now() < deadline {
+            let mut line = String::new();
+            if std::io::BufRead::read_line(&mut reader, &mut line).unwrap_or(0) == 0 {
+                break;
             }
-            let mut child = child;
+            if let Some(rest) = line.trim().strip_prefix("listening on ") {
+                addr = rest.split(',').next().unwrap_or("").trim().to_string();
+                break;
+            }
+        }
+        if addr.is_empty() {
             let _ = child.kill();
             let _ = child.wait();
+            panic!("the server never said where it was listening");
         }
-        panic!("the server never came up");
+        // Keep draining, or the pipe fills and the server blocks on its
+        // own stats line.
+        std::thread::spawn(move || {
+            let mut sink = String::new();
+            while std::io::BufRead::read_line(&mut reader, &mut sink).unwrap_or(0) > 0 {
+                sink.clear();
+            }
+        });
+
+        let ready = Instant::now() + Duration::from_secs(20);
+        while Instant::now() < ready {
+            if TcpStream::connect(&addr).is_ok() {
+                return Served { child, addr };
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let _ = child.kill();
+        let _ = child.wait();
+        panic!("the server printed an address it does not answer on");
     }
 }
 

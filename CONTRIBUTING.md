@@ -37,6 +37,14 @@ nobody had measured what a commit cost. When the measurement arrived it
 said thirteen times, and it also said the fsync was only half of what was
 being amortized, which nobody had guessed.
 
+**Do not guess a port.** Binding one to see which is free and then
+letting it go is a race, and this server sets `SO_REUSEPORT`, so the race
+is quiet: two test servers hold the same port, a test talks to the wrong
+one, and it surfaces much later as a refused connection when the other
+test tears its server down. It passed twenty five times on one core and
+failed on the four core runner. `--listen 127.0.0.1:0` makes the kernel
+choose and the server prints what it got; read that line.
+
 **A sleep is not a synchronisation primitive.** A fixed wait encodes an
 assumption about how long something takes, and a loaded machine is under no
 obligation to agree. The server crash harness spent one commit killing
