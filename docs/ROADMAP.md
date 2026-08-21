@@ -234,9 +234,16 @@ Open, and to be decided rather than assumed here:
 - how much the first version promises. ADR-018 declares the extension
   surface explicitly unstable before 1.0; whether the embedded surface makes
   the same statement is a separate call.
-- whether `quanty-derive` ships with it or follows later. A derive macro
-  means a proc-macro crate, and writing one without `syn` and `quote` is a
-  dependency question under ADR-020, not a detail.
+- whether `quanty-derive` ships with it or follows later. It follows
+  later: the two are separable and only one of them is on phase 9's path.
+
+**Decided: no exception, so no `syn` and no `quote`.** ADR-020 has now
+been asked three times, for tokio, for a TLS client and for this, and the
+answer is the same each time. It is workable rather than pleasant: a proc
+macro is handed a `TokenStream` by the compiler and can walk it directly,
+and a derive over a struct of named fields with a handful of attributes is
+a narrow enough shape to walk by hand. It is real work and it is the reason
+the derive follows the embedded crate rather than arriving with it.
 
 ## Unscheduled and blocking: fetching things over the network
 
