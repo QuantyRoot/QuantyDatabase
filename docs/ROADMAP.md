@@ -326,8 +326,8 @@ nothing got fatter, measured on both paths:
 
 | | before | inline | |
 |---|---|---|---|
-| `WriteTx::put`, 20000 in one transaction | 14.6 us | **7.7 us** | 1.9x faster |
-| `put` statements, 20000 in one transaction | 19.5 us | 20.4 us | 5% slower |
+| `WriteTx::put`, 20000 per txn | 14.6 us | **7.7 us** | 1.9x faster |
+| `put` statements, 20000 per txn | 19.5 us | 20.4 us | 5% slower |
 
 Both reproduce across runs and both reproduce on reverting, so neither is
 noise. The embedded write path nearly halves. The statement path, which is
