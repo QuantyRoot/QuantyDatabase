@@ -591,7 +591,6 @@ fn write_node<S: Storage>(
     old_page: Option<PageId>,
     node: &Node,
 ) -> Result<PageId> {
-    let encoded = node.encode(batch.page_size());
     let id = match old_page {
         Some(id) if batch.owns(id) => id,
         _ => batch.allocate(match node {
@@ -599,7 +598,10 @@ fn write_node<S: Storage>(
             Node::Branch { .. } => PageType::Branch,
         }),
     };
-    batch.page_mut(id)?.copy_from_slice(&encoded);
+    // Straight into the page. Encoding into a fresh page-sized buffer and
+    // copying it over cost an allocation, a zeroing and a full page memcpy
+    // on every single insert, at every level of the tree.
+    node.encode_into(batch.page_mut(id)?);
     Ok(id)
 }
 

@@ -303,13 +303,44 @@ into vectors, inserts one entry, and encodes the whole node back, at every
 level of the tree. A leaf holding a hundred entries is therefore decoded
 and re-encoded a hundred times while it fills.
 
-The fix is to stop paying for the whole node on every entry. In rising
-order of effort: keep decoded nodes for the pages on the current insert
-path so consecutive inserts into the same leaf decode once instead of every
-time; or edit the encoded page in place, which is what sqlite does and what
-makes its number what it is. The first is a cache with an invalidation
-rule; the second is a change to the node format's write path. Neither
-should start before the benchmark can prove which one bought what.
+**Profiled on 2026-08-21, and the profile moved the plan.** `perf` over the
+bulk load, user space only:
+
+| | |
+|---|---|
+| `Node::decode` | 7.4% |
+| `malloc` | 6.4% |
+| `free` | 2.0% |
+| `crc32c` | 2.7% |
+| `Node::encode_into` | 2.1% |
+
+Decoding costs three and a half times what encoding costs, and the largest
+single item beside it is the allocator. The reason is in the type:
+`Node::Leaf` holds `Vec<(Vec<u8>, ValueRef)>`, so every key is its own heap
+allocation, made and freed on every insert. A leaf holding 150 entries
+therefore does 150 mallocs and 150 frees per inserted row.
+
+So the first thing to do is not the caching that this section used to
+propose. It is to stop allocating per key: a key that fits in a couple of
+dozen bytes should live inline in the entry rather than behind a pointer.
+Ours are encoded integers of about ten bytes, so nearly all of them would.
+That is local to the node type, needs no invalidation rule and cannot lose
+data, which the alternatives cannot both claim.
+
+Two measured steps already taken. Encoding now writes straight into the
+page instead of into a fresh page-sized buffer that was then copied over
+it, which removed an allocation, a zeroing and a full page memcpy per
+insert at every level of the tree: 13.5 to 12.5 microseconds a row at a
+thousand rows, 19.1 to 18.5 at twenty thousand. Three to seven percent,
+which is worth having and is not the answer.
+
+After the key allocations, the two ideas this section began with are still
+there and still ranked by effort: keep decoded nodes for the pages on the
+current insert path, or edit the encoded page in place, which is what
+sqlite does. The first is a cache with an invalidation rule and the second
+is a change to the write path, and in a storage engine both can lose data
+in ways a test suite does not notice. Neither should start before the
+allocator work says what is left.
 
 ## Later / unscheduled
 

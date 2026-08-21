@@ -102,13 +102,30 @@ impl Node {
     /// Encode into a fresh page buffer of `page_size` bytes. The caller has
     /// already checked [`Node::encoded_size`] against the page, so an
     /// overrun here is a logic bug, not an input error.
+    /// Encode into a fresh buffer. Only the round-trip tests want this;
+    /// the insert path writes into the page directly.
+    #[cfg(test)]
     pub(crate) fn encode(&self, page_size: u32) -> Box<[u8]> {
         let mut buf = vec![0u8; page_size as usize];
+        self.encode_into(&mut buf);
+        buf.into_boxed_slice()
+    }
+
+    /// Write straight into a page rather than into a buffer that is then
+    /// copied over one.
+    ///
+    /// The tail past the last cell is zeroed explicitly. Decoding stops at
+    /// the entry count and would never read it, but the same logical node
+    /// has to produce the same bytes: the codec fuzzer proves the encoding
+    /// is canonical, and leaving whatever the page held before would make
+    /// that quietly untrue.
+    pub(crate) fn encode_into(&self, buf: &mut [u8]) {
+        let page_size = buf.len();
         let (ptype, count) = match self {
             Node::Leaf { entries } => (PageType::Leaf, entries.len()),
             Node::Branch { entries, .. } => (PageType::Branch, entries.len()),
         };
-        page::init_header(&mut buf, ptype);
+        page::init_header(buf, ptype);
         buf[6..8].copy_from_slice(
             &u16::try_from(count)
                 .expect("node entry count")
@@ -123,7 +140,7 @@ impl Node {
                         ValueRef::Inline(_) => VFLAG_INLINE,
                         ValueRef::Overflow { .. } => VFLAG_OVERFLOW,
                     };
-                    at = write_key(&mut buf, at, key, vflag);
+                    at = write_key(buf, at, key, vflag);
                     match value {
                         ValueRef::Inline(v) => {
                             let len = u32::try_from(v.len()).expect("inline value length");
@@ -147,14 +164,14 @@ impl Node {
                 buf[at..at + 8].copy_from_slice(&first_child.to_le_bytes());
                 at += 8;
                 for (key, child) in entries {
-                    at = write_key(&mut buf, at, key, 0);
+                    at = write_key(buf, at, key, 0);
                     buf[at..at + 8].copy_from_slice(&child.to_le_bytes());
                     at += 8;
                 }
             }
         }
-        debug_assert!(at <= page_size as usize, "node encode overran the page");
-        buf.into_boxed_slice()
+        debug_assert!(at <= page_size, "node encode overran the page");
+        buf[at..].fill(0);
     }
 
     /// Exact number of bytes [`Node::encode`] will use.

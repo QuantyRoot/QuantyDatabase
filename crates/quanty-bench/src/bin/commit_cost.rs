@@ -55,6 +55,19 @@ fn main() {
         );
     }
 
+    // The bulk case: everything in one transaction, so exactly one commit
+    // and one fsync. Whatever this costs is not durability, it is the
+    // per-insert work in the b-tree, and it is where sqlite is ahead.
+    println!();
+    for rows in [1_000usize, 5_000, 20_000] {
+        let elapsed = time_puts(&dir, rows, rows);
+        println!(
+            "bulk {rows:>6} rows in one transaction   {:>8.1} ms   {:>7.2} us/row",
+            elapsed.as_secs_f64() * 1000.0,
+            micros(elapsed / rows as u32),
+        );
+    }
+
     // Group commit cannot let one bad statement undo the nine good ones
     // batched with it, so each needs a savepoint around it. If that costs
     // as much as the commit it replaces, the whole idea is a wash.
