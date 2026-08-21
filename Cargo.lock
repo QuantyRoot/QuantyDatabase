@@ -4,11 +4,11 @@ version = 3
 
 [[package]]
 name = "quanty-auth"
-version = "0.2.0"
+version = "0.3.0"
 
 [[package]]
 name = "quanty-bench"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "quanty-core",
  "quanty-exec",
@@ -17,7 +17,7 @@ dependencies = [
 
 [[package]]
 name = "quanty-cli"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "quanty-auth",
  "quanty-core",
@@ -31,11 +31,11 @@ dependencies = [
 
 [[package]]
 name = "quanty-core"
-version = "0.2.0"
+version = "0.3.0"
 
 [[package]]
 name = "quanty-exec"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "quanty-core",
  "quanty-ql",
@@ -43,7 +43,7 @@ dependencies = [
 
 [[package]]
 name = "quanty-import"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "quanty-core",
  "quanty-exec",
@@ -53,28 +53,28 @@ dependencies = [
 
 [[package]]
 name = "quanty-proto"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "quanty-core",
 ]
 
 [[package]]
 name = "quanty-ql"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "quanty-core",
 ]
 
 [[package]]
 name = "quanty-server"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "quanty-proto",
 ]
 
 [[package]]
 name = "quanty-service"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "quanty-auth",
  "quanty-core",
@@ -86,4 +86,4 @@ dependencies = [
 
 [[package]]
 name = "quanty-sqlite"
-version = "0.2.0"
+version = "0.3.0"
