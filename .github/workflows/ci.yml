@@ -123,6 +123,19 @@ jobs:
         env:
           QUANTY_FUZZ_SECS: "600"
 
+  server-crash:
+    name: server crash harness (300 kills)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.98.0
+      - uses: Swatinem/rust-cache@v2
+      - name: kill -9 the server mid-write and check what it promised
+        run: cargo test -p quanty-cli --release --test crash -- --nocapture
+        env:
+          QUANTY_SERVER_CRASH_ITERS: "300"
+
   server-soak:
     name: server soak (10 min)
     runs-on: ubuntu-latest

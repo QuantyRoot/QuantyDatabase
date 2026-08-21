@@ -168,12 +168,22 @@ validate the 2 vCPU number and does not claim to.
   and still open at the end, a thousand mixed statements a second for the
   full half hour, not one failure in 1800064 of them, and neither
   descriptors nor resident memory growing. The run is in the table below.
-- `[ ]` **kill -9 under write load, reopen, zero corruption.** Not run at
-  the server level. The pager and the transaction layer each have a harness
-  that does this a thousand times per CI run, but nothing yet kills a
-  serving process mid-commit and then checks that every write a client was
-  told had succeeded is still there. That check is the interesting one,
-  because it is the durability promise crossing the protocol boundary.
+- `[x]` **kill -9 under write load, reopen, zero corruption.** Met, and in
+  the stronger form: `crates/quanty-cli/tests/crash.rs` writes from four
+  connections, kills the serving process with SIGKILL in the middle,
+  reopens the file and requires that every write the server answered with
+  a row count is still there. Corruption would show up as a database that
+  does not reopen; a broken promise shows up as a missing row. Three
+  hundred kills per CI run.
+
+  Only that direction is required. A write the executor committed whose
+  reply died with the process may or may not be in the file, and demanding
+  either would be demanding something that was never offered.
+
+  The harness was checked against a deliberately broken server before it
+  was trusted: answering inside the batch rather than after the shared
+  commit makes it fail in the first round, and the lost rows come one from
+  each connection, which is one batch that replied and then died.
 - `[ ]` **Versioned handshake, old client against new server fails
   cleanly.** The handshake is nine bytes out and four back and is frozen by
   design, and `ServerHello::Refused` exists for exactly this. It is covered

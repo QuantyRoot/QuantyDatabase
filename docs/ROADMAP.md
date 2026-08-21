@@ -147,7 +147,8 @@ Acceptance:
 - [x] 10k idle connections + 1k active mixed QPS on a 2 vCPU box, stable
       for 30 min, no fd/memory leaks. Met 2026-08-21: 1800064 statements,
       none failed, descriptors and memory flat, numbers in ACCEPTANCE.md
-- [ ] kill -9 the server under write load, reopen, zero corruption
+- [x] kill -9 the server under write load, reopen, zero corruption, and
+      every acknowledged write still present. 300 kills per CI run
 - [ ] protocol versioned handshake, old client vs new server errors cleanly
 
 ## Phase 6: Blobs + assets
