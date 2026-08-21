@@ -275,3 +275,70 @@ fn model_on_disk_with_reopens() {
         run_sequence(seed, ops, Some(reopen), db);
     }
 }
+
+/// `put_unique` has to agree with a `get` followed by a `put` in every
+/// case, including the ones that only happen at a page boundary.
+///
+/// It is one descent where that was two, and a descent that decides on the
+/// way down is exactly where an off by one hides: a duplicate must write
+/// nothing at all, and a split must still happen when the key is new.
+#[test]
+fn put_unique_matches_get_then_put() {
+    use std::collections::BTreeMap;
+
+    let db = Db::in_memory().expect("db");
+    let mut model: BTreeMap<Vec<u8>, Vec<u8>> = BTreeMap::new();
+
+    // Enough rows, and wide enough values, to fill and split pages.
+    let mut tx = db.begin();
+    for round in 0..3u32 {
+        for i in 0..400u32 {
+            let key = format!("k{:06}", (i * 7919) % 400).into_bytes();
+            let value = vec![b'v'; 8 + (i as usize % 90)];
+
+            let written = tx.put_unique(&key, &value).expect("put_unique");
+            let expected = !model.contains_key(&key);
+            assert_eq!(
+                written, expected,
+                "round {round}, key {i}: put_unique disagreed about presence"
+            );
+            if expected {
+                model.insert(key.clone(), value.clone());
+            }
+
+            let got = tx.get(&key).expect("get");
+            assert_eq!(
+                got.as_deref(),
+                model.get(&key).map(|v| v.as_slice()),
+                "round {round}, key {i}: a duplicate changed the stored value"
+            );
+        }
+    }
+
+    // And the whole tree still agrees with the model.
+    for (key, value) in &model {
+        assert_eq!(
+            tx.get(key).expect("get").as_deref(),
+            Some(value.as_slice()),
+            "the tree lost a row"
+        );
+    }
+    tx.commit().expect("commit");
+}
+
+/// A value too large to sit in a page takes the other route inside
+/// `put_unique`, so it needs its own case.
+#[test]
+fn put_unique_handles_overflow_values() {
+    let db = Db::in_memory().expect("db");
+    let mut tx = db.begin();
+    let big = vec![b'x'; 40_000];
+
+    assert!(tx.put_unique(b"big", &big).expect("first"), "not written");
+    assert!(
+        !tx.put_unique(b"big", &[b'y'; 40_000]).expect("second"),
+        "an overflow duplicate was written"
+    );
+    assert_eq!(tx.get(b"big").expect("get"), Some(big), "value changed");
+    tx.commit().expect("commit");
+}

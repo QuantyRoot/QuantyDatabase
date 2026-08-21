@@ -978,7 +978,9 @@ impl<S: Storage> Run<'_, S> {
         for row in rows {
             let values = self.build_row(&table, row)?;
             let key = row_key(&table, &row_pk(&table, &values));
-            if self.tx.get(&key)?.is_some() {
+            // One descent: the insert reports the duplicate it already
+            // had to look for, rather than being asked first.
+            if !self.tx.put_unique(&key, &encode_key(&values))? {
                 let pk = row_pk(&table, &values);
                 let rendered: Vec<String> = pk.iter().map(quanty_ql::pretty::literal).collect();
                 return Err(ExecError::exec(format!(
@@ -986,7 +988,6 @@ impl<S: Storage> Run<'_, S> {
                     rendered.join(", ")
                 )));
             }
-            self.tx.put(&key, &encode_key(&values))?;
             for (pos, col) in table.columns.iter().enumerate() {
                 if let Some(index_id) = col.index_id {
                     let entry = index_entry_key(index_id, &values[pos], &row_pk(&table, &values));

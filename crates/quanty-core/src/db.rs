@@ -749,6 +749,17 @@ impl<S: Storage> WriteTx<'_, S> {
         Ok(())
     }
 
+    /// Insert only if the key is absent. Returns whether it was written.
+    ///
+    /// One descent rather than the two that a `get` followed by a `put`
+    /// costs, which is the difference between deciding on the way down and
+    /// asking first.
+    pub fn put_unique(&mut self, key: &[u8], value: &[u8]) -> Result<bool> {
+        let (root, written) = btree::put_unique(&mut self.batch, self.root, key, value)?;
+        self.root = root;
+        Ok(written)
+    }
+
     /// Returns whether the key existed.
     pub fn delete(&mut self, key: &[u8]) -> Result<bool> {
         let (root, existed) = btree::remove(&mut self.batch, self.root, key)?;

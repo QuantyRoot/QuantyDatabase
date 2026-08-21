@@ -34,6 +34,18 @@ fn main() {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("create the working directory");
 
+    // `bulk` runs only the statement path, so a profile of it is not
+    // diluted by fsync probes and savepoint timing.
+    if std::env::args().any(|a| a == "bulk") {
+        let elapsed = time_puts(&dir, 50_000, 50_000);
+        println!(
+            "bulk 50000 rows in one transaction   {:>8.1} ms   {:>7.2} us/row",
+            elapsed.as_secs_f64() * 1000.0,
+            micros(elapsed / 50_000),
+        );
+        return;
+    }
+
     let fsync = time_fsync(&dir, 200);
     println!(
         "fsync           {:>8.1} us  mean of 200 on {}",

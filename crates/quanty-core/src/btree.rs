@@ -158,6 +158,9 @@ fn overflow_capacity(page_size: u32) -> usize {
 enum Insert {
     Done(PageId),
     Split(PageId, Vec<u8>, PageId),
+    /// The key was already there and `unique` was asked for. Nothing was
+    /// written: the descent only writes on the way back up.
+    Duplicate,
 }
 
 enum Delete {
@@ -195,7 +198,8 @@ pub(crate) fn put<S: Storage>(
         };
         return write_node(batch, None, &node);
     }
-    match insert_rec(batch, root, key, vref)? {
+    match insert_rec(batch, root, key, vref, false)? {
+        Insert::Duplicate => unreachable!("not asked for"),
         Insert::Done(new_root) => Ok(new_root),
         Insert::Split(left, sep, right) => {
             let node = Node::Branch {
@@ -207,17 +211,66 @@ pub(crate) fn put<S: Storage>(
     }
 }
 
+/// Insert only if the key is absent, in one descent instead of two.
+///
+/// `get` followed by `put` walks the same path twice and decodes every
+/// node on it twice, and the binary search inside the insert already knows
+/// whether the key was there. Returns whether anything was written.
+///
+/// A value large enough to overflow takes the old route: overflow pages
+/// are written before the descent, and a duplicate found afterwards would
+/// leave them behind unreferenced.
+pub(crate) fn put_unique<S: Storage>(
+    batch: &mut WriteBatch<'_, S>,
+    root: PageId,
+    key: &[u8],
+    value: &[u8],
+) -> Result<(PageId, bool)> {
+    let ps = batch.page_size();
+    if value.len() > inline_max(ps) {
+        if get(batch, root, key)?.is_some() {
+            return Ok((root, false));
+        }
+        return Ok((put(batch, root, key, value)?, true));
+    }
+    if key.is_empty() {
+        return Err(Error::InvalidArgument("keys must not be empty"));
+    }
+    if key.len() > max_key_len(ps) {
+        return Err(Error::InvalidArgument(
+            "key exceeds max_key_len for this page size",
+        ));
+    }
+    if root == NIL_PAGE {
+        return Ok((put(batch, root, key, value)?, true));
+    }
+    let vref = ValueRef::Inline(value.to_vec());
+    match insert_rec(batch, root, key, vref, true)? {
+        Insert::Duplicate => Ok((root, false)),
+        Insert::Done(new_root) => Ok((new_root, true)),
+        Insert::Split(left, sep, right) => {
+            let node = Node::Branch {
+                first_child: left,
+                entries: vec![(sep, right)],
+            };
+            Ok((write_node(batch, None, &node)?, true))
+        }
+    }
+}
+
 fn insert_rec<S: Storage>(
     batch: &mut WriteBatch<'_, S>,
     page: PageId,
     key: &[u8],
     value: ValueRef,
+    unique: bool,
 ) -> Result<Insert> {
     let buf = batch.page_bytes(page)?;
     let mut node = Node::decode(&buf, page)?;
     match &mut node {
         Node::Leaf { entries } => {
             match entries.binary_search_by(|(k, _)| k.as_slice().cmp(key)) {
+                Ok(_) if unique => return Ok(Insert::Duplicate),
                 Ok(i) => entries[i].1 = value,
                 Err(i) => entries.insert(i, (key.to_vec(), value)),
             }
@@ -233,7 +286,8 @@ fn insert_rec<S: Storage>(
             } else {
                 entries[idx - 1].1
             };
-            match insert_rec(batch, child, key, value)? {
+            match insert_rec(batch, child, key, value, unique)? {
+                Insert::Duplicate => Ok(Insert::Duplicate),
                 Insert::Done(new_child) => {
                     if idx == 0 {
                         *first_child = new_child;

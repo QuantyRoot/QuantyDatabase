@@ -341,13 +341,37 @@ whose net effect is unclear. What it leaves behind is worth more than it
 was:
 
 **The statement path is not dominated by the b-tree.** A raw `put` into a
-tree of the same size costs 7.7 microseconds and a `put` statement costs
-19.5, so roughly twelve microseconds a row live above the storage layer, in
-parsing, planning, the catalog and row encoding. This section has said for
-weeks that bulk insert is slow because of `insert_rec`. That is true of the
-embedded API and it is mostly false of the statement path, and nobody has
-profiled the statement path yet. That is the next thing to do, and it comes
-before any further work on the node format.
+tree of the same size cost 7.7 microseconds and a `put` statement cost
+19.5. This section had said for weeks that bulk insert is slow because of
+`insert_rec`, and that was true of the embedded API and mostly false of the
+statement path.
+
+**Profiling the statement path found it in one line.** A profile of a
+write-only run had `btree::get` in it, which should not appear in a
+benchmark that only writes. It came from `Exec::put`:
+
+```
+if self.tx.get(&key)?.is_some() { ... duplicate }
+self.tx.put(&key, &encode_key(&values))?;
+```
+
+Two full descents per row, both decoding every node on the path, and the
+first one redundant: the binary search inside the insert already knows
+whether the key was there. `WriteTx::put_unique` now decides on the way
+down and reports it. A descent writes nothing until it comes back up, so a
+duplicate found at the leaf returns without touching anything.
+
+| | before | after |
+|---|---|---|
+| 50000 `put` statements, one transaction | 18.7 us/row | **11.1 us/row** |
+
+**1.7x on the path the server, the shell and QQL all use.** A value large
+enough to overflow keeps the old route, because overflow pages are written
+before the descent and a duplicate found afterwards would leave them behind
+unreferenced.
+
+What is left above the storage layer is parsing, planning, the catalog and
+row encoding, and that is where the next profile goes.
 
 Two measured steps already taken. Encoding now writes straight into the
 page instead of into a fresh page-sized buffer that was then copied over
