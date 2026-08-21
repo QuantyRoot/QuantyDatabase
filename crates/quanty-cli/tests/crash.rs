@@ -31,7 +31,7 @@ use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -212,16 +212,19 @@ fn every_acknowledged_write_survives_a_kill() {
         let mut server = Server::start(&path);
         let acked: Arc<Mutex<BTreeSet<i64>>> = Arc::new(Mutex::new(BTreeSet::new()));
         let running = Arc::new(AtomicBool::new(true));
+        let connected = Arc::new(AtomicUsize::new(0));
 
         let mut writers = Vec::new();
         for lane in 0..4i64 {
             let addr = server.addr.clone();
             let acked = Arc::clone(&acked);
             let running = Arc::clone(&running);
+            let connected = Arc::clone(&connected);
             writers.push(std::thread::spawn(move || {
                 let Some(mut wire) = Wire::open(&addr) else {
                     return;
                 };
+                connected.fetch_add(1, Ordering::Relaxed);
                 let mut key = lane * 1_000_000;
                 while running.load(Ordering::Relaxed) {
                     key += 1;
@@ -240,10 +243,31 @@ fn every_acknowledged_write_survives_a_kill() {
             }));
         }
 
-        // Long enough that writes are in flight and short enough that the
-        // kill lands in the middle of them rather than after.
-        let settle = 150 + (round as u64 * 37) % 250;
-        std::thread::sleep(Duration::from_millis(settle));
+        // Wait for the writers to actually be landing writes, then let a
+        // few more go before killing.
+        //
+        // A fixed sleep assumes the first write completes inside it, and an
+        // fsync on a loaded machine does not have to. That assumption is
+        // what a fixed sleep hides: the round then kills a server that has
+        // acknowledged nothing, and the guard below reports a timing
+        // accident as though it were a finding.
+        let ready_by = Instant::now() + Duration::from_secs(30);
+        loop {
+            if !acked.lock().expect("lock").is_empty() {
+                break;
+            }
+            assert!(
+                Instant::now() < ready_by,
+                "round {round}: no write was acknowledged in 30s; {} of 4 \
+                 writers got as far as connecting",
+                connected.load(Ordering::Relaxed)
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        // Varied, so the kill does not always land at the same point in a
+        // commit.
+        let extra = 20 + (round as u64 * 37) % 130;
+        std::thread::sleep(Duration::from_millis(extra));
         server.kill_now();
         running.store(false, Ordering::Relaxed);
         for writer in writers {
@@ -253,8 +277,8 @@ fn every_acknowledged_write_survives_a_kill() {
         let promised = acked.lock().expect("lock").clone();
         assert!(
             !promised.is_empty(),
-            "round {round}: nothing was acknowledged in {settle}ms, so the \
-             kill proved nothing"
+            "round {round}: the acknowledged set emptied itself, which is \
+             a bug in this test rather than in the server"
         );
         total_acked += promised.len();
 

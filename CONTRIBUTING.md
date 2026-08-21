@@ -37,6 +37,14 @@ nobody had measured what a commit cost. When the measurement arrived it
 said thirteen times, and it also said the fsync was only half of what was
 being amortized, which nobody had guessed.
 
+**A sleep is not a synchronisation primitive.** A fixed wait encodes an
+assumption about how long something takes, and a loaded machine is under no
+obligation to agree. The server crash harness spent one commit killing
+servers after a fixed 189 milliseconds and then reporting that the kill
+proved nothing, which was true and was a fact about the CI runner rather
+than about the server. Wait for the condition, with a generous ceiling, and
+say which part timed out.
+
 **A test that cannot fail is not a test.** This is the recurring lesson of
 the project, written down properly in `HUNDRED.md`. If you add a test for
 something invisible, break the thing on purpose and watch the test go red
