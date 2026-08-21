@@ -23,6 +23,14 @@ struct Options {
     /// What the active connections send. `{n}` becomes a number unique to
     /// each request, so a write load does not fight over one key.
     statement: String,
+    /// One write in every `write_every` requests, the rest reads. Zero
+    /// means the statement above is sent unchanged every time.
+    ///
+    /// The acceptance criterion asks for mixed traffic and does not say in
+    /// what proportion. Nine reads to one write is an ordinary online
+    /// transaction mix, and the ratio is printed with the result so the
+    /// number stays interpretable.
+    write_every: u64,
 }
 
 impl Default for Options {
@@ -34,6 +42,7 @@ impl Default for Options {
             qps: 1000,
             duration: Duration::from_secs(1800),
             statement: "get t".to_string(),
+            write_every: 0,
         }
     }
 }
@@ -71,6 +80,10 @@ fn parse() -> Result<Options, String> {
             // `{n}` in the statement becomes a number unique to the sender,
             // which is how a write load avoids fighting over one key.
             "--writes" => o.statement = "put t { id: {n}, n: {n} }".to_string(),
+            // Reads and writes on the same connections, which is what the
+            // acceptance criterion means by mixed.
+            "--mixed" => o.write_every = 10,
+            "--write-every" => o.write_every = value()?.parse().map_err(|_| "bad --write-every")?,
             "--duration" => {
                 let raw = value()?;
                 o.duration = parse_duration(&raw)?;
@@ -182,6 +195,7 @@ fn run() -> Result<(), String> {
         let counters = counters.clone();
         let running = running.clone();
         let template = opts.statement.clone();
+        let write_every = opts.write_every;
         workers.push(thread::spawn(move || {
             let mut serial: u64 = 0;
             let mut socket =
@@ -204,8 +218,15 @@ fn run() -> Result<(), String> {
 
                 let sent_at = Instant::now();
                 serial += 1;
-                let source = if template.contains("{n}") {
-                    template.replace("{n}", &format!("{}", id * 10_000_000 + serial))
+                let unique = id * 10_000_000 + serial;
+                let source = if write_every > 0 {
+                    if serial % write_every == 0 {
+                        format!("put t {{ id: {unique}, n: {unique} }}")
+                    } else {
+                        "get t where id = 1".to_string()
+                    }
+                } else if template.contains("{n}") {
+                    template.replace("{n}", &format!("{unique}"))
                 } else {
                     template.clone()
                 };
@@ -261,9 +282,17 @@ fn run() -> Result<(), String> {
         .unwrap_or(0);
     let still_open = idle.iter().filter(|s| s.peer_addr().is_ok()).count();
 
+    // The mix is part of the record: a rate means nothing without knowing
+    // what was being run at it.
+    let mix = if opts.write_every > 0 {
+        format!("1-write-in-{}", opts.write_every)
+    } else {
+        "single-statement".to_string()
+    };
     println!(
         "ACCEPTANCE idle_held={} idle_target={} idle_refused={refused} still_open={still_open} \
-         answered={answered} failed={} rate={:.1} mean_us={mean_us} max_us={} seconds={:.1}",
+         answered={answered} failed={} rate={:.1} mean_us={mean_us} max_us={} seconds={:.1} \
+         mix={mix}",
         idle.len(),
         opts.idle,
         counters.failed.load(Ordering::Relaxed),

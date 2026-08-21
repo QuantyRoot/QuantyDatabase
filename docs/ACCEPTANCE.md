@@ -49,20 +49,68 @@ Check `/dev/kvm` exists and is readable before anything else.
 The one to use. Also the most faithful for the CPU question, because
 nothing sits between the two processes but the host's loopback.
 
+First the database, because the load reads and writes a table called `t`
+and the server refuses to start without a database that exists:
+
 ```
-# two cores for the server, 7 GiB to match a small cloud box
+cargo build --release
+target/release/quanty create /tmp/accept.qdb
+target/release/quanty run /tmp/accept.qdb "table t { id: int @key, n: int }"
+target/release/quanty run /tmp/accept.qdb "put t { id: 1, n: 1 }"
+```
+
+Then the server on two cores and the client on others:
+
+```
+ulimit -n 65536
+
 systemd-run --user --scope \
   -p AllowedCPUs=0,1 \
   -p MemoryMax=7G \
-  target/release/quanty serve /tmp/accept.qdb
+  target/release/quanty serve /tmp/accept.qdb --workers 2
 
-# the client anywhere else
-taskset -c 4-11 target/release/quanty-bench acceptance \
-  --connections 10000 --qps 1000 --duration 30m
+# the client anywhere else, in its own shell
+ulimit -n 65536
+taskset -c 4-11 target/release/quanty-acceptance \
+  --connections 10000 --active 32 --qps 1000 --duration 30m --mixed
 ```
+
+`--workers 2` is passed rather than left to default. The default is one
+worker per core, and whether that sees two cores or all of them inside a
+cpuset is not something a measurement should depend on.
+
+`--mixed` sends one write in every ten requests and reads the rest. The
+criterion says mixed and does not say in what proportion; nine to one is an
+ordinary online transaction mix, and the ratio is printed in the result
+line so the number stays interpretable. Without the flag the load is reads
+only, which is a different measurement.
+
+If `systemd-run` refuses the properties, which happens when the user
+manager has no cpuset delegation, `taskset -c 0,1` pins the server just as
+well. That loses the memory cap, which is worth having but is not what the
+criterion turns on: it watches memory grow rather than capping it.
 
 Loopback is faster and more reliable than any real link, so the network is
 deliberately not the limit. That is the point: what is left is the server.
+
+## Watching the three failure modes while it runs
+
+Thirty minutes of "no descriptor or memory growth" is a claim about a
+curve, not about the last line. Sample it in a third shell:
+
+```
+SRV=$(pgrep -f 'quanty serve')
+while :; do
+  echo "$(date +%H:%M:%S) rss_kb=$(grep VmRSS /proc/$SRV/status | tr -dc 0-9) \
+fds=$(ls /proc/$SRV/fd | wc -l)"
+  sleep 30
+done | tee /tmp/accept-watch.log
+```
+
+Descriptors should climb to roughly the connection count and then sit
+flat. Resident memory should flatten too. A slow rise in either across
+thirty minutes is the failure this test exists to catch, and it does not
+show up in the summary line at the end.
 
 ## If the test should stay off your own kernel
 
