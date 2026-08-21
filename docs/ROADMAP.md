@@ -149,7 +149,8 @@ Acceptance:
       none failed, descriptors and memory flat, numbers in ACCEPTANCE.md
 - [x] kill -9 the server under write load, reopen, zero corruption, and
       every acknowledged write still present. 300 kills per CI run
-- [ ] protocol versioned handshake, old client vs new server errors cleanly
+- [x] protocol versioned handshake, old client vs new server errors
+      cleanly, tested against a running process rather than the codec
 
 ## Phase 6: Blobs + assets
 

@@ -184,11 +184,14 @@ validate the 2 vCPU number and does not claim to.
   was trusted: answering inside the batch rather than after the shared
   commit makes it fail in the first round, and the lost rows come one from
   each connection, which is one batch that replied and then died.
-- `[ ]` **Versioned handshake, old client against new server fails
-  cleanly.** The handshake is nine bytes out and four back and is frozen by
-  design, and `ServerHello::Refused` exists for exactly this. It is covered
-  by unit tests on the codec, but no test has yet put a client that speaks
-  an older version in front of a running server.
+- `[x]` **Versioned handshake, old client against new server fails
+  cleanly.** Met by `crates/quanty-cli/tests/handshake.rs`, which puts
+  wrong clients in front of a running process rather than in front of the
+  codec. A version the server does not know yet, a version zero, and
+  something that is not this protocol at all each get four readable bytes
+  naming the reason and then a closed connection: answered, not hung. Five
+  refusals in a row leave the next good client working, and a hello
+  dribbled in one byte at a time is still a hello.
 
 ## Measurements
 
