@@ -188,7 +188,19 @@ fn run() -> Result<(), String> {
 
     let counters = Arc::new(Counters::default());
     let running = Arc::new(AtomicBool::new(true));
-    let per_thread_qps = (opts.qps / opts.active.max(1) as u64).max(1);
+    // The gap between one thread's requests, computed from the total rate
+    // rather than from a per-thread integer rate.
+    //
+    // Dividing first truncates: 1000 qps across 32 threads is 31.25 each,
+    // which becomes 31, and 31 times 32 is 992. The generator then quietly
+    // asks for less than the run claims to be measuring, and a server that
+    // answers all of it looks like it met a criterion it was never given.
+    let gap = Duration::from_nanos(
+        1_000_000_000u64
+            .saturating_mul(opts.active.max(1) as u64)
+            .checked_div(opts.qps.max(1))
+            .unwrap_or(1_000_000_000),
+    );
 
     let mut workers = Vec::with_capacity(opts.active);
     for id in 0..opts.active as u64 {
@@ -207,7 +219,6 @@ fn run() -> Result<(), String> {
                     }
                 };
             let _ = socket.set_read_timeout(Some(Duration::from_secs(10)));
-            let gap = Duration::from_nanos(1_000_000_000 / per_thread_qps);
             let mut next = Instant::now();
             while running.load(Ordering::Relaxed) {
                 let now = Instant::now();
