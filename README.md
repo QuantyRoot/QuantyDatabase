@@ -257,6 +257,21 @@ That run is the criterion for the whole server design and not a box to
 tick: [ADR-023](docs/DECISIONS.md) says a red one means the design was
 wrong and gets rewritten, so it is worth knowing it is green.
 
+Against SQLite, both engines driven through their own command line tool,
+on one development core:
+
+| | quanty vs sqlite |
+|---|---|
+| Open a database | **0.91x**, faster |
+| 5000 lookups by key | **0.94x**, faster |
+| 20 full scans of 5000 rows | 1.91x slower |
+| Bulk insert, 5000 rows in one transaction | 5.28x slower |
+
+The write path is the one that is behind, it is behind for reasons that are
+measured rather than guessed, and it has moved: bulk insert was 12.82x and
+key lookup was 1.44x before the descent stopped decoding branch nodes it
+only walks through. `docs/ROADMAP.md` has the profile and what is left.
+
 Smaller numbers, on one development core with the client competing for it,
 so a floor rather than a result:
 

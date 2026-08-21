@@ -370,8 +370,40 @@ enough to overflow keeps the old route, because overflow pages are written
 before the descent and a duplicate found afterwards would leave them behind
 unreferenced.
 
+**And then the descent stopped decoding what it only walks through.** The
+profile still had `Node::decode` and the allocator on top, and the reason
+was that following a branch materialized it: a `Vec` for every key on the
+page, allocated and dropped again, at every level of every descent, to
+follow one pointer. `Node::branch_child` walks the cells in the page bytes
+instead. It scans where the decoded version binary searched, which is a
+hundred and fifty short memcmps against a hundred and fifty allocations.
+
+The insert descent now decodes a branch only when the recursion comes back
+with something that changes it, and in a bulk load it usually does not,
+because a leaf keeps its page after the first touch. The read descent never
+decodes a branch at all.
+
+| | before | after |
+|---|---|---|
+| 50000 `put` statements, one transaction | 18.7 us/row | **8.3 us/row** |
+
+**Against sqlite, both through their own command line tools:**
+
+| | before | after |
+|---|---|---|
+| bulk insert, 5000 rows in one transaction | 12.82x slower | **5.28x** |
+| 5000 lookups by key | 1.44x slower | **0.94x, faster than sqlite** |
+| 20 full scans of 5000 rows | 1.91x slower | 1.91x |
+| 5000 lookups through a secondary index | 1.64x slower | 1.64x |
+| durable insert, one commit each | 1.62x slower | 1.62x |
+
+Two and a quarter times on the statement write path, and the key lookup
+crossed over. Nothing else moved, which fits: scans decode leaves and that
+is real work, and a durable insert is dominated by the fsync.
+
 What is left above the storage layer is parsing, planning, the catalog and
-row encoding, and that is where the next profile goes.
+row encoding. Scans and the secondary index are the two rows in the table
+above that have not moved at all, and neither has been profiled.
 
 Two measured steps already taken. Encoding now writes straight into the
 page instead of into a fresh page-sized buffer that was then copied over

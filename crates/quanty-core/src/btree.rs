@@ -19,7 +19,7 @@ use std::sync::Arc;
 
 use crate::error::{Error, Result};
 use crate::node::{leaf_cell_size, Node, ValueRef};
-use crate::page::{PageId, PageType, NIL_PAGE, PAGE_HEADER_LEN};
+use crate::page::{page_type, PageId, PageType, NIL_PAGE, PAGE_HEADER_LEN};
 use crate::pager::{Pager, WriteBatch};
 use crate::storage::Storage;
 
@@ -72,13 +72,14 @@ pub(crate) fn get<P: ReadPages>(src: &P, root: PageId, key: &[u8]) -> Result<Opt
     let mut page = root;
     loop {
         let buf = src.read(page)?;
+        // A branch is followed without being materialized; only the leaf
+        // at the end of the descent is worth decoding.
+        if page_type(&buf)? == PageType::Branch {
+            page = Node::branch_child(&buf, page, key)?;
+            continue;
+        }
         match Node::decode(&buf, page)? {
-            Node::Branch {
-                first_child,
-                entries,
-            } => {
-                page = child_for(first_child, &entries, key);
-            }
+            Node::Branch { .. } => unreachable!("checked above"),
             Node::Leaf { entries } => {
                 return match entries.binary_search_by(|(k, _)| k.as_slice().cmp(key)) {
                     Ok(i) => Ok(Some(read_value(src, &entries[i].1)?)),
@@ -86,16 +87,6 @@ pub(crate) fn get<P: ReadPages>(src: &P, root: PageId, key: &[u8]) -> Result<Opt
                 };
             }
         }
-    }
-}
-
-/// Which child of a branch covers `key`.
-fn child_for(first_child: PageId, entries: &[(Vec<u8>, PageId)], key: &[u8]) -> PageId {
-    let idx = entries.partition_point(|(k, _)| k.as_slice() <= key);
-    if idx == 0 {
-        first_child
-    } else {
-        entries[idx - 1].1
     }
 }
 
@@ -265,6 +256,59 @@ fn insert_rec<S: Storage>(
     value: ValueRef,
     unique: bool,
 ) -> Result<Insert> {
+    // Follow a branch without materializing it. Decoding one allocates a
+    // key for every entry on the page and drops them all again, at every
+    // level, on every row. The branch is only decoded when the recursion
+    // comes back with something that changes it, which in a bulk load it
+    // usually does not: a leaf keeps its page after the first touch.
+    let child = {
+        let buf = batch.page_bytes(page)?;
+        if page_type(&buf)? == PageType::Branch {
+            Some(Node::branch_child(&buf, page, key)?)
+        } else {
+            None
+        }
+    };
+
+    if let Some(child) = child {
+        let result = insert_rec(batch, child, key, value, unique)?;
+        match result {
+            Insert::Duplicate => return Ok(Insert::Duplicate),
+            Insert::Done(new_child) if new_child == child => return Ok(Insert::Done(page)),
+            _ => {}
+        }
+        let buf = batch.page_bytes(page)?;
+        let mut node = Node::decode(&buf, page)?;
+        let Node::Branch {
+            first_child,
+            entries,
+        } = &mut node
+        else {
+            unreachable!("checked above")
+        };
+        let idx = entries.partition_point(|(k, _)| k.as_slice() <= key);
+        return match result {
+            Insert::Done(new_child) => {
+                if idx == 0 {
+                    *first_child = new_child;
+                } else {
+                    entries[idx - 1].1 = new_child;
+                }
+                Ok(Insert::Done(write_node(batch, Some(page), &node)?))
+            }
+            Insert::Split(left, sep, right) => {
+                if idx == 0 {
+                    *first_child = left;
+                } else {
+                    entries[idx - 1].1 = left;
+                }
+                entries.insert(idx, (sep, right));
+                finish_branch(batch, page, node)
+            }
+            Insert::Duplicate => unreachable!("returned above"),
+        };
+    }
+
     let buf = batch.page_bytes(page)?;
     let mut node = Node::decode(&buf, page)?;
     match &mut node {

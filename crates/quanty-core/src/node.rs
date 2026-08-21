@@ -119,6 +119,40 @@ impl Node {
     /// has to produce the same bytes: the codec fuzzer proves the encoding
     /// is canonical, and leaving whatever the page held before would make
     /// that quietly untrue.
+    /// Which child of a branch page covers `key`, read straight from the
+    /// bytes.
+    ///
+    /// Decoding a branch to follow one pointer allocates a `Vec` for every
+    /// key on the page and throws them all away again, at every level, on
+    /// every descent. This walks the cells in place instead. The scan is
+    /// linear where the decoded version binary searched, which is the
+    /// trade: a hundred and fifty short memcmps against a hundred and
+    /// fifty allocations.
+    ///
+    /// Same rule as the decoded path: the child of the last key that is
+    /// not greater than `key`, or the first child if there is none.
+    pub(crate) fn branch_child(buf: &[u8], id: PageId, key: &[u8]) -> Result<PageId> {
+        let bad = |what: &str| Error::corrupted(id, format!("branch scan: {what}"));
+        let count = u16::from_le_bytes(buf[6..8].try_into().expect("hdr")) as usize;
+        let body = &buf[PAGE_HEADER_LEN..];
+        let (first_child, mut cur) = read_u64(body).ok_or_else(|| bad("truncated"))?;
+
+        let mut child = first_child;
+        for _ in 0..count {
+            let (cell_key, flag, rest) = read_key_ref(cur).ok_or_else(|| bad("truncated cell"))?;
+            if flag != 0 {
+                return Err(bad("bad branch flag"));
+            }
+            let (next, rest) = read_u64(rest).ok_or_else(|| bad("truncated child"))?;
+            cur = rest;
+            if cell_key > key {
+                break;
+            }
+            child = next;
+        }
+        Ok(child)
+    }
+
     pub(crate) fn encode_into(&self, buf: &mut [u8]) {
         let page_size = buf.len();
         let (ptype, count) = match self {
@@ -200,6 +234,21 @@ pub(crate) fn leaf_cell_size(key: &[u8], value: &ValueRef) -> usize {
 
 pub(crate) fn branch_cell_size(key: &[u8]) -> usize {
     2 + 1 + key.len() + 8
+}
+
+/// A cell's key without copying it.
+fn read_key_ref(buf: &[u8]) -> Option<(&[u8], u8, &[u8])> {
+    if buf.len() < 3 {
+        return None;
+    }
+    let klen = u16::from_le_bytes(buf[..2].try_into().expect("len")) as usize;
+    let flag = buf[2];
+    let rest = &buf[3..];
+    if rest.len() < klen {
+        return None;
+    }
+    let (key, rest) = rest.split_at(klen);
+    Some((key, flag, rest))
 }
 
 fn read_key(buf: &[u8]) -> Option<(Vec<u8>, u8, &[u8])> {
