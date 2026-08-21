@@ -250,7 +250,8 @@ whole time:
 | Rate | 1000/s, nine reads per write, each write fsynced |
 | Latency | 123 us mean, 7.6 ms worst |
 | Idle connections | 10000 held, 0 refused, 10000 still open at the end |
-| Descriptors, memory | flat throughout |
+| Memory | under 10 MB resident, flat: **under 1 kB per connection** |
+| Descriptors | 10042, flat all half hour, every one returned |
 
 That run is the criterion for the whole server design and not a box to
 tick: [ADR-023](docs/DECISIONS.md) says a red one means the design was

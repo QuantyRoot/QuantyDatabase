@@ -195,9 +195,19 @@ measurement, so the machine is part of the record.
              still_open=10000 answered=1800064 failed=0 rate=1000.0
              mean_us=123 max_us=7649 seconds=1800.0 mix=1-write-in-10
 
-  descriptors  10042, flat for the whole run, all returned on disconnect
-  resident     9924 kB at the start of sampling, 9996 kB at the end,
-               moving between 9996 and 10008 without a trend
+  descriptors  10042 across all 57 samples, then 10 once the client left.
+               That is 10032 connections plus the listener, the epoll and
+               eventfd, the database and the standard streams. Every one
+               came back.
+  resident     6632 kB at the first sample, 9920 kB by three and a half
+               minutes in as the connection buffers fill, then 9996 kB at
+               the end: +76 kB over the remaining 24.5 minutes, and not
+               monotone, since it peaked at 10008 and finished 12 kB below
+               that. Roughly 3 kB a minute of allocator noise with no
+               trend under it.
+  per conn     under a kilobyte, and that is an upper bound rather than an
+               estimate: 9996 kB of resident memory divided by 10032 open
+               connections, with the server itself counted in the numerator
   accepts      split 5090/4942 across the two workers
 
 This is the phase 5 criterion and it is met. ADR-023 made this run the
