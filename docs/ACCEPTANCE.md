@@ -163,9 +163,11 @@ validate the 2 vCPU number and does not claim to.
 
 ## Where each criterion stands
 
-- `[ ]` **10k idle + 1k mixed QPS on 2 vCPU, 30 min, no leaks.** Not run.
-  Needs a machine; a container with one core cannot answer it, and the
-  descriptor limit here cannot hold both ends of ten thousand connections.
+- `[x]` **10k idle + 1k mixed QPS on 2 vCPU, 30 min, no leaks.** Met on
+  2026-08-21. All four properties held: ten thousand connections accepted
+  and still open at the end, a thousand mixed statements a second for the
+  full half hour, not one failure in 1800064 of them, and neither
+  descriptors nor resident memory growing. The run is in the table below.
 - `[ ]` **kill -9 under write load, reopen, zero corruption.** Not run at
   the server level. The pager and the transaction layer each have a harness
   that does this a thousand times per CI run, but nothing yet kills a
@@ -184,6 +186,32 @@ Each line is one run. A number without a machine attached is not a
 measurement, so the machine is part of the record.
 
 ```
+2026-08-21  Ryzen 5 5600G, 12 threads, Arch, kernel loopback
+            server: systemd-run scope, AllowedCPUs=0,1, MemoryMax=7G,
+                    --workers 2, release build, rustc 1.96.0-nightly
+            client: taskset -c 4-11, same machine
+
+  ACCEPTANCE idle_held=10000 idle_target=10000 idle_refused=0
+             still_open=10000 answered=1800064 failed=0 rate=1000.0
+             mean_us=123 max_us=7649 seconds=1800.0 mix=1-write-in-10
+
+  descriptors  10042, flat for the whole run, all returned on disconnect
+  resident     9924 kB at the start of sampling, 9996 kB at the end,
+               moving between 9996 and 10008 without a trend
+  accepts      split 5090/4942 across the two workers
+
+This is the phase 5 criterion and it is met. ADR-023 made this run the
+decision procedure for the server design rather than a box to tick, so it
+is worth saying plainly what it decided: the hand written epoll reactor
+holds ten thousand connections on two cores, and the thread per connection
+fallback in ADR-022 stays superseded.
+
+Two honest qualifications. The client shares the machine: its eight cores
+are not the server's two, but they share a memory controller and a last
+level cache, so a dedicated pair of boxes would not give exactly this
+number. And loopback is faster than any real link, which is deliberate,
+because the criterion is about the server rather than about a network.
+
 2026-08-17  container, 1 core, client on the same core, no execution
   2000 idle held, 800 qps, 30s, 0 failed, mean 56us, max 466us
    200 idle held, 5000 qps, 15s, 0 failed, mean 190us, max 1105us

@@ -705,6 +705,15 @@ with the first working listener, before the connection state machine grows
 anything worth optimizing, because it is the number that decides whether
 this record or its fallback is the design.
 
+*Measured on 2026-08-21, and this record stands.* Two cores of a Ryzen 5
+5600G held ten thousand idle connections and answered 1800064 mixed
+statements at a thousand a second for thirty minutes, none of them failed,
+with descriptors and resident memory flat throughout. Latency was 123
+microseconds mean and 7.6 milliseconds worst. The fallback in ADR-022 stays
+superseded, and it stays superseded for a reason that is now a number
+rather than an argument. The run is written down in docs/ACCEPTANCE.md
+with the machine attached.
+
 ## ADR-024: Writes queue behind one writer, with two deadlines
 
 ADR-003 gives the database one writer and ADR-021 makes an open transaction

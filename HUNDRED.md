@@ -172,11 +172,17 @@ time. Whether they should run in parallel is an open question that needs a
 machine with more than one core to answer, and the answer has to survive
 the fact that garbage collection wants unique access.
 
-The acceptance run behind phase 5 -- ten thousand idle connections and a
-thousand mixed queries per second, on two dedicated cores for half an hour
--- has not been done. Neither has killing the server mid-write and checking
-that every write a client was told had succeeded is still there. That last
-one is the interesting one: it is the durability promise crossing the
-protocol boundary, and it is the next thing to build.
+The acceptance run behind phase 5 has been done, one commit after this
+file was written: ten thousand idle connections and a thousand mixed
+statements a second on two cores for half an hour, 1800064 of them, none
+failed, descriptors and resident memory flat throughout. That run was never
+a box to tick. ADR-023 made it the decision procedure for the whole server
+design, so a red one would have meant rewriting the design rather than
+fixing a bug.
+
+What has not been done is killing the server mid-write and checking that
+every write a client was told had succeeded is still there. That is the
+interesting one: it is the durability promise crossing the protocol
+boundary, and it is the next thing to build.
 
 Here is to the next hundred. :3

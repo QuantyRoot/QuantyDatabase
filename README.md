@@ -239,18 +239,34 @@ The acceptance runs behind phase 4, each an hour on one core:
 | SQLite reader | 1831872 damaged files read, 12 billion cells, no panic |
 | chinook import | 15607 rows, every value compared against the source |
 
-Speed, on one development core with the client on the same core, which
-makes these a floor and not a result:
+The phase 5 acceptance run, on two cores of a Ryzen 5 5600G with the
+client pinned to other cores and ten thousand idle connections open the
+whole time:
+
+| | |
+|---|---|
+| Duration | 30 minutes |
+| Statements | 1800064 answered, **0 failed** |
+| Rate | 1000/s, nine reads per write, each write fsynced |
+| Latency | 123 us mean, 7.6 ms worst |
+| Idle connections | 10000 held, 0 refused, 10000 still open at the end |
+| Descriptors, memory | flat throughout |
+
+That run is the criterion for the whole server design and not a box to
+tick: [ADR-023](docs/DECISIONS.md) says a red one means the design was
+wrong and gets rewritten, so it is worth knowing it is green.
+
+Smaller numbers, on one development core with the client competing for it,
+so a floor rather than a result:
 
 | | |
 |---|---|
 | Reads over the network | 20000 QPS, 0 errors, 45 us mean |
-| Writes over the network | 9357 statements/s, every one committed and fsynced |
+| Writes over the network | 9357 statements/s, all committed, all fsynced |
 | Commit, in process | 292 us alone, 22 us when 512 share one |
 
 The last row is why group commit exists, and the reasoning from measurement
-to decision is [ADR-028](docs/DECISIONS.md). Numbers from a real machine
-land when phase 5's acceptance run does; these describe a container.
+to decision is [ADR-028](docs/DECISIONS.md).
 
 Progress lives in [ROADMAP.md](docs/ROADMAP.md). Design notes live in
 [ARCHITECTURE.md](docs/ARCHITECTURE.md) and [DECISIONS.md](docs/DECISIONS.md)
