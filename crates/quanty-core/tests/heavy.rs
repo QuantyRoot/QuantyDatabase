@@ -225,19 +225,27 @@ fn a_gigabyte_goes_in_and_out_without_being_held() {
     );
 
     // Constant memory is the criterion: what is resident must not track
-    // the size of the asset. Measured at 16 MiB writing and 17 reading,
-    // against a gigabyte of payload. Proved to catch: raising
-    // CHUNKS_PER_COMMIT to 400 takes both peaks to about 417 MiB.
+    // the size of the asset. Proved to catch: raising CHUNKS_PER_COMMIT
+    // to 400 takes both peaks to about 417 MiB, and committing once at
+    // the end would take them past a gigabyte.
     //
-    // The read peak inherits whatever the write left resident, since an
-    // allocator does not hand pages back eagerly, so it is an upper bound
-    // on the read rather than a measurement of it alone.
+    // The headroom is deliberate and was learned the hard way. Resident
+    // memory includes what the allocator keeps rather than returns, which
+    // depends on the machine: the same run measures 16 MiB on one core
+    // and 65 on the four core runner. A bound pinned to whichever machine
+    // happened to run it first is a bound about that machine. What this
+    // has to catch is memory that tracks the payload, and an order of
+    // magnitude of room still catches that.
+    //
+    // The read peak inherits whatever the write left resident, for the
+    // same reason, so it is an upper bound on the read rather than a
+    // measurement of it alone.
     assert!(
-        write_peak < 64,
+        write_peak < 256,
         "writing held {write_peak} MiB, which grows with the blob"
     );
     assert!(
-        read_peak < 64,
+        read_peak < 256,
         "reading held {read_peak} MiB, which grows with the blob"
     );
 }
