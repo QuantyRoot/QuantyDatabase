@@ -26,6 +26,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::sync::RwLock;
 
+use crate::blob::{self, ChunkHash};
 use crate::btree::{self, Scan};
 use crate::commit::{self, CommitInfo};
 use crate::error::{Error, Result};
@@ -795,6 +796,77 @@ impl<S: Storage> WriteTx<'_, S> {
 
     pub fn catalog_get(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
         btree::get(&self.batch, self.catalog_root, key)
+    }
+
+    /// Store a chunk under its own hash, or leave the one already there.
+    ///
+    /// A repeat costs a lookup and writes nothing, which is the dedup in
+    /// ADR-033. The count starts at zero: storing a chunk is not yet a
+    /// reason to keep it, naming it from a descriptor is.
+    pub fn put_chunk(&mut self, bytes: &[u8]) -> Result<ChunkHash> {
+        let hash = blob::hash_chunk(bytes);
+        let key = blob::chunk_key(&hash);
+        if btree::get(&self.batch, self.catalog_root, &key)?.is_none() {
+            self.catalog_root = btree::put(&mut self.batch, self.catalog_root, &key, bytes)?;
+            let refs = blob::encode_refs(0);
+            let refs_key = blob::refs_key(&hash);
+            self.catalog_root = btree::put(&mut self.batch, self.catalog_root, &refs_key, &refs)?;
+        }
+        Ok(hash)
+    }
+
+    /// The bytes of a chunk, without its count.
+    pub fn get_chunk(&self, hash: &ChunkHash) -> Result<Option<Vec<u8>>> {
+        btree::get(&self.batch, self.catalog_root, &blob::chunk_key(hash))
+    }
+
+    /// How many descriptors name this chunk.
+    pub fn chunk_refs(&self, hash: &ChunkHash) -> Result<Option<u64>> {
+        match btree::get(&self.batch, self.catalog_root, &blob::refs_key(hash))? {
+            Some(stored) => Ok(Some(blob::decode_refs(&stored)?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Say that one more descriptor names this chunk.
+    pub fn retain_chunk(&mut self, hash: &ChunkHash) -> Result<()> {
+        self.change_refs(hash, 1).map(|_| ())
+    }
+
+    /// Say that one fewer does, deleting the chunk when none are left.
+    ///
+    /// Returns whether the chunk is gone.
+    pub fn release_chunk(&mut self, hash: &ChunkHash) -> Result<bool> {
+        self.change_refs(hash, -1)
+    }
+
+    /// Move a chunk's count, deleting it at zero. Errors rather than
+    /// wrapping if a release would take it below zero, because a count
+    /// that went negative means a descriptor was dropped twice and
+    /// carrying on would lose data that something still points at.
+    fn change_refs(&mut self, hash: &ChunkHash, delta: i64) -> Result<bool> {
+        let refs_key = blob::refs_key(hash);
+        let stored = btree::get(&self.batch, self.catalog_root, &refs_key)?
+            .ok_or_else(|| Error::corrupted(None, "no such blob chunk"))?;
+        let next = match blob::decode_refs(&stored)?.checked_add_signed(delta) {
+            Some(n) => n,
+            None => {
+                return Err(Error::corrupted(
+                    None,
+                    "blob chunk released more often than it was retained",
+                ))
+            }
+        };
+        if next == 0 && delta < 0 {
+            for key in [refs_key, blob::chunk_key(hash)] {
+                let (root, _) = btree::remove(&mut self.batch, self.catalog_root, &key)?;
+                self.catalog_root = root;
+            }
+            return Ok(true);
+        }
+        let updated = blob::encode_refs(next);
+        self.catalog_root = btree::put(&mut self.batch, self.catalog_root, &refs_key, &updated)?;
+        Ok(false)
     }
 
     pub fn catalog_scan(

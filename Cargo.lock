@@ -15,6 +15,9 @@ dependencies = [
 [[package]]
 name = "quanty-auth"
 version = "0.3.0"
+dependencies = [
+ "quanty-core",
+]
 
 [[package]]
 name = "quanty-bench"

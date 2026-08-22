@@ -1175,3 +1175,85 @@ branch nobody chose. The flag names itself in the error so that someone
 who read the old README learns why rather than learning that it is
 unknown. Doing it properly means a per-session branch in the engine,
 which is a real feature and belongs to whoever needs it.
+
+## ADR-033: Blobs are content addressed chunks in the catalog tree
+
+Phase 6 asks for three things: a gigabyte in and out at constant memory,
+the same file twice costing space once, and a blob collector that leaves
+nothing dangling. Reading the pager first changed what the first one
+means.
+
+**A write batch holds every dirty page in memory until it commits.**
+`WriteBatch::dirty` is a `BTreeMap<PageId, Box<[u8]>>`, so a gigabyte
+written inside one transaction is a gigabyte of resident memory, and no
+API shape hides that. **A blob write is therefore many commits, not one.**
+Chunks go in first, in commits of their own, and the row that points at
+them lands last. A kill anywhere before that last commit leaves chunks
+that nothing references, which is garbage rather than corruption, and is
+exactly what the collector below is for. The alternative, spilling a
+batch to disk, is a change to the commit protocol and would be paid for by
+every write in the database to help the rarest one.
+
+**Chunks live in the catalog tree under a reserved prefix.** Catalog keys
+are already typed tuples, `("table", name)` and `("seq")`, so `("blob",
+hash)` sits beside them and needs no new root and no format bump. Two
+things fall out for free: chunk payloads larger than a page take the
+overflow chain the B-tree already has, and chunks are versioned per commit
+like everything else, so a snapshot of an old commit sees the chunks that
+commit could see. `PageType::Blob` stays the unused slot it has always
+been.
+
+**Reachability is not enough, so chunks are counted.** The existing
+collector frees pages nothing points at, and a chunk nobody references is
+still an entry in a live tree, so it would sit there forever. Each chunk
+carries a reference count: writing one that is already there stores
+nothing, the descriptor commit raises the count, and dropping a descriptor
+lowers it and deletes the entry at zero. Branches need no special case:
+each lineage has its own catalog tree, so it has its own counts.
+
+**Collecting what a dead run left behind is unresolved, and the obvious
+answer is wrong.** A chunk with a count of zero looks collectible, and
+sweeping those was the first plan written here. It races: a blob write
+spans commits by the paragraph above, so between the commit that stores a
+chunk and the commit that names it the count is legitimately zero, and a
+sweep in that window deletes data a descriptor is about to point at. The
+alternatives each cost something real. A reachability pass over every
+descriptor is exact, is O(rows), and needs the schema, so it does not
+belong in the storage layer. An uploader that holds its own reference
+moves the problem to whoever dies holding one. The counts land now
+because they are needed whichever way that goes and are testable on
+their own; the sweep does not, and orphaned chunks occupy space until
+somebody decides which it is.
+
+**SHA-256, not BLAKE3.** ARCHITECTURE named BLAKE3 back when the
+dependency question was still open. There is a hand written SHA-256 in
+this repository already, checked against the published vectors, and a
+second hash function is a second thing to get right. It moves from
+`quanty-auth` into `quanty-core`, which is where a trust anchor belongs,
+and auth depends on core for it rather than keeping a copy: two
+implementations of a hash that drift are two different databases.
+
+**Fixed chunks of 1 MiB, not content defined.** The acceptance criterion
+is that the same file twice costs space once, and fixed chunks give that.
+Rolling hash chunking would also dedup a file with a byte inserted at the
+front, which fixed chunks do not, and that is the price. It is a change
+of one function later, not of the format, because the descriptor lists
+hashes either way.
+
+**The count lives at its own key, which the acceptance test taught.** The
+first layout here put the count in front of the bytes, on the theory that
+a small prefix is cheap to change. A B-tree replaces a value whole, so
+every change to a count copied the payload's entire overflow chain:
+storing a 200 kB chunk a second time cost 52 pages, which is the chunk
+again, and the dedup criterion failed on its first run. The bytes now sit
+at `("blob", hash)`, written once and never rewritten, and the count at
+`("blobrefs", hash)`, eight bytes on its own. The second copy costs two
+pages.
+
+**The price.** SHA-256 is slower per byte than BLAKE3 and is on the write
+path of every chunk, so a blob write is expected to be hash bound rather
+than disk bound, and nobody has measured it yet. A blob write is not
+atomic with the row that names it, so a torn write leaves collectible
+chunks and a reader never sees a half blob. Shifted content does not
+dedup. And the reference count is a write, so storing a chunk that
+already exists still costs a commit.

@@ -1,6 +1,6 @@
 //! The published vectors. A hash is only worth what these say it is.
 
-use quanty_auth::{from_hex, sha256, to_hex};
+use quanty_core::{from_hex, sha256, to_hex};
 
 fn digest(input: &[u8]) -> String {
     to_hex(&sha256(input))

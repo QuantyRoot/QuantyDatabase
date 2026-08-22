@@ -147,10 +147,13 @@ once, property test it hard (encode then compare == compare originals).
 
 Values above a threshold (default 64 KiB) leave the row and become blobs:
 
-- chunked (default 1 MiB chunks), each chunk hashed with BLAKE3
+- chunked (default 1 MiB chunks), each chunk hashed with SHA-256; ADR-033
+  says why not BLAKE3
 - content addressed: identical chunks are stored once (free dedup)
 - rows store a blob descriptor (total size, chunk hash list)
-- chunks live in dedicated blob pages in the same file for v1
+- chunks are catalog entries under `("blob", hash)`, so they are versioned
+  per commit and their payloads take the overflow chain the B-tree already
+  has; the reference count sits at a key of its own
 - S3/bucket tiering moves cold chunks out later; the descriptor does not
   change, only the chunk location table does
 

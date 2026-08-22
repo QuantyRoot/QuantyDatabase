@@ -7,7 +7,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use crate::sha256::{from_hex, sha256, to_hex};
+use quanty_core::{from_hex, sha256, to_hex};
 
 /// Why a token file could not be used.
 #[derive(Debug)]

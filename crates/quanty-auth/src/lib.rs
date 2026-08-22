@@ -8,8 +8,7 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
-mod sha256;
 mod tokens;
 
-pub use sha256::{from_hex, sha256, to_hex};
+pub use quanty_core::{from_hex, sha256, to_hex};
 pub use tokens::{mint, Tokens, TokensError};

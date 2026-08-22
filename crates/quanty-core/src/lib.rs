@@ -14,6 +14,7 @@
 //! - node / btree: the copy-on-write B-tree with overflow chains
 //! - commit / db: commit records, transactions, snapshots of any commit
 
+mod blob;
 mod btree;
 mod cache;
 mod commit;
@@ -27,9 +28,11 @@ mod node;
 pub mod page;
 mod pager;
 pub mod refs;
+mod sha256;
 mod storage;
 mod sync;
 
+pub use blob::{hash_chunk, BlobRef, ChunkHash, CHUNK_SIZE};
 pub use btree::{max_key_len, ReadPages, Scan};
 pub use commit::CommitInfo;
 pub use db::{Db, DbStats, GcReport, Snapshot, SuspendedTx, WriteTx};
@@ -41,4 +44,5 @@ pub use page::{
 };
 pub use pager::{Pager, PagerOptions, WriteBatch};
 pub use refs::{BranchRef, DEFAULT_BRANCH};
+pub use sha256::{from_hex, sha256, to_hex};
 pub use storage::{FileStorage, MemStorage, Storage};
