@@ -21,12 +21,13 @@
 //! ```
 
 use std::collections::HashSet;
+use std::io::{Read, Write};
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::sync::RwLock;
 
-use crate::blob::{self, ChunkHash};
+use crate::blob::{self, BlobRef, ChunkHash};
 use crate::btree::{self, Scan};
 use crate::commit::{self, CommitInfo};
 use crate::error::{Error, Result};
@@ -82,6 +83,22 @@ impl Db<MemStorage> {
     pub fn in_memory() -> Result<Self> {
         Db::create(MemStorage::new(), PagerOptions::default())
     }
+}
+
+/// Read until `buf` is full or the source is done.
+///
+/// A short read is not the end of anything; treating one as the end would
+/// cut a chunk early and give it an address that depends on how the bytes
+/// happened to arrive rather than on what they are.
+fn fill<R: Read>(source: &mut R, buf: &mut [u8]) -> Result<usize> {
+    let mut filled = 0;
+    while filled < buf.len() {
+        match source.read(&mut buf[filled..])? {
+            0 => break,
+            n => filled += n,
+        }
+    }
+    Ok(filled)
 }
 
 impl<S: Storage> Db<S> {
@@ -297,6 +314,68 @@ impl<S: Storage> Db<S> {
             branch: tx.branch,
             parent: tx.parent,
         })
+    }
+
+    /// Store a blob from `source`, returning the descriptor a row keeps.
+    ///
+    /// This commits every `CHUNKS_PER_COMMIT` chunks rather than once at
+    /// the end, because a write batch holds every dirty page in memory
+    /// and a gigabyte in one transaction is a gigabyte resident. The
+    /// chunks land with a count of zero: whoever stores the descriptor
+    /// retains them, and a run that dies before that leaves chunks
+    /// nothing points at (ADR-033).
+    pub fn write_blob<R: Read>(&self, mut source: R) -> Result<BlobRef> {
+        let mut buf = vec![0u8; blob::CHUNK_SIZE];
+        let mut chunks = Vec::new();
+        let mut len: u64 = 0;
+        let mut tx = self.begin();
+        let mut pending = 0usize;
+
+        loop {
+            let filled = fill(&mut source, &mut buf)?;
+            if filled == 0 {
+                break;
+            }
+            chunks.push(tx.put_chunk(&buf[..filled])?);
+            len += filled as u64;
+            pending += 1;
+            if pending == blob::CHUNKS_PER_COMMIT {
+                tx.commit()?;
+                tx = self.begin();
+                pending = 0;
+            }
+            if filled < buf.len() {
+                break;
+            }
+        }
+
+        if pending > 0 {
+            tx.commit()?;
+        }
+        Ok(BlobRef { len, chunks })
+    }
+
+    /// Write a blob out one chunk at a time.
+    ///
+    /// Nothing here holds more than one chunk, so the memory this needs
+    /// does not depend on how big the blob is.
+    pub fn read_blob<W: Write>(&self, blob: &BlobRef, mut out: W) -> Result<u64> {
+        let snapshot = self.snapshot();
+        let mut written = 0u64;
+        for hash in &blob.chunks {
+            let bytes = snapshot
+                .get_chunk(hash)?
+                .ok_or_else(|| Error::corrupted(None, "blob names a chunk that is not here"))?;
+            out.write_all(&bytes)?;
+            written += bytes.len() as u64;
+        }
+        if written != blob.len {
+            return Err(Error::corrupted(
+                None,
+                "blob chunks do not add up to the length it claims",
+            ));
+        }
+        Ok(written)
     }
 
     pub fn snapshot(&self) -> Snapshot<'_, S> {
@@ -646,6 +725,11 @@ pub struct Snapshot<'db, S: Storage> {
 }
 
 impl<S: Storage> Snapshot<'_, S> {
+    /// The bytes of one chunk as this snapshot sees them.
+    pub fn get_chunk(&self, hash: &ChunkHash) -> Result<Option<Vec<u8>>> {
+        self.catalog_get(&blob::chunk_key(hash))
+    }
+
     pub fn commit_id(&self) -> u64 {
         self.commit_id
     }

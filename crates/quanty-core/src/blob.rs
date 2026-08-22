@@ -17,6 +17,13 @@ use crate::sha256::sha256;
 /// identical files and not shifted ones (ADR-033).
 pub const CHUNK_SIZE: usize = 1 << 20;
 
+/// Chunks per commit while streaming a blob in.
+///
+/// A write batch holds every dirty page until it commits, so this is the
+/// knob that keeps a gigabyte from becoming a gigabyte of memory. Higher
+/// means fewer fsyncs and more resident bytes (ADR-033).
+pub const CHUNKS_PER_COMMIT: usize = 8;
+
 /// The address of a chunk: the SHA-256 of its bytes.
 pub type ChunkHash = [u8; 32];
 

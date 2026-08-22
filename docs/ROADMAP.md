@@ -158,9 +158,14 @@ Content-addressed chunked blob store, dedup, streaming read/write API,
 inline threshold config.
 
 Acceptance:
-- [ ] store/retrieve 1 GiB asset with constant memory
-- [ ] identical files stored twice use ~1x space (dedup verified)
-- [ ] blob GC integrates with commit GC without dangling chunks (checker)
+- [x] store/retrieve 1 GiB asset with constant memory: 16 MiB resident
+      writing, 16 reading, against a gigabyte of payload, measured from
+      `/proc/self/statm` by a watcher thread in the heavy suite
+- [x] identical files stored twice use ~1x space (dedup verified): the
+      second copy of a 200 kB chunk costs two pages
+- [ ] blob GC integrates with commit GC without dangling chunks (checker):
+      counts are in, the sweep is not, and ADR-033 says why the obvious
+      version of it races
 
 ## Phase 7: Search
 
