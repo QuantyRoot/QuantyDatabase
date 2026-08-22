@@ -87,9 +87,7 @@ bolted on:
 
 ## Quick look
 
-QQL and the Rust block are built. The CLI block after them is the target
-API: branching from the shell goes through `quanty run` today, so consider
-that last part a preview and not documentation.
+Everything below is built. Run `quanty --help` for the rest.
 
 Schema and queries in QQL, Quanty's native language:
 
@@ -105,7 +103,7 @@ set users where id = 1 { score += 5 }
 get users as of 42 where name = "elchi"
 ```
 
-Embedded in Rust. This part is built, and ADR-030 fixes the surface:
+Embedded in Rust, with the surface fixed by ADR-030:
 
 ```rust
 use quanty::Database;
@@ -127,9 +125,20 @@ Branching from the CLI:
 
 ```sh
 quanty branch app.qdb risky-migration
-quanty exec app.qdb --branch risky-migration "..."
-quanty merge app.qdb risky-migration     # or just delete the branch
+quanty switch app.qdb risky-migration
+quanty run app.qdb "set users where id = 1 { score += 5 }"
+
+quanty branches app.qdb          # * marks the one you are on
+quanty log app.qdb
+
+quanty switch app.qdb main
+quanty merge app.qdb risky-migration
+quanty run app.qdb "drop branch risky-migration"
 ```
+
+There is no `--branch` flag. A write always lands on the current branch,
+so running elsewhere would mean switching there and back, and ADR-032 has
+the rest of that argument.
 
 ---
 

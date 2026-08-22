@@ -20,6 +20,7 @@ use std::process::ExitCode;
 use quanty_core::{Db, FileStorage};
 use quanty_exec::{Output, Session};
 use quanty_import::{execute, plan, Options};
+use quanty_ql::ast::Statement;
 
 const USAGE: &str = "\
 quanty, a database that remembers
@@ -32,6 +33,11 @@ usage:
   quanty serve <database.qdb> [--listen <addr>] [--workers <n>]
                               [--tokens <file>]
   quanty tables <database.qdb>
+  quanty branch <database.qdb> <name> [--at <commit>]
+  quanty branches <database.qdb>
+  quanty switch <database.qdb> <branch>
+  quanty merge <database.qdb> <branch>
+  quanty log <database.qdb>
   quanty token <label>
   quanty connect <addr> [statement] [--token <t>] [--sql]
   quanty about
@@ -43,12 +49,20 @@ usage:
   run      execute one statement and print the result
   shell    read statements from stdin, one per line
   tables   list the tables in a database
+  branch   fork the current branch under a new name
+             --at       fork from this commit instead of the head
+  branches list them, marking the one you are on
+  switch   move to another branch
+  merge    fast forward the current branch onto another one
+  log      print the commits of the current branch
   token    mint one and print it, with the line that accepts it
   connect  talk to a running server; with a statement it runs that one,
              without it reads statements from stdin, as shell does
   about    what this is, who made it, and what it does not depend on
 
   --sql    read the statement in sql rather than qql
+
+  deleting a branch is `quanty run <db> \"drop branch <name>\"`
 
 connect  --token    the token to show, if the server requires one
 
@@ -115,10 +129,12 @@ fn emit(text: &str) -> Result<(), Failure> {
 }
 
 /// Flags pulled out of the arguments, leaving the positional ones behind.
+#[derive(Default)]
 struct Flags {
     dry_run: bool,
     strict: bool,
     sql: bool,
+    at: Option<u64>,
     listen: Option<String>,
     workers: Option<usize>,
     tokens: Option<String>,
@@ -128,16 +144,7 @@ struct Flags {
 
 fn split_flags(args: &[String]) -> Result<(Vec<&str>, Flags), Failure> {
     let mut positional = Vec::new();
-    let mut flags = Flags {
-        dry_run: false,
-        strict: false,
-        sql: false,
-        listen: None,
-        workers: None,
-        tokens: None,
-        token: None,
-        elchi: false,
-    };
+    let mut flags = Flags::default();
     let mut expect: Option<&str> = None;
     for arg in args {
         if let Some(name) = expect.take() {
@@ -154,18 +161,35 @@ fn split_flags(args: &[String]) -> Result<(Vec<&str>, Flags), Failure> {
                     }
                     flags.workers = Some(n);
                 }
+                "--at" => {
+                    flags.at = Some(
+                        arg.parse::<u64>()
+                            .map_err(|_| usage(format!("--at wants a commit id, got {arg}")))?,
+                    );
+                }
                 _ => unreachable!(),
             }
             continue;
         }
         match arg.as_str() {
-            "--listen" | "--workers" | "--tokens" | "--token" => {
+            "--listen" | "--workers" | "--tokens" | "--token" | "--at" => {
                 expect = Some(match arg.as_str() {
                     "--listen" => "--listen",
                     "--tokens" => "--tokens",
                     "--token" => "--token",
+                    "--at" => "--at",
                     _ => "--workers",
                 })
+            }
+            // Named rather than left to fall into 'unknown option', because
+            // the README sketched it for years and ADR-032 says why not.
+            "--branch" => {
+                return Err(usage(
+                    "--branch does not exist: a write always lands on the current \
+                     branch, so running elsewhere means switching there and back, \
+                     which is three commits and a window where a kill leaves the \
+                     database on a branch nobody chose. Use switch instead.",
+                ))
             }
             "--elchi" => flags.elchi = true,
             "--dry-run" => flags.dry_run = true,
@@ -231,21 +255,44 @@ fn run(args: &[String]) -> Result<(), Failure> {
             _ => Err(usage("connect takes an address and an optional statement")),
         },
         "tables" => match rest {
-            [database] => run_statement(
-                Path::new(database),
-                "show tables",
-                &Flags {
-                    dry_run: false,
-                    strict: false,
-                    sql: false,
-                    listen: None,
-                    workers: None,
-                    tokens: None,
-                    token: None,
-                    elchi: false,
+            [database] => run_ours(database, &Statement::ShowTables),
+            _ => Err(usage("tables takes a database")),
+        },
+        "branch" => match rest {
+            [database, name] => run_ours(
+                database,
+                &Statement::Branch {
+                    name: (*name).to_string(),
+                    at: flags.at,
                 },
             ),
-            _ => Err(usage("tables takes a database")),
+            _ => Err(usage("branch takes a database and a name")),
+        },
+        "branches" => match rest {
+            [database] => run_ours(database, &Statement::ShowBranches),
+            _ => Err(usage("branches takes a database")),
+        },
+        "switch" => match rest {
+            [database, name] => run_ours(
+                database,
+                &Statement::Switch {
+                    name: (*name).to_string(),
+                },
+            ),
+            _ => Err(usage("switch takes a database and a branch")),
+        },
+        "merge" => match rest {
+            [database, name] => run_ours(
+                database,
+                &Statement::Merge {
+                    name: (*name).to_string(),
+                },
+            ),
+            _ => Err(usage("merge takes a database and a branch")),
+        },
+        "log" => match rest {
+            [database] => run_ours(database, &Statement::Log),
+            _ => Err(usage("log takes a database")),
         },
         "help" => Err(usage("")),
         other => Err(usage(format!("unknown command {other}"))),
@@ -342,6 +389,20 @@ fn open(database: &Path) -> Result<Session<FileStorage>, Failure> {
     }
     let db = Db::open_file(database).map_err(|e| failed(format!("{}: {e}", database.display())))?;
     Ok(Session::new(db))
+}
+
+/// Run a statement this tool built rather than one the user typed.
+///
+/// It goes in as an AST, so no name is ever glued into text and a bad one
+/// meets the engine's own message instead of the parser's. The user's
+/// flags deliberately do not apply: reading `branch x` as SQL could only
+/// ever be a mistake (ADR-032).
+fn run_ours(database: &str, statement: &Statement) -> Result<(), Failure> {
+    let mut session = open(Path::new(database))?;
+    let output = session
+        .execute_ast(statement)
+        .map_err(|e| failed(e.to_string()))?;
+    print_output(&output)
 }
 
 fn run_statement(database: &Path, statement: &str, flags: &Flags) -> Result<(), Failure> {

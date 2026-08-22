@@ -280,3 +280,170 @@ fn a_missing_database_is_not_created_by_accident() {
     assert!(stderr(&output).contains("does not exist"));
     assert!(!typo.exists(), "a database was created by a failed read");
 }
+
+// ---------------------------------------------------------------------------
+// branch verbs (ADR-032)
+// ---------------------------------------------------------------------------
+
+/// A database with one table and one row, and the path to it.
+fn seeded(dir: &TestDir) -> String {
+    let path = dir
+        .path()
+        .join("branches.qdb")
+        .to_str()
+        .unwrap()
+        .to_string();
+    assert!(quanty(&["create", &path]).status.success());
+    assert!(
+        quanty(&["run", &path, "table users { id: int @key, name: text }"])
+            .status
+            .success()
+    );
+    assert!(
+        quanty(&["run", &path, "put users { id: 1, name: \"ada\" }"])
+            .status
+            .success()
+    );
+    path
+}
+
+#[test]
+fn a_branch_can_be_made_switched_to_and_merged_back() {
+    let dir = TestDir::new();
+    let path = seeded(&dir);
+
+    assert!(quanty(&["branch", &path, "risky"]).status.success());
+
+    let listed = quanty(&["branches", &path]);
+    let text = stdout(&listed);
+    assert!(text.contains("* main"), "main is not marked: {text}");
+    assert!(text.contains("risky"), "the branch is missing: {text}");
+
+    assert!(quanty(&["switch", &path, "risky"]).status.success());
+    assert!(
+        quanty(&["run", &path, "put users { id: 2, name: \"grace\" }"])
+            .status
+            .success()
+    );
+
+    assert!(quanty(&["switch", &path, "main"]).status.success());
+    // main has not seen the write yet
+    assert_eq!(
+        stdout(&quanty(&["run", &path, "get users { id }"])).trim(),
+        "1"
+    );
+
+    let merged = quanty(&["merge", &path, "risky"]);
+    assert!(merged.status.success(), "{}", stderr(&merged));
+    let rows = stdout(&quanty(&["run", &path, "get users { id }"]));
+    assert_eq!(rows.trim(), "1\n2", "the merge did not bring the row over");
+}
+
+#[test]
+fn log_prints_one_line_per_commit_of_this_branch() {
+    let dir = TestDir::new();
+    let path = seeded(&dir);
+
+    let before = stdout(&quanty(&["log", &path])).lines().count();
+    assert!(
+        quanty(&["run", &path, "put users { id: 2, name: \"grace\" }"])
+            .status
+            .success()
+    );
+    let after = stdout(&quanty(&["log", &path]));
+    assert_eq!(
+        after.lines().count(),
+        before + 1,
+        "log did not grow: {after}"
+    );
+    assert!(after.contains("commit "), "not commits: {after}");
+}
+
+#[test]
+fn branch_at_forks_from_an_older_commit() {
+    let dir = TestDir::new();
+    let path = seeded(&dir);
+
+    assert!(quanty(&["branch", &path, "early", "--at", "1"])
+        .status
+        .success());
+    let listed = stdout(&quanty(&["branches", &path]));
+    assert!(listed.contains("early @1"), "not forked at 1: {listed}");
+
+    let bad = quanty(&["branch", &path, "nope", "--at", "zwei"]);
+    assert!(!bad.status.success());
+    assert!(stderr(&bad).contains("--at wants a commit id"));
+}
+
+#[test]
+fn a_branch_name_meets_the_engines_rule_not_the_parsers() {
+    // The whole point of building the statement instead of printing one:
+    // the name never becomes text, so a bad one is refused by the thing
+    // that owns the rule. Proved to catch: passing this through `run` as
+    // text answers with a parse error about a stray token instead.
+    let dir = TestDir::new();
+    let path = seeded(&dir);
+
+    let spaced = quanty(&["branch", &path, "a b"]);
+    assert!(!spaced.status.success());
+    assert!(
+        stderr(&spaced).contains("branch names are 1 to 64"),
+        "not the engine's message: {}",
+        stderr(&spaced)
+    );
+
+    let hostile = quanty(&["branch", &path, "x\"; drop table users"]);
+    assert!(!hostile.status.success());
+    assert_eq!(
+        stdout(&quanty(&["tables", &path])).trim(),
+        "users",
+        "the table went away"
+    );
+}
+
+#[test]
+fn the_sql_flag_does_not_reach_a_statement_the_tool_wrote() {
+    // Structurally true while the verb builds an AST, so the thing this
+    // guards is the refactor back to text. Proved to catch: routing this
+    // through run_statement with the caller's flags reads `show branches`
+    // as SQL and fails.
+    let dir = TestDir::new();
+    let path = seeded(&dir);
+
+    let listed = quanty(&["branches", &path, "--sql"]);
+    assert!(listed.status.success(), "{}", stderr(&listed));
+    assert!(stdout(&listed).contains("main"));
+}
+
+#[test]
+fn branch_flag_says_why_it_does_not_exist() {
+    let dir = TestDir::new();
+    let path = seeded(&dir);
+
+    let tried = quanty(&["run", &path, "get users { id }", "--branch", "risky"]);
+    assert!(!tried.status.success());
+    let message = stderr(&tried);
+    assert!(
+        message.contains("--branch does not exist"),
+        "not named: {message}"
+    );
+    assert!(message.contains("switch"), "no way out offered: {message}");
+}
+
+#[test]
+fn the_branch_verbs_want_their_arguments() {
+    let dir = TestDir::new();
+    let path = seeded(&dir);
+
+    for args in [
+        vec!["branch", path.as_str()],
+        vec!["switch", path.as_str()],
+        vec!["merge", path.as_str()],
+        vec!["branches", path.as_str(), "extra"],
+        vec!["log", path.as_str(), "extra"],
+    ] {
+        let out = quanty(&args);
+        assert!(!out.status.success(), "{args:?} should not succeed");
+        assert!(stderr(&out).contains("usage:"), "{args:?}");
+    }
+}

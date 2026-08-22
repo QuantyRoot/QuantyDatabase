@@ -15,6 +15,7 @@ path = "src/main.rs"
 quanty-core = { path = "../quanty-core" }
 quanty-exec = { path = "../quanty-exec" }
 quanty-import = { path = "../quanty-import" }
+quanty-ql = { path = "../quanty-ql" }
 quanty-sqlite = { path = "../quanty-sqlite" }
 
 [target.'cfg(target_os = "linux")'.dependencies]

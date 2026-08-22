@@ -445,5 +445,11 @@ Live query subscriptions, Postgres wire protocol, vector index, real merge
 with conflict resolution, multi-writer MVCC, WASM build, TS codegen,
 time-series helpers, queue primitives, dashboard.
 
+A per-session branch belongs here too. A write always lands on the branch
+the database is switched to, so running a statement somewhere else means
+switching there and back, which ADR-032 refused to hide behind a flag.
+Making it real means the branch becomes part of a session rather than of
+the file, and that touches the server as much as the tool.
+
 These are on the vision list, not the roadmap. They get scheduled when the
 phases above are green, one at a time.

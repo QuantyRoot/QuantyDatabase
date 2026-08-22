@@ -1137,3 +1137,41 @@ for it yet. `to_values` clones each field, so every field has to be
 the caller keeping it. And the snake case conversion splits on every
 capital, so an acronym comes out as `h_t_t_p_header`, which is what
 `#[quanty(table = "...")]` is for.
+
+## ADR-032: Branch verbs on the tool, and no `--branch` on `run`
+
+Phase 3 finished branching two phases ago, and it has been reachable ever
+since as `quanty run db.qdb "branch x"`. README drew `quanty branch` and
+`quanty merge` from the start and no phase ever built them, which is the
+same kind of gap ADR-030 closed on the library side, one shell wide.
+
+**The verbs build a statement, they do not print one.** `quanty tables`
+set the precedent by passing the text `show tables` to the parser, and
+five more of those would be five more places where a name gets glued into
+a string. `branch`, `branches`, `switch`, `merge` and `log` construct the
+AST and call `execute_ast`, the same road the derive takes for the same
+reason (ADR-031). Nothing is quoted, and a bad branch name meets
+`refs::validate_name` and its actual message rather than a parse error
+about an unexpected token.
+
+**`--sql` does not reach them.** These statements belong to the tool, not
+to the user, so the flags the user typed are not the flags they run under.
+Reading `branch x` as SQL could only ever be a mistake.
+
+**Deleting a branch stays in `run`.** Every verb this tool has is one
+word, and `drop branch` is two. Inventing `drop-branch`, or overloading
+`drop` so that it means a branch here and a table in QQL, buys one saved
+word on a rare and destructive operation. `quanty run db.qdb "drop branch
+x"` says what it does.
+
+**`--branch` is refused rather than faked.** README sketched running a
+statement against a branch without moving to it. There is no engine
+support for that: a write always lands on the current branch, and
+`switch_branch` writes the refs tree, so the flag would have to switch,
+run, and switch back. That is three commits where the user asked for one,
+it is visible to every other reader and to a server holding the same
+file, and a kill between the first and the third leaves the database on a
+branch nobody chose. The flag names itself in the error so that someone
+who read the old README learns why rather than learning that it is
+unknown. Doing it properly means a per-session branch in the engine,
+which is a real feature and belongs to whoever needs it.
