@@ -283,16 +283,29 @@ type and no meta field, and the compatibility rule above is about those.
 A reader that predates them sees catalog entries it does not interpret
 and is unharmed: table scans are bounded by the `("table", ...)` prefix,
 and the collector works on page reachability rather than on what a key
-means. A `blob` **column type** would be a different matter, because it
-adds a tag to the list below, and a reader must reject what it cannot
-read: that one bumps the version when it lands.
+means. The `asset` **column type** is a different matter, and the version it
+bumps is the catalog's rather than the file's. A table definition carries
+its own version byte, so a definition that uses a tag an older reader
+does not know can be rejected on its own while every other table in the
+file stays readable. Bumping the file version instead would reject a file
+of nothing but int columns for having been touched by newer code, which
+is a heavy answer to a purely additive change. The rule is that a
+definition is written at the lowest catalog version that can express it,
+so a table without an asset column is still readable by everything that
+came before.
 
-Table definitions serialize as: version byte (1), table id u64, name
+Table definitions serialize as: version byte, table id u64, name
 (u16 length + UTF-8), column count u16, then per column: name, type tag
 (0 int, 1 float, 2 text, 3 bytes, 4 bool), flag byte (bit 0 key, bit 1
 nullable), index id u64 (0 = none), default marker byte (0 = none,
 1 = tuple-encoded value with u32 length prefix). All integers little
 endian.
+
+The version byte is 1 for every definition that predates the `asset`
+column type. A definition is written at the lowest version that can
+express it, so a table gains version 2 by using a tag that version 1 has
+no name for, and a reader that only knows 1 rejects that one definition
+rather than the file.
 
 ### Data tree
 

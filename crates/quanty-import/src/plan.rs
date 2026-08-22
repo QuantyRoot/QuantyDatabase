@@ -201,14 +201,9 @@ impl ImportPlan {
     }
 }
 
+/// The name of a type, from the one place that knows them.
 pub fn type_name(ty: TypeName) -> &'static str {
-    match ty {
-        TypeName::Int => "int",
-        TypeName::Float => "float",
-        TypeName::Text => "text",
-        TypeName::Bytes => "bytes",
-        TypeName::Bool => "bool",
-    }
+    ty.as_str()
 }
 
 fn render(value: &Value) -> String {

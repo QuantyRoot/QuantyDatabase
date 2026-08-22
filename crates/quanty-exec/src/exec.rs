@@ -13,7 +13,7 @@
 //! and index probes are plain range scans.
 
 use quanty_core::{decode_key, encode_key, Db, GcReport, Storage, SuspendedTx, Value, WriteTx};
-use quanty_ql::ast::{AsOf, ColumnRef, Direction, Expr, Get, Statement};
+use quanty_ql::ast::{AsOf, ColumnRef, Direction, Expr, Get, Statement, TypeName};
 
 use crate::catalog::{self, Table};
 use crate::error::ExecError;
@@ -853,6 +853,26 @@ struct Run<'db, S: Storage> {
 }
 
 impl<S: Storage> Run<'_, S> {
+    /// Take or give back one reference per chunk a descriptor names.
+    ///
+    /// Repeats count: a file whose middle chunk equals its first names it
+    /// twice, and the two calls have to be symmetric or the count drifts.
+    fn move_asset_refs(&mut self, value: &Value, delta: i64) -> Result<(), ExecError> {
+        let bytes = match value {
+            Value::Bytes(b) => b,
+            _ => return Ok(()),
+        };
+        let blob = quanty_core::BlobRef::decode(bytes)?;
+        for hash in &blob.chunks {
+            if delta > 0 {
+                self.tx.retain_chunk(hash)?;
+            } else {
+                self.tx.release_chunk(hash)?;
+            }
+        }
+        Ok(())
+    }
+
     fn statement(&mut self, stmt: &Statement) -> Result<Output, ExecError> {
         match stmt {
             Statement::TableDef(def) => self.create_table(def),
@@ -945,6 +965,32 @@ impl<S: Storage> Run<'_, S> {
 
     fn drop_table(&mut self, name: &str) -> Result<Output, ExecError> {
         let table = self.load_table(name)?;
+
+        // delete_range wipes the prefix without looking at what is in it,
+        // so a table with asset columns has to give its chunks back first
+        // or they are held by rows that no longer exist.
+        let asset_columns: Vec<usize> = table
+            .columns
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| c.ty == TypeName::Asset)
+            .map(|(pos, _)| pos)
+            .collect();
+        if !asset_columns.is_empty() {
+            let rows = self.fetch(
+                &table,
+                &AccessPlan {
+                    access: Access::SeqScan,
+                    residual: None,
+                },
+            )?;
+            for (_, values) in &rows {
+                for &pos in &asset_columns {
+                    self.move_asset_refs(&values[pos], -1)?;
+                }
+            }
+        }
+
         self.delete_range(&table_prefix(table.id))?;
         for col in &table.columns {
             if let Some(index_id) = col.index_id {
@@ -1017,6 +1063,9 @@ impl<S: Storage> Run<'_, S> {
                 )));
             }
             for (pos, col) in table.columns.iter().enumerate() {
+                if col.ty == TypeName::Asset {
+                    self.move_asset_refs(&values[pos], 1)?;
+                }
                 if let Some(index_id) = col.index_id {
                     let entry = index_entry_key(index_id, &values[pos], &row_pk(&table, &values));
                     self.tx.put(&entry, &[])?;
@@ -1127,6 +1176,13 @@ impl<S: Storage> Run<'_, S> {
             self.tx.put(&key, &encode_key(&new))?;
             let pk = row_pk(&table, &old);
             for (pos, col) in table.columns.iter().enumerate() {
+                if col.ty == TypeName::Asset && old[pos] != new[pos] {
+                    // new first: if the two share chunks, releasing the old
+                    // one first could take a shared chunk to zero and drop
+                    // bytes the new descriptor still names.
+                    self.move_asset_refs(&new[pos], 1)?;
+                    self.move_asset_refs(&old[pos], -1)?;
+                }
                 if let Some(index_id) = col.index_id {
                     if !value_ops::values_equal(&old[pos], &new[pos]).unwrap_or(false)
                         || value_ops::type_of(&old[pos]) != value_ops::type_of(&new[pos])
@@ -1158,6 +1214,9 @@ impl<S: Storage> Run<'_, S> {
             self.tx.delete(&key)?;
             let pk = row_pk(&table, &values);
             for (pos, col) in table.columns.iter().enumerate() {
+                if col.ty == TypeName::Asset {
+                    self.move_asset_refs(&values[pos], -1)?;
+                }
                 if let Some(index_id) = col.index_id {
                     self.tx
                         .delete(&index_entry_key(index_id, &values[pos], &pk))?;

@@ -155,6 +155,10 @@ pub enum TypeName {
     Text,
     Bytes,
     Bool,
+    /// Bytes too large to sit in the row: the column holds a descriptor
+    /// and the payload lives in chunks (ADR-033, ADR-034). Called `asset`
+    /// rather than `blob` because SQL's `BLOB` already means `bytes`.
+    Asset,
 }
 
 impl TypeName {
@@ -165,6 +169,7 @@ impl TypeName {
             TypeName::Text => "text",
             TypeName::Bytes => "bytes",
             TypeName::Bool => "bool",
+            TypeName::Asset => "asset",
         }
     }
 }

@@ -165,6 +165,13 @@ Acceptance:
 - [x] identical files stored twice use ~1x space (dedup verified): the
       second copy of a 200 kB chunk costs two pages
 - [ ] blob GC integrates with commit GC without dangling chunks (checker):
+      rows now hold references. An `asset` column claims its chunks on
+      insert and gives them back on delete, on overwrite and when the
+      table is dropped, and `check_blobs` reports the store as sound
+      after each. What is left is the sweep for chunks a run that died
+      mid upload left behind, which ADR-033 explains is not the simple
+      thing it looks like.
+      Previously:
       `check_blobs` walks the store and reports sound, unclaimed and half
       present chunks, and a test builds a half present one by hand so the
       broken arm is actually reached. What it cannot yet do is reconcile

@@ -9,10 +9,11 @@ semantics in `crates/quanty-exec`; the golden tests under
 
 ```
 table users {
-  id:    int  @key
-  name:  text @index
-  score: int  = 0
-  bio:   text @null
+  id:     int  @key
+  name:   text @index
+  score:  int  = 0
+  bio:    text @null
+  avatar: asset @null
 }
 
 put users { id: 1, name: "elchi" }, { id: 2, name: "mira" }
@@ -71,6 +72,15 @@ that holds for every statement.
 Ints `42`, floats `1.5` / `2e3` (a float literal that overflows to
 infinity is a parse error), strings `"..."` with `\" \\ \n \t \0` escapes,
 bytes `x"c0ffee"`, `true`, `false`, `null`.
+
+A column of type `asset` holds a blob descriptor rather than the bytes:
+the payload lives in chunks and the row keeps its length and chunk list
+(ADR-034). The descriptor is what `write_blob` hands back, and it goes in
+as a bytes literal like any other. It is called `asset` and not `blob`
+because SQL's `BLOB` already means `bytes` here. Nothing in the language
+can author one by hand, and nothing should try: a descriptor names
+content by hash, so writing one that is not the answer to bytes actually
+stored is a row pointing at nothing.
 
 Int literals fit float columns and are widened on the way in. Nothing else
 converts implicitly.

@@ -249,7 +249,7 @@ fn value_for(
         MappedCell::Value(value) => convert(value, column.ty).ok_or_else(|| {
             unplanned(format!(
                 "the plan chose {} for this column and the row holds {}",
-                type_label(column.ty),
+                crate::plan::type_name(column.ty),
                 value.type_name()
             ))
         }),
@@ -313,15 +313,5 @@ fn render_float(f: f64) -> String {
         }
     } else {
         format!("{f}")
-    }
-}
-
-fn type_label(ty: TypeName) -> &'static str {
-    match ty {
-        TypeName::Int => "int",
-        TypeName::Float => "float",
-        TypeName::Text => "text",
-        TypeName::Bytes => "bytes",
-        TypeName::Bool => "bool",
     }
 }

@@ -215,6 +215,15 @@ pub fn coerce(v: Value, ty: TypeName, nullable: bool) -> Result<Value, ExecError
         (Value::Float(_), TypeName::Float) => Ok(v),
         (Value::Text(_), TypeName::Text) => Ok(v),
         (Value::Bytes(_), TypeName::Bytes) => Ok(v),
+        // An asset column holds a descriptor, not the payload. Checking it
+        // parses here means a malformed one is refused at the statement
+        // rather than surfacing as a missing chunk on some later read.
+        (Value::Bytes(d), TypeName::Asset) => match quanty_core::BlobRef::decode(d) {
+            Ok(_) => Ok(v),
+            Err(_) => Err(ExecError::exec(
+                "an asset column takes a blob descriptor, and this is not one",
+            )),
+        },
         (Value::Bool(_), TypeName::Bool) => Ok(v),
         _ => Err(ExecError::exec(format!(
             "a {} value does not fit into a column of type {}",

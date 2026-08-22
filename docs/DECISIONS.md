@@ -1304,6 +1304,25 @@ changes how a table behaves the day a value crosses it.
 sentence predates the streaming API and the count of what a variant
 costs.
 
+**The type is called `asset`, because `blob` is already taken.** This
+record said "a column declared `blob`" and the SQL front end has mapped
+`BLOB` to `bytes` since the dialect existed, which is what SQLite means
+by it and what the importer relies on. Declaring a QQL `blob` on top of
+that would give one word two meanings inside one database: `CREATE TABLE
+t (d BLOB)` a column of plain bytes, `table t { d: blob }` a chunked one,
+with `show tables` printing whichever the front end happened to be. The
+alternative, pointing SQL's `BLOB` at the chunked type, is worse: SQLite
+blobs are usually small, and every imported column would be chunked for
+nothing.
+
+`asset` is not a new coinage. The roadmap phase has been called "Blobs +
+assets" and its criterion has said "1 GiB asset" since before any of this
+was built, so the vocabulary already exists and only the type name was
+missing. SQL keeps `BLOB` meaning `bytes` and gains no way to declare a
+chunked column, which costs nothing anyone has: SQL compatibility is
+about running an existing application's queries, and no existing query
+declares storage this database invented.
+
 ## ADR-035: One writer is a claim this file could not back
 
 ARCHITECTURE said a single writer is "enforced with a file lock in

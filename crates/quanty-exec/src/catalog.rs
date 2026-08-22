@@ -123,7 +123,12 @@ pub fn seq_key() -> Vec<u8> {
 // serialization
 // ---------------------------------------------------------------------------
 
-const CATALOG_VERSION: u8 = 1;
+/// Version 1 is every definition that predates the `asset` column type.
+/// A definition is written at the lowest version that can express it, so
+/// a table without an asset column stays readable by everything that came
+/// before it (FORMAT.md, ADR-034).
+const CATALOG_V1: u8 = 1;
+const CATALOG_V2: u8 = 2;
 
 fn type_tag(ty: TypeName) -> u8 {
     match ty {
@@ -132,6 +137,15 @@ fn type_tag(ty: TypeName) -> u8 {
         TypeName::Text => 2,
         TypeName::Bytes => 3,
         TypeName::Bool => 4,
+        TypeName::Asset => 5,
+    }
+}
+
+/// The lowest catalog version that knows this tag.
+fn version_for(ty: TypeName) -> u8 {
+    match ty {
+        TypeName::Asset => CATALOG_V2,
+        _ => CATALOG_V1,
     }
 }
 
@@ -142,13 +156,20 @@ fn type_from_tag(tag: u8) -> Option<TypeName> {
         2 => TypeName::Text,
         3 => TypeName::Bytes,
         4 => TypeName::Bool,
+        5 => TypeName::Asset,
         _ => return None,
     })
 }
 
 impl Table {
     pub fn serialize(&self) -> Vec<u8> {
-        let mut out = vec![CATALOG_VERSION];
+        let version = self
+            .columns
+            .iter()
+            .map(|c| version_for(c.ty))
+            .max()
+            .unwrap_or(CATALOG_V1);
+        let mut out = vec![version];
         out.extend_from_slice(&self.id.to_le_bytes());
         put_str(&mut out, &self.name);
         out.extend_from_slice(&(self.columns.len() as u16).to_le_bytes());
@@ -180,7 +201,7 @@ impl Table {
     pub fn deserialize(buf: &[u8]) -> Result<Table, ExecError> {
         let bad = || ExecError::exec("catalog entry does not deserialize, this is a bug");
         let mut r = Reader { buf, at: 0 };
-        if r.u8().ok_or_else(bad)? != CATALOG_VERSION {
+        if !matches!(r.u8().ok_or_else(bad)?, CATALOG_V1 | CATALOG_V2) {
             return Err(ExecError::exec("catalog entry has an unknown version"));
         }
         let id = r.u64().ok_or_else(bad)?;

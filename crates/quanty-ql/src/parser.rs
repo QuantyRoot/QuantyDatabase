@@ -268,6 +268,7 @@ impl Parser {
             "float" => TypeName::Float,
             "text" => TypeName::Text,
             "bytes" => TypeName::Bytes,
+            "asset" => TypeName::Asset,
             "bool" => TypeName::Bool,
             other => {
                 return Err(ParseError::at(
