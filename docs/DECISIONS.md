@@ -1303,3 +1303,55 @@ changes how a table behaves the day a value crosses it.
 **ARCHITECTURE is wrong on this point and now says so.** The threshold
 sentence predates the streaming API and the count of what a variant
 costs.
+
+## ADR-035: One writer is a claim this file could not back
+
+ARCHITECTURE said a single writer is "enforced with a file lock in
+embedded mode and a mutex in server mode". Half of that was true. There
+is no file lock anywhere in this workspace; the writer mutex lives in the
+`Pager`, so it is per handle, and two handles on one file each believe
+they are alone.
+
+**What that did, run rather than reasoned about.** Two handles on one
+file, A commits a row, B commits another:
+
+```
+B's commit returned Ok(1), the same txid A had just been given
+key 1: gone
+key 2: there
+```
+
+`commit` derives its txid from the meta it cached at `begin`, and writes
+the meta into slot `txid % 2`. Both handles computed 1, both wrote slot
+1, and the second replaced a commit that had already been acknowledged.
+No error, no corruption a checksum would catch, just a row that was
+promised and is not there.
+
+**A guard, because a refusal beats a lie.** `commit` now reads the meta
+slot it is about to overwrite before it writes anything. Commits
+alternate slots, so any other writer's first commit lands in exactly that
+slot, and every later one leaves something higher in one slot or the
+other; one read catches all of it. A raced commit returns `WriterRaced`
+and changes nothing, and the caller can reopen and try again.
+
+**It costs 9%.** Two thousand durable commits, one row each: 266us each
+without the guard, 290 with. The read is a real syscall on the fsync
+path, and the fsync is most of the 266. Server mode batches commits, so
+it pays this once per batch rather than once per row.
+
+**The lock itself is not mine to decide.** `File::try_lock` is stable on
+1.98 and does not exist on 1.75, which is this project's MSRV and has a
+CI job named after it. So a real advisory lock costs an MSRV of 1.89 or
+later, and it would make the guard's 9% unnecessary: a lock is paid once
+at open, not once per commit. The alternatives are worse. `libc` is a
+dependency and ADR-020 has answered that four times. Raw syscalls mean
+unsafe in the storage core, in the one crate where that is least welcome.
+
+Until that is decided the guard stands on its own and the documentation
+says single writer per file rather than pretending something enforces it.
+
+**The price of the guard.** Nine percent on an unbatched durable commit,
+and it detects rather than prevents: two writers still race, the loser
+just learns about it instead of winning silently. A crash between the
+read and the meta write leaves the file exactly as the loser found it,
+which is the same guarantee as any other commit that never happened.

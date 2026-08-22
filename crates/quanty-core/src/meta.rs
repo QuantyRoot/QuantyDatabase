@@ -143,6 +143,26 @@ impl Meta {
 /// The page size lives inside the meta itself, so this brute-forces the
 /// small set of legal page sizes instead of trusting a possibly corrupted
 /// size field. Eight candidate sizes, two slots each, cheap and hard to fool.
+/// The txid sitting in one meta slot, or 0 if it holds nothing valid.
+///
+/// One read, on the commit path, where the page size is already settled.
+/// Reading the slot a commit is about to overwrite is enough to notice any
+/// other writer: commits alternate slots, so a racer's first commit lands
+/// in exactly that slot, and every later one leaves something higher there
+/// or in the other. `recover` is the heavier cousin that tries every page
+/// size, and it runs when nothing is known yet.
+pub(crate) fn txid_in_slot(storage: &dyn Storage, page_size: u32, slot: u64) -> Result<u64> {
+    let offset = slot * page_size as u64;
+    if offset + page_size as u64 > storage.len()? {
+        return Ok(0);
+    }
+    let mut buf = vec![0u8; page_size as usize];
+    if storage.read_at(offset, &mut buf).is_err() {
+        return Ok(0);
+    }
+    Ok(Meta::decode(&buf, slot).map(|m| m.txid).unwrap_or(0))
+}
+
 pub(crate) fn recover(storage: &dyn Storage) -> Result<Meta> {
     let mut best: Option<Meta> = None;
     let mut saw_magic = false;

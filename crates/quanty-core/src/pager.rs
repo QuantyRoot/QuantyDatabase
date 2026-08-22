@@ -607,6 +607,19 @@ impl<S: Storage> WriteBatch<'_, S> {
         let txid = self.base.txid + 1;
         let ps = self.pager.page_size as u64;
 
+        // The writer lock is per handle. Two handles on one file, in one
+        // process or two, both think they are alone, both compute the same
+        // txid and both write the same meta slot, and the second silently
+        // replaces a commit that was already acknowledged. Two reads before
+        // anything is written turn that into a refusal.
+        let found = meta::txid_in_slot(&self.pager.storage, self.pager.page_size, txid % 2)?;
+        if found > self.base.txid {
+            return Err(Error::WriterRaced {
+                expected: self.base.txid,
+                found,
+            });
+        }
+
         self.settle_freelist()?;
 
         for root in [

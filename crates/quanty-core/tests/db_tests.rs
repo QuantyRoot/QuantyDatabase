@@ -4,7 +4,8 @@
 
 mod common;
 
-use quanty_core::{Db, Error, FileStorage, MemStorage, PagerOptions, Value};
+use common::TestDir;
+use quanty_core::{encode_key, Db, Error, FileStorage, MemStorage, PagerOptions, Value};
 
 fn small_db() -> Db<MemStorage> {
     // 512 byte pages keep trees deep and splits frequent
@@ -246,4 +247,67 @@ fn encoded_tuples_work_as_keys_and_sort_correctly() {
         .map(|r| i64::from_le_bytes(r.unwrap().1.try_into().unwrap()))
         .collect();
     assert_eq!(ints, [-50, -3, 0, 7, 100]);
+}
+
+#[test]
+fn a_second_handle_cannot_silently_replace_a_commit() {
+    // Before this guard existed, the second commit returned Ok with the
+    // same txid as the first and the first row was gone from the file.
+    // Proved to catch: removing the txid_in_slot check in Pager::commit
+    // makes `first` disappear and this test fail on the last assert.
+    let dir = TestDir::new();
+    let path = dir.path().join("two-handles.qdb");
+
+    let a = Db::create_file(&path).unwrap();
+    let b = Db::open_file(&path).unwrap();
+
+    let mut ta = a.begin();
+    ta.put(&encode_key(&[Value::Int(1)]), b"first").unwrap();
+    let first_txid = ta.commit().unwrap();
+
+    let mut tb = b.begin();
+    tb.put(&encode_key(&[Value::Int(2)]), b"second").unwrap();
+    match tb.commit() {
+        Err(Error::WriterRaced { expected, found }) => {
+            assert_eq!(expected, first_txid - 1, "raced against the wrong commit");
+            assert_eq!(found, first_txid);
+        }
+        other => panic!("the second writer was allowed through: {other:?}"),
+    }
+
+    let fresh = Db::open_file(&path).unwrap();
+    let snap = fresh.snapshot();
+    assert_eq!(
+        snap.get(&encode_key(&[Value::Int(1)])).unwrap().as_deref(),
+        Some(&b"first"[..]),
+        "an acknowledged commit was overwritten"
+    );
+    assert!(snap.get(&encode_key(&[Value::Int(2)])).unwrap().is_none());
+}
+
+#[test]
+fn a_handle_that_reopens_after_the_race_works_again() {
+    // The refusal is about this transaction, not about the handle: a
+    // caller that reopens sees the newer state and can commit on top.
+    let dir = TestDir::new();
+    let path = dir.path().join("recover.qdb");
+
+    let a = Db::create_file(&path).unwrap();
+    let b = Db::open_file(&path).unwrap();
+    let mut ta = a.begin();
+    ta.put(&encode_key(&[Value::Int(1)]), b"first").unwrap();
+    ta.commit().unwrap();
+
+    let mut tb = b.begin();
+    tb.put(&encode_key(&[Value::Int(2)]), b"second").unwrap();
+    assert!(tb.commit().is_err());
+
+    let b = Db::open_file(&path).unwrap();
+    let mut tb = b.begin();
+    tb.put(&encode_key(&[Value::Int(2)]), b"second").unwrap();
+    tb.commit().expect("a reopened handle should commit");
+
+    let snap = b.snapshot();
+    assert!(snap.get(&encode_key(&[Value::Int(1)])).unwrap().is_some());
+    assert!(snap.get(&encode_key(&[Value::Int(2)])).unwrap().is_some());
 }

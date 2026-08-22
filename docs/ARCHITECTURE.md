@@ -3,6 +3,13 @@
 Internal design doc. This is the source of truth for how Quanty is built.
 If code and this doc disagree, fix one of them.
 
+That instruction went unheeded for a while. A pass in August 2026 checked
+every claim here against the code and found fifteen that were not true,
+most of them plans that were never built and one, the writer lock, that
+was a safety promise nothing kept. Where something is planned rather than
+built this now says so in the same sentence, so that reading a paragraph
+is enough to know which it is.
+
 ## Design principles
 
 1. **One core, many personalities.** There is exactly one storage engine.
@@ -45,7 +52,7 @@ and stored in the header.
 ```
 page 0:  meta page A   (header, format version, root of commit tree, ...)
 page 1:  meta page B   (identical role, ping-pong with A)
-page 2+: data pages    (btree nodes, overflow, free list, blob chunks)
+page 2+: data pages    (btree nodes, overflow, free list)
 ```
 
 Dual meta pages, LMDB style. A commit fsyncs all new data pages, then writes
@@ -59,7 +66,8 @@ Every page starts with a small header:
 ```
 offset  size  field
 0       4     checksum (crc32c of the rest of the page)
-4       1     page type (meta, branch node, leaf, overflow, freelist, blob)
+4       1     page type (meta, branch node, leaf, overflow, freelist;
+              a blob slot is reserved and has never been written)
 5       1     flags
 6       2     entry count / used bytes
 8       8     lsn of the commit that wrote this page
@@ -90,7 +98,8 @@ Each commit record stores:
 
 ```
 commit id (u64, monotonic)
-parent commit id(s)        (two parents after a merge)
+parent commit id           (one; merge is fast forward only, so no
+                            commit has ever had two)
 root page of the data tree
 root page of the catalog tree
 wall clock timestamp
@@ -108,9 +117,14 @@ reuse.
 ### MVCC and concurrency
 
 v1: single writer, many readers. One write transaction at a time per
-database, enforced with a file lock in embedded mode and a mutex in server
-mode. Readers are lock free (they pin a commit). This is the LMDB/SQLite
-model and it is enough for a long time.
+handle, held by a mutex in the pager. Readers are lock free (they pin a
+commit). This is the LMDB/SQLite model and it is enough for a long time.
+
+There is no file lock, so two handles on one file, in one process or two,
+each believe they are the only writer. That used to lose an acknowledged
+commit silently; `commit` now reads the meta slot it is about to
+overwrite and refuses with `WriterRaced` instead. ADR-035 has the numbers
+and says why the lock itself waits on an MSRV decision.
 
 v2 (later): optimistic multi-writer per branch. Writers build against a base
 commit, at commit time we check for page-level conflicts and retry losers.
@@ -118,17 +132,16 @@ Do not build this before the benchmark suite exists.
 
 ### Space reclamation
 
-Old pages become garbage when no retained commit references them. Retention
-policy per database:
+Old pages become garbage when no retained commit references them.
+Retention is a count of commits to keep per branch, given to each run:
+`gc keep <n>`, or `Session::gc(n)` from Rust. Named policies and
+durations were planned here and do not exist.
 
-- `keep = all` (full time travel, file grows)
-- `keep = <duration>` (e.g. 7d, the default)
-- `keep = heads` (only branch heads, minimal size, SQLite-like behavior)
-
-GC walks commits outside the retention window, moves their exclusively owned
-pages to the free list once retention allows it (phase 3, ADR-010). The free
-list is itself a small tree of page ranges. GC
-runs incrementally on commit or via explicit `quanty gc`.
+GC walks commits outside the retention window, moves their exclusively
+owned pages to the free list once retention allows it (phase 3, ADR-010).
+The free list is itself a small tree of page ranges. It runs only when
+asked, never incrementally on commit, and there is no `quanty gc`
+subcommand: `quanty run <db> "gc keep 5"`.
 
 ### Key encoding
 
@@ -137,7 +150,7 @@ B-tree only ever compares bytes:
 
 - ints: flipped sign bit, big endian
 - floats: IEEE 754 with sign-dependent bit flip
-- text: UTF-8 bytes, 0x00 escaped, 0x00 0x00 terminator
+- text: UTF-8 bytes, 0x00 written as 0x00 0xFF, single 0x00 terminator
 - composite keys: concatenation of the above
 
 This is a well known technique (FoundationDB tuple layer, MyRocks). Write it
@@ -190,11 +203,12 @@ UPDATE, DELETE, CREATE INDEX, transactions. Everything else returns a clear
 
 ### Planner and executor
 
-- Logical plan: relational algebra nodes (scan, filter, project, join, sort,
-  limit, aggregate).
+- Logical plan: relational algebra nodes (scan, filter, project, join,
+  sort, limit). Aggregates were on this list and are not built.
 - Physical plan v1: rule based. Use an index when a filter matches an index
   prefix, otherwise full scan. Nested loop join, index nested loop when
-  possible. Sort is external merge sort when the set exceeds a memory budget.
+  possible. Sort is in memory; an external merge sort for sets past a
+  memory budget was planned here and is not built.
 - Executor v1: pull-based iterator model (volcano). Vectorized batches are a
   v2 optimization, the iterator interface should already pass row batches to
   make that transition cheap.
@@ -203,10 +217,15 @@ UPDATE, DELETE, CREATE INDEX, transactions. Everything else returns a clear
 
 ### Catalog
 
-System tables live in the same B-tree keyspace under a reserved prefix:
-`__quanty/tables`, `__quanty/indexes`, `__quanty/branches`, `__quanty/meta`.
-The catalog is versioned with the data because it lives in the same commit
-tree. Schema changes are therefore branchable and time travelable for free.
+The catalog is its own tree, rooted in the commit record beside the data
+tree, so it is versioned with the data and schema changes are branchable
+and time travelable for free. Its keys are typed tuples in the same
+encoding as everything else: `("table", name)` for a table and its
+indexes, `("seq")` for the id counter, `("blob", hash)` and
+`("blobrefs", hash)` for chunk bytes and their counts. The string
+prefixes `__quanty/...` were planned here and appear nowhere in the code.
+Branch heads are not in this tree at all; they live in the refs tree
+outside the versioned trees, for the reason ADR-011 gives.
 
 ## Server mode
 
@@ -247,7 +266,7 @@ Two independent pieces, do not mix them up:
 
 1. **Importer.** Read the SQLite file format directly (it is documented and
    stable), convert tables, indexes and data into a Quanty file.
-   `quanty import app.sqlite -o app.qdb`. No SQLite library dependency, we
+   `quanty import app.sqlite app.qdb`. No SQLite library dependency, we
    parse the format ourselves.
 2. **Dialect.** The SQL front end above. Goal is "your typical app queries
    run unchanged", not bug-for-bug compatibility.
@@ -263,12 +282,16 @@ This project lives or dies on trust in the storage layer.
   the file and verifies invariants. Run thousands of iterations in CI.
 - **Encoding tests:** property test order preservation of the key encoding.
 - **SQL tests:** sqllogictest-style golden files for the SQL subset.
-- **Fuzzing:** cargo-fuzz targets for the QQL parser, the SQL parser and the
-  file format reader (a corrupted file must produce an error, never UB).
-- **Benchmarks:** criterion micro benches plus a macro bench (bulk load,
-  point reads, range scans, mixed workload) tracked over time. Compare
-  against SQLite and redb honestly and publish numbers only when they are
-  reproducible.
+- **Fuzzing:** four ten minute jobs over the QQL parser, the SQL parser,
+  the file format reader and the wire protocol (a corrupted input must
+  produce an error, never UB). They are plain `cargo test` harnesses with
+  their own generators, not cargo-fuzz, which is a tool and a nightly
+  toolchain this project does not take.
+- **Benchmarks:** `quanty-bench`, hand written for the same reason, with
+  a macro bench (bulk load, point reads, range scans, mixed workload)
+  tracked over time. Compared against SQLite through both command line
+  tools, and against PostgreSQL in chat. redb was named here and has
+  never been measured. Publish numbers only when they are reproducible.
 
 ## Workspace layout
 
@@ -312,8 +335,10 @@ backends, which is also what keeps a WASM build possible.
 
 - mmap vs pread: start with pread + a small userspace page cache (clock
   eviction). mmap is a backend behind the Storage trait, not the default.
-- group commit in server mode: batch concurrent write txns into one fsync.
+- group commit in server mode: built in phase 5, batching concurrent
+  write txns into one fsync.
 - bloom filters per leaf range and prefix compression in nodes: v2.
 - the adaptive story (auto index suggestions, hot/cold tiering, layout
-  switching) needs a stats collector first. Ship `quanty stats` early, make
-  decisions from real numbers.
+  switching) needs a stats collector first. `DbStats` counts pages, head
+  pages and free pages; nothing surfaces it, and `quanty stats` was named
+  here and is not built. Make decisions from real numbers.
