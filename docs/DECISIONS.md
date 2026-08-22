@@ -1085,3 +1085,55 @@ waiting on one.
 until the derive lands. Custom storage is unreachable. Suspended
 transactions are unreachable. Additions cost more than they would to an
 unstable surface, which is the point of keeping it small.
+
+## ADR-031: The derive maps a struct to a row, and writes go through the AST
+
+ADR-020 has been asked four times now and the answer has not moved: no
+`syn`, no `quote`. A proc macro is handed a `TokenStream` and can walk it,
+and a derive over a struct of named fields is a narrow enough shape to
+walk by hand. This records what the derive covers and what it refuses.
+
+**Generated writes build a statement, they do not print one.** QQL has no
+parameters, and `render_value` renders text unquoted because it exists to
+display a value rather than to embed one. A derive that pasted field
+values into `put users { name: "..." }` would therefore be an injection
+surface generated at compile time, which is a worse thing to ship than no
+derive at all. `quanty-import` already writes through
+`Session::execute_ast` with `Expr::Literal` holding the value, and the
+derive uses the same road. The AST stays out of the public surface;
+`Database::insert` takes the row and builds it internally.
+
+**The macro emits as little as possible.** Matching a query's column
+names against a struct's fields is the part that is easy to get wrong, so
+it is written once, by hand, in `Rows::into_typed`, which resolves each
+column to a position and hands the derive a `Vec<Value>` already in
+order. What the macro generates is positional and dull: a table name, a
+list of column names, one `from_value` per field, and the reverse. The
+plumbing those calls need lives in a `#[doc(hidden)]` module, which is
+how the stability promise of ADR-030 stays a promise about the surface
+people write against rather than about everything that is reachable.
+
+**The table name is the struct name in snake case**, overridable with
+`#[quanty(table = "...")]`, and a field maps to a column of its own name,
+overridable with `#[quanty(column = "...")]`. Nothing is pluralised. A
+`User` maps to `user`, not to `users`, because a macro that guesses
+English plurals is wrong often enough to be worse than typing the
+attribute.
+
+**Refused, with a compile error rather than a surprise:** tuple structs,
+unit structs, enums, generics and lifetimes. Each of them has a sensible
+meaning that would have to be chosen, and choosing it here without anyone
+asking is how a surface grows things nobody wanted.
+
+**The price.** `FromValue` is implemented for `i64`, `i32`, `u32`, `f64`,
+`bool`, `String`, `Vec<u8>` and `Option<T>`, and for nothing else: a
+narrow integer conversion is range checked and fails rather than wrapping,
+and every type outside that list needs a hand written impl. There is no
+`where` clause and no generic row. The macro's own error messages point
+at the struct rather than at the offending token, because carrying spans
+by hand through a hand rolled parser is real work and no user has asked
+for it yet. `to_values` clones each field, so every field has to be
+`Clone`; taking the row apart by value would be cheaper and would stop
+the caller keeping it. And the snake case conversion splits on every
+capital, so an acronym comes out as `h_t_t_p_header`, which is what
+`#[quanty(table = "...")]` is for.

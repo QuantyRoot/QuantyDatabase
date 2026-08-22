@@ -26,16 +26,44 @@
 //! its own version and its own compatibility rules; and the extension API
 //! of ADR-018 is explicitly unstable before 1.0.
 //!
-//! Statements are text, in QQL or SQL. The typed front end is the derive
-//! macro, and it comes later. See `docs/ADR-030` for why.
+//! # Rows as structs
+//!
+//! ```no_run
+//! # fn main() -> Result<(), quanty::Error> {
+//! #[derive(quanty::Row)]
+//! #[quanty(table = "users")]
+//! struct User {
+//!     id: i64,
+//!     name: String,
+//! }
+//!
+//! let mut db = quanty::Database::open("app.qdb")?;
+//! db.insert(&User { id: 1, name: "ada".into() })?;
+//! let users: Vec<User> = db.query_as("get users { id, name }")?;
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! Values written this way travel as a parsed statement rather than as
+//! text, so nothing has to be quoted or escaped. See ADR-030 for the
+//! surface and ADR-031 for what the derive covers.
 
 #![forbid(unsafe_code)]
+
+mod row;
 
 use std::fmt;
 use std::path::Path;
 
 use quanty_core::{FileStorage, MemStorage};
 use quanty_exec::{ExecError, Output, Session};
+use quanty_ql::ast::{Expr, Statement};
+
+pub use quanty_derive::Row;
+pub use row::{FromValue, IntoValue, Row};
+
+#[doc(hidden)]
+pub use row::__private;
 
 /// A database, open and owned by this process.
 ///
@@ -132,6 +160,42 @@ impl Database {
         self.execute_sql(source)?.into_rows()
     }
 
+    /// Run one statement and turn its rows into structs.
+    pub fn query_as<T: Row>(&mut self, source: &str) -> Result<Vec<T>> {
+        self.query(source)?.into_typed()
+    }
+
+    /// Insert one row.
+    pub fn insert<T: Row>(&mut self, row: &T) -> Result<()> {
+        self.insert_all(std::slice::from_ref(row)).map(|_| ())
+    }
+
+    /// Insert several rows as one statement.
+    ///
+    /// The values travel as a parsed statement rather than as text, so
+    /// nothing here has to quote or escape anything (ADR-031).
+    pub fn insert_all<T: Row>(&mut self, rows: &[T]) -> Result<u64> {
+        if rows.is_empty() {
+            return Ok(0);
+        }
+        let put = Statement::Put {
+            table: T::TABLE.to_string(),
+            rows: rows
+                .iter()
+                .map(|row| {
+                    row.to_values()
+                        .into_iter()
+                        .map(|(column, value)| {
+                            (column.to_string(), Expr::Literal(into_core(value)))
+                        })
+                        .collect()
+                })
+                .collect(),
+        };
+        on_backend!(self, s => s.execute_ast(&put)).map_err(Error::from)?;
+        Ok(rows.len() as u64)
+    }
+
     /// Run `f` inside a transaction, committing if it returns `Ok` and
     /// rolling back if it returns `Err`.
     ///
@@ -220,6 +284,21 @@ impl Transaction<'_> {
     /// Run one SQL statement inside the transaction, expecting rows.
     pub fn query_sql(&mut self, source: &str) -> Result<Rows> {
         self.db.query_sql(source)
+    }
+
+    /// Run one statement inside the transaction, expecting structs.
+    pub fn query_as<T: Row>(&mut self, source: &str) -> Result<Vec<T>> {
+        self.db.query_as(source)
+    }
+
+    /// Insert one row inside the transaction.
+    pub fn insert<T: Row>(&mut self, row: &T) -> Result<()> {
+        self.db.insert(row)
+    }
+
+    /// Insert several rows inside the transaction, as one statement.
+    pub fn insert_all<T: Row>(&mut self, rows: &[T]) -> Result<u64> {
+        self.db.insert_all(rows)
     }
 }
 
@@ -341,6 +420,39 @@ impl Rows {
     pub fn into_rows(self) -> Vec<Vec<Value>> {
         self.rows
     }
+
+    /// Turn the rows into structs.
+    ///
+    /// Each of `T::COLUMNS` is resolved to a position once, so a struct
+    /// whose fields are in a different order than the query asked for
+    /// still works, and a missing column fails before any row is built.
+    pub fn into_typed<T: Row>(self) -> Result<Vec<T>> {
+        let mut positions = Vec::with_capacity(T::COLUMNS.len());
+        for want in T::COLUMNS {
+            match self.column(want) {
+                Some(i) => positions.push(i),
+                None => {
+                    return Err(Error {
+                        kind: ErrorKind::Exec,
+                        message: format!(
+                            "no column {want} in this result; it has {}",
+                            self.columns.join(", ")
+                        ),
+                    })
+                }
+            }
+        }
+        self.rows
+            .into_iter()
+            .map(|mut row| {
+                let values = positions
+                    .iter()
+                    .map(|&i| std::mem::replace(&mut row[i], Value::Null))
+                    .collect();
+                T::from_values(values)
+            })
+            .collect()
+    }
 }
 
 impl<'a> IntoIterator for &'a Rows {
@@ -358,6 +470,19 @@ impl IntoIterator for Rows {
 
     fn into_iter(self) -> Self::IntoIter {
         self.rows.into_iter()
+    }
+}
+
+/// Back to the engine's value type. The reverse conversion is a move
+/// rather than a copy, because the variants line up one to one.
+fn into_core(v: Value) -> quanty_core::Value {
+    match v {
+        Value::Null => quanty_core::Value::Null,
+        Value::Bool(b) => quanty_core::Value::Bool(b),
+        Value::Int(i) => quanty_core::Value::Int(i),
+        Value::Float(f) => quanty_core::Value::Float(f),
+        Value::Text(t) => quanty_core::Value::Text(t),
+        Value::Bytes(b) => quanty_core::Value::Bytes(b),
     }
 }
 

@@ -7,7 +7,9 @@ name = "quanty"
 version = "0.3.0"
 dependencies = [
  "quanty-core",
+ "quanty-derive",
  "quanty-exec",
+ "quanty-ql",
 ]
 
 [[package]]
@@ -39,6 +41,10 @@ dependencies = [
 
 [[package]]
 name = "quanty-core"
+version = "0.3.0"
+
+[[package]]
+name = "quanty-derive"
 version = "0.3.0"
 
 [[package]]

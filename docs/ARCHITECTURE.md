@@ -292,8 +292,8 @@ quanty/
 `quanty/` is built and its surface is fixed by ADR-030: concrete types
 only, statements as text, transactions as a borrow, and nothing from the
 internal crates re-exported, so no internal type reaches an embedder's
-signatures. `quanty-derive/` is still unbuilt; the roadmap says why and
-what waits on it.
+signatures. `quanty-derive/` sits on top of it and holds to ADR-020: it
+walks the `TokenStream` it is handed, with no `syn` and no `quote`.
 
 There is no dependency budget, because there are no dependencies. This
 section used to name crc32c, blake3 and parking_lot; ADR-020 wrote out the

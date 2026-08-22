@@ -1,0 +1,13 @@
+[package]
+name = "quanty-derive"
+description = "Derive macros for the QuantyDB embedded API"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+proc-macro = true
+
+[dependencies]

@@ -212,8 +212,8 @@ Acceptance:
 The workspace layout in ARCHITECTURE.md carried two crates since the
 beginning that no phase ever built: `quanty/`, the public embedded API that
 a Rust application adds as a dependency, and `quanty-derive/`, the ORM
-derive macros over it. `quanty/` now exists and ADR-030 fixes its surface.
-`quanty-derive/` does not.
+derive macros over it. Both exist now; ADR-030 fixes the surface and
+ADR-031 fixes what the derive covers.
 
 - [x] `quanty/` exists, depends only on the internal crates, and re-exports
       none of them, so no internal type reaches an embedder's signatures.
@@ -221,7 +221,9 @@ derive macros over it. `quanty/` now exists and ADR-030 fixes its surface.
       reaching around an open transaction to run one does not compile.
 - [x] A closure transaction commits on `Ok`, rolls back on `Err`, and
       leaves no transaction open either way.
-- [ ] `quanty-derive/`, without `syn` and without `quote`.
+- [x] `quanty-derive/`, without `syn` and without `quote`: a struct of
+      named fields maps to a table, and generated writes go through the
+      statement AST rather than through generated text (ADR-031).
 
 What follows was written before any of it was built and is kept because the
 reasoning is what the surface was chosen against.

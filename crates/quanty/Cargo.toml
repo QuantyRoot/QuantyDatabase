@@ -10,3 +10,5 @@ repository.workspace = true
 [dependencies]
 quanty-core = { path = "../quanty-core" }
 quanty-exec = { path = "../quanty-exec" }
+quanty-ql = { path = "../quanty-ql" }
+quanty-derive = { path = "../quanty-derive" }
