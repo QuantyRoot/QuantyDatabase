@@ -12,7 +12,7 @@
 //! Tuple encoding is order preserving and prefix friendly, so table scans
 //! and index probes are plain range scans.
 
-use quanty_core::{decode_key, encode_key, Db, Storage, SuspendedTx, Value, WriteTx};
+use quanty_core::{decode_key, encode_key, Db, GcReport, Storage, SuspendedTx, Value, WriteTx};
 use quanty_ql::ast::{AsOf, ColumnRef, Direction, Expr, Get, Statement};
 
 use crate::catalog::{self, Table};
@@ -20,6 +20,11 @@ use crate::error::ExecError;
 use crate::plan::{self, Access, AccessPlan, ExplainNode};
 use crate::value_ops::{self, NoScope, Scope};
 use quanty_core::Snapshot;
+
+/// Why a branch or history statement will not run inside a transaction.
+/// Shared so the statement and [`Session::gc`] cannot drift apart.
+const NOT_IN_TXN: &str = "branch and history statements cannot run inside a \
+                          transaction; commit or rollback first";
 
 /// Fetched rows: `(row key, decoded column values)` pairs.
 type Fetched = Vec<(Vec<u8>, Vec<Value>)>;
@@ -153,6 +158,19 @@ impl<S: Storage> Session<S> {
         self.run_parsed(stmt)
     }
 
+    /// Drop history, keeping the newest `keep` commits, and free the pages
+    /// nothing refers to any more.
+    ///
+    /// `&mut self` is the reader-quiescence proof `Db::gc` asks for: the
+    /// session owns the database and lends out only `&Db`, so no snapshot
+    /// can be outstanding here (ADR-027, ADR-030).
+    pub fn gc(&mut self, keep: usize) -> Result<GcReport, ExecError> {
+        if self.txn.is_some() {
+            return Err(ExecError::exec(NOT_IN_TXN));
+        }
+        Ok(self.db.gc(keep)?)
+    }
+
     fn run_parsed(&mut self, stmt: &Statement) -> Result<Output, ExecError> {
         match stmt {
             // transaction control drives the session's txn state
@@ -231,7 +249,7 @@ impl<S: Storage> Session<S> {
                 Ok(Output::Lines(lines))
             }
             Statement::Gc { keep } => {
-                let report = self.db.gc(*keep as usize)?;
+                let report = self.gc(*keep as usize)?;
                 Ok(Output::Lines(vec![format!(
                     "gc pruned {} commits, freed {} pages",
                     report.pruned_commits, report.freed_pages
@@ -283,10 +301,7 @@ impl<S: Storage> Session<S> {
             | Statement::DropBranch { .. }
             | Statement::ShowBranches
             | Statement::Log
-            | Statement::Gc { .. } => Err(ExecError::exec(
-                "branch and history statements cannot run inside a transaction; \
-                 commit or rollback first",
-            )),
+            | Statement::Gc { .. } => Err(ExecError::exec(NOT_IN_TXN)),
             // history reads are independent of the pending writes
             Statement::Get(get) if get.as_of.is_some() => self.read_as_of(get),
             Statement::Begin | Statement::Commit | Statement::Rollback => {
