@@ -165,8 +165,11 @@ Acceptance:
 - [x] identical files stored twice use ~1x space (dedup verified): the
       second copy of a 200 kB chunk costs two pages
 - [ ] blob GC integrates with commit GC without dangling chunks (checker):
-      counts are in, the sweep is not, and ADR-033 says why the obvious
-      version of it races
+      `check_blobs` walks the store and reports sound, unclaimed and half
+      present chunks, and a test builds a half present one by hand so the
+      broken arm is actually reached. What it cannot yet do is reconcile
+      chunks against the descriptors naming them, because no column holds
+      a descriptor yet; ADR-034 chose where that goes
 
 ## Phase 7: Search
 

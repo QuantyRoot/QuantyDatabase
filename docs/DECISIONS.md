@@ -1263,3 +1263,43 @@ atomic with the row that names it, so a torn write leaves collectible
 chunks and a reader never sees a half blob. Shifted content does not
 dedup. And the reference count is a write, so storing a chunk that
 already exists still costs a commit.
+
+## ADR-034: A blob is a column type, not a value that appears everywhere
+
+ARCHITECTURE says a value over a threshold leaves the row and becomes a
+blob, which reads as though the spill should be invisible: put a hundred
+megabytes in a `bytes` column and the engine quietly chunks it. That is
+one of two designs and it is the expensive one.
+
+**What the invisible version costs, counted rather than guessed.** A
+descriptor has to be told apart from the bytes it stands for, so `Value`
+gains a variant. There are twenty exhaustive matches on `Value` across
+seven crates: the wire protocol, both parsers, the pretty printer, the
+importer, the public crate. Every one of them would need an answer to a
+question nobody has asked, starting with what a blob looks like on the
+wire and what `quanty run` prints for one. It also throws away the
+streaming from ADR-033: if a blob is a value, reading the row means
+reassembling it, and a gigabyte column is a gigabyte in memory on every
+`get`.
+
+**A column knows its own type.** The catalog already carries one per
+column, so a column declared `blob` stores a descriptor and every other
+column does not, with no tag, no new variant, no format bump, and no
+question about what the wire does with something it has never seen. The
+descriptor travels as the bytes it already is, and the schema is what
+says how to read them. Rows stay small whatever the payload weighs, and
+the payload is reached with `read_blob`, which is the API that already
+holds one chunk at a time.
+
+**The price, and it is a real one.** It is not transparent. Storing a
+large value means declaring the column `blob` and handing over a reader
+rather than a `Vec<u8>`, so an existing `bytes` column does not become
+cheap by growing. Two ways to hold bytes now exist and a user has to pick,
+which is exactly the kind of choice a database is supposed to make for
+people. The trade is that the choice is visible in the schema, where it
+can be read, rather than being a threshold constant that silently
+changes how a table behaves the day a value crosses it.
+
+**ARCHITECTURE is wrong on this point and now says so.** The threshold
+sentence predates the streaming API and the count of what a variant
+costs.

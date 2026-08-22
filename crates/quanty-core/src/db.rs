@@ -27,7 +27,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::sync::RwLock;
 
-use crate::blob::{self, BlobRef, ChunkHash};
+use crate::blob::{self, BlobCheck, BlobRef, ChunkHash};
 use crate::btree::{self, Scan};
 use crate::commit::{self, CommitInfo};
 use crate::error::{Error, Result};
@@ -376,6 +376,72 @@ impl<S: Storage> Db<S> {
             ));
         }
         Ok(written)
+    }
+
+    /// Walk the chunk store and report what is there.
+    ///
+    /// This checks the store against itself: every chunk has bytes and a
+    /// count, and nothing is half present. It cannot check chunks against
+    /// the descriptors that name them, because the storage layer does not
+    /// know which columns hold descriptors; ADR-034 says where that
+    /// belongs.
+    pub fn check_blobs(&self) -> Result<BlobCheck> {
+        let snapshot = self.snapshot();
+        let mut report = BlobCheck::default();
+        let mut counted: Vec<(ChunkHash, u64)> = Vec::new();
+
+        let prefix = blob::refs_prefix();
+        for item in snapshot.catalog_scan(Some(&prefix), prefix_successor(&prefix).as_deref())? {
+            let (key, value) = item?;
+            counted.push((blob::hash_from_key(&key)?, blob::decode_refs(&value)?));
+        }
+
+        let prefix = blob::chunks_prefix();
+        let mut sized: Vec<(ChunkHash, u64)> = Vec::new();
+        for item in snapshot.catalog_scan(Some(&prefix), prefix_successor(&prefix).as_deref())? {
+            let (key, value) = item?;
+            sized.push((blob::hash_from_key(&key)?, value.len() as u64));
+        }
+
+        counted.sort_unstable();
+        sized.sort_unstable();
+        let mut counts = counted.iter().peekable();
+        let mut sizes = sized.iter().peekable();
+
+        loop {
+            match (counts.peek(), sizes.peek()) {
+                (None, None) => break,
+                (Some((ch, refs)), Some((sh, len))) if ch == sh => {
+                    if *refs == 0 {
+                        report.unclaimed += 1;
+                        report.unclaimed_bytes += len;
+                    } else {
+                        report.sound += 1;
+                        report.bytes += len;
+                    }
+                    counts.next();
+                    sizes.next();
+                }
+                (Some((ch, _)), Some((sh, _))) if ch < sh => {
+                    report.broken.push(*ch);
+                    counts.next();
+                }
+                (Some(_), Some((sh, _))) => {
+                    report.broken.push(*sh);
+                    sizes.next();
+                }
+                (Some((ch, _)), None) => {
+                    report.broken.push(*ch);
+                    counts.next();
+                }
+                (None, Some((sh, _))) => {
+                    report.broken.push(*sh);
+                    sizes.next();
+                }
+            }
+        }
+
+        Ok(report)
     }
 
     pub fn snapshot(&self) -> Snapshot<'_, S> {

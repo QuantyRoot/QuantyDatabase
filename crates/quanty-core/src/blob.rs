@@ -9,7 +9,7 @@
 //! is still an entry in a live tree. So each carries a count, and the
 //! entry goes away when it reaches zero.
 
-use crate::encoding::{encode_key, Value};
+use crate::encoding::{decode_key, encode_key, Value};
 use crate::error::{Error, Result};
 use crate::sha256::sha256;
 
@@ -46,6 +46,54 @@ pub(crate) fn refs_key(hash: &ChunkHash) -> Vec<u8> {
 /// The address of these bytes.
 pub fn hash_chunk(bytes: &[u8]) -> ChunkHash {
     sha256(bytes)
+}
+
+/// Every chunk's bytes, for a walk over the store.
+pub(crate) fn chunks_prefix() -> Vec<u8> {
+    encode_key(&[Value::Text("blob".into())])
+}
+
+/// Every chunk's count.
+pub(crate) fn refs_prefix() -> Vec<u8> {
+    encode_key(&[Value::Text("blobrefs".into())])
+}
+
+/// The hash a chunk key names, or None if the key is not one of ours.
+pub(crate) fn hash_from_key(key: &[u8]) -> Result<ChunkHash> {
+    let parts = decode_key(key)?;
+    let bad = || Error::corrupted(None, "a blob key that is not a blob key");
+    match parts.get(1) {
+        Some(Value::Bytes(raw)) if raw.len() == 32 => {
+            let mut hash = [0u8; 32];
+            hash.copy_from_slice(raw);
+            Ok(hash)
+        }
+        _ => Err(bad()),
+    }
+}
+
+/// What a walk over the chunk store found.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BlobCheck {
+    /// Chunks with a count and bytes, as it should be.
+    pub sound: u64,
+    /// Bytes of every sound chunk, as stored.
+    pub bytes: u64,
+    /// Chunks nothing has claimed yet. Either an upload in flight or one
+    /// that died; the store cannot tell which, which ADR-033 explains.
+    pub unclaimed: u64,
+    /// Bytes held by those.
+    pub unclaimed_bytes: u64,
+    /// Chunks whose bytes are there but whose count is not, or the other
+    /// way round. Always zero on a database this code wrote.
+    pub broken: Vec<ChunkHash>,
+}
+
+impl BlobCheck {
+    /// Whether the store is internally consistent.
+    pub fn is_sound(&self) -> bool {
+        self.broken.is_empty()
+    }
 }
 
 pub(crate) fn encode_refs(refs: u64) -> Vec<u8> {

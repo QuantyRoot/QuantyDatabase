@@ -284,3 +284,129 @@ fn a_length_that_does_not_match_the_chunks_is_refused() {
     let mut out = Vec::new();
     assert!(db.read_blob(&blob, &mut out).is_err());
 }
+
+// ---------------------------------------------------------------------------
+// the checker (ADR-033, ADR-034)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_fresh_store_checks_out_empty() {
+    let db = Db::in_memory().unwrap();
+    let report = db.check_blobs().unwrap();
+    assert!(report.is_sound());
+    assert_eq!(report.sound, 0);
+    assert_eq!(report.unclaimed, 0);
+}
+
+#[test]
+fn the_checker_counts_what_is_claimed_and_what_is_not() {
+    let db = Db::in_memory().unwrap();
+    let claimed = pattern(5000);
+    let dropped = pattern(9000);
+
+    let mut tx = db.begin();
+    let a = tx.put_chunk(&claimed).unwrap();
+    tx.retain_chunk(&a).unwrap();
+    let b = tx.put_chunk(&dropped).unwrap();
+    tx.commit().unwrap();
+
+    let report = db.check_blobs().unwrap();
+    assert!(report.is_sound(), "broken: {:?}", report.broken.len());
+    assert_eq!(report.sound, 1);
+    assert_eq!(report.bytes, 5000);
+    assert_eq!(report.unclaimed, 1, "the chunk nobody claimed went unseen");
+    assert_eq!(report.unclaimed_bytes, 9000);
+    assert_ne!(a, b);
+}
+
+#[test]
+fn a_written_blob_is_all_unclaimed_until_something_names_it() {
+    // This is ADR-033's open edge, stated as a measurement rather than a
+    // worry: between write_blob and whatever stores the descriptor, every
+    // chunk is legitimately unclaimed, so a sweep of unclaimed chunks in
+    // that window would delete live data.
+    let db = Db::in_memory().unwrap();
+    let data = pattern(3 * quanty_core::CHUNK_SIZE);
+    let blob = db.write_blob(&data[..]).unwrap();
+
+    let mid = db.check_blobs().unwrap();
+    assert!(mid.is_sound());
+    assert_eq!(mid.sound, 0);
+    assert_eq!(mid.unclaimed, 3);
+
+    let mut tx = db.begin();
+    for hash in &blob.chunks {
+        tx.retain_chunk(hash).unwrap();
+    }
+    tx.commit().unwrap();
+
+    let after = db.check_blobs().unwrap();
+    assert!(after.is_sound());
+    assert_eq!(after.sound, 3);
+    assert_eq!(after.unclaimed, 0);
+}
+
+#[test]
+fn releasing_the_last_reference_leaves_the_store_sound() {
+    let db = Db::in_memory().unwrap();
+    let data = pattern(2 * quanty_core::CHUNK_SIZE);
+    let blob = db.write_blob(&data[..]).unwrap();
+
+    let mut tx = db.begin();
+    for hash in &blob.chunks {
+        tx.retain_chunk(hash).unwrap();
+    }
+    tx.commit().unwrap();
+
+    let mut tx = db.begin();
+    for hash in &blob.chunks {
+        assert!(
+            tx.release_chunk(hash).unwrap(),
+            "a chunk outlived its last reference"
+        );
+    }
+    tx.commit().unwrap();
+
+    let report = db.check_blobs().unwrap();
+    assert!(report.is_sound(), "half a chunk was left behind");
+    assert_eq!(report.sound, 0);
+    assert_eq!(report.unclaimed, 0, "the bytes stayed without their count");
+}
+
+#[test]
+fn the_checker_finds_a_chunk_that_is_only_half_there() {
+    // Nothing in this crate can produce this state, so the test makes it
+    // by hand. Without it the broken arm of the checker is never reached
+    // and the checker only ever says what we already believed.
+    use quanty_core::{encode_key, Value};
+
+    let db = Db::in_memory().unwrap();
+    let data = pattern(5000);
+    let mut tx = db.begin();
+    let hash = tx.put_chunk(&data).unwrap();
+    tx.retain_chunk(&hash).unwrap();
+    tx.commit().unwrap();
+    assert!(db.check_blobs().unwrap().is_sound());
+
+    // take the count away and leave the bytes
+    let refs_key = encode_key(&[Value::Text("blobrefs".into()), Value::Bytes(hash.to_vec())]);
+    let mut tx = db.begin();
+    assert!(tx.catalog_delete(&refs_key).unwrap(), "wrong key");
+    tx.commit().unwrap();
+
+    let report = db.check_blobs().unwrap();
+    assert!(!report.is_sound(), "a half chunk passed as sound");
+    assert_eq!(report.broken, vec![hash]);
+    assert_eq!(report.sound, 0);
+
+    // and the other way round: bytes gone, count left
+    let bytes_key = encode_key(&[Value::Text("blob".into()), Value::Bytes(hash.to_vec())]);
+    let mut tx = db.begin();
+    tx.catalog_put(&refs_key, &1u64.to_le_bytes()).unwrap();
+    assert!(tx.catalog_delete(&bytes_key).unwrap());
+    tx.commit().unwrap();
+
+    let report = db.check_blobs().unwrap();
+    assert!(!report.is_sound(), "a count without bytes passed as sound");
+    assert_eq!(report.broken, vec![hash]);
+}

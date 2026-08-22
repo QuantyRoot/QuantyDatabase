@@ -145,7 +145,9 @@ once, property test it hard (encode then compare == compare originals).
 
 ### Blob store
 
-Values above a threshold (default 64 KiB) leave the row and become blobs:
+A column declared `blob` holds a descriptor rather than the bytes. There
+is no size threshold and no silent spill; ADR-034 counted what an
+invisible one costs and chose against it.
 
 - chunked (default 1 MiB chunks), each chunk hashed with SHA-256; ADR-033
   says why not BLAKE3
