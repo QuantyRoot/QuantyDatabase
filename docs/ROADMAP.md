@@ -207,14 +207,24 @@ Acceptance:
 - [ ] docs/EXTENSIONS.md documents the surface and states plainly that it is
       unstable before 1.0
 
-## Unscheduled and blocking: the public embedded crate
+## Done: the public embedded crate, and the derive that follows it
 
-The workspace layout in ARCHITECTURE.md has carried two crates since the
-beginning that no phase ever builds: `quanty/`, the public embedded API that
-a Rust application would add as a dependency, and `quanty-derive/`, the ORM
-derive macros over it. Neither exists. What an embedder needs is reachable
-today only by depending on `quanty-exec` and `quanty-core` directly, which
-are internal crates carrying no stability promise.
+The workspace layout in ARCHITECTURE.md carried two crates since the
+beginning that no phase ever built: `quanty/`, the public embedded API that
+a Rust application adds as a dependency, and `quanty-derive/`, the ORM
+derive macros over it. `quanty/` now exists and ADR-030 fixes its surface.
+`quanty-derive/` does not.
+
+- [x] `quanty/` exists, depends only on the internal crates, and re-exports
+      none of them, so no internal type reaches an embedder's signatures.
+- [x] `Database` carries no type parameter, and `gc` stays behind `&mut`:
+      reaching around an open transaction to run one does not compile.
+- [x] A closure transaction commits on `Ok`, rolls back on `Err`, and
+      leaves no transaction open either way.
+- [ ] `quanty-derive/`, without `syn` and without `quote`.
+
+What follows was written before any of it was built and is kept because the
+reasoning is what the surface was chosen against.
 
 This is written down because it blocks phase 9, not because it is scheduled.
 ADR-018 names the public embedded crate as one of the two prerequisites for

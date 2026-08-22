@@ -1015,3 +1015,73 @@ because a soak that quietly never contends would report success.
 `explain` only. `log` and `show branches` write nothing either, but they
 refuse to run inside a transaction, so they stay where the engine already
 puts them rather than being reclassified from outside it.
+
+## ADR-030: The embedded crate owns the database and speaks statements
+
+README draws three doors into the product and only two of them exist.
+`quanty/` is the left one: what a Rust application adds to its
+`Cargo.toml`. The engine under it is finished, so this record is not
+about a capability. It is about choosing a surface narrow enough to
+keep, and naming what it does not cover.
+
+**Reader quiescence needs no special handling, which was unexpected.**
+ADR-027 keeps `gc` behind `&mut Db` so the borrow checker proves no
+snapshot is outstanding before a page is reused, and calls that proof
+worth more than an `Arc`. Reading the code rather than the record: no
+caller ever holds `&mut Db`. `gc` is a statement, `Session::execute`
+takes `&mut self`, and `Session` owns the database and lends out only
+`&Db`. The proof therefore belongs to `execute`, not to `gc`, and any
+surface that owns the database and routes mutation through `&mut self`
+inherits it for free. `Database::gc` is a thin wrapper over a statement,
+not a hole to be defended.
+
+**The public type is not generic.** `Session<S: Storage>` is the shape
+underneath, and lifting that parameter into the public surface would put
+`S` in every signature an embedder writes and make `Storage` itself a
+promise. `Database` is concrete; the two backends live in a private enum
+matched once per call. A backend of one's own is exactly what ADR-018
+puts behind the extension API after 1.0, so refusing it here costs
+nothing that was on offer.
+
+**Statements arrive as text.** The typed alternative means restating the
+query language in Rust types, and every one of those types is a promise
+made before anyone has written against it. Text is already fuzzed, has
+golden files, and is what the server speaks, so the embedded and remote
+doors describe work the same way. What is typed is what comes back:
+`Value`, column names and rows, because parsing our own output would be
+absurd. The typed front end is `quanty-derive`, it follows later, and it
+will be built on this rather than beside it.
+
+**A transaction is a borrow, not an object.** `Database::transaction`
+takes a closure and hands it `&mut Transaction`, which borrows the
+database mutably: it cannot outlive it, cannot be held across a `gc`,
+and cannot be forgotten, because the closure returning decides commit or
+rollback. `SuspendedTx` and `park` stay internal. They exist so one
+executor thread can multiplex connections (ADR-027) and an embedder with
+its own database has nothing to multiplex.
+
+**0.4 promises the surface and nothing under it.** ADR-018 declares the
+extension surface unstable before 1.0. This one makes the opposite
+promise, because a surface that promises nothing gives no reason to
+prefer it over depending on `quanty-exec` directly, which is the state
+this crate exists to end. Every item `quanty` exports is semver-stable
+from 0.4: breaking it needs a minor bump and a line in the annotated tag
+for that release, which is where this project keeps release notes. A
+CHANGELOG belongs with publishing to crates.io and neither exists yet. Not
+covered, and said plainly in the crate docs: nothing from `quanty-core`
+or `quanty-exec` is re-exported, so no internal type leaks into an
+embedder's signatures; `Value` and `Outcome` are non-exhaustive and may
+grow variants; the file format has its own version and its own rules.
+
+**The borrow is proved by a doctest that is weaker than it looks.**
+`compile_fail` in rustdoc passes when the snippet fails to build for any
+reason at all; the error code after it is documentation, not a check,
+which was confirmed by asserting the wrong code and watching it pass.
+The snippet is therefore kept minimal, and E0499 was confirmed by hand
+once. A stricter check needs a compile-test harness and nobody is
+waiting on one.
+
+**The price.** Statements are strings, so a typo is a runtime error
+until the derive lands. Custom storage is unreachable. Suspended
+transactions are unreachable. Additions cost more than they would to an
+unstable surface, which is the point of keeping it small.

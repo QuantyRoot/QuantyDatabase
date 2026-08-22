@@ -87,7 +87,9 @@ bolted on:
 
 ## Quick look
 
-This is the target API, so consider it a preview and not documentation.
+QQL and the Rust block are built. The CLI block after them is the target
+API: branching from the shell goes through `quanty run` today, so consider
+that last part a preview and not documentation.
 
 Schema and queries in QQL, Quanty's native language:
 
@@ -103,17 +105,22 @@ set users where id = 1 { score += 5 }
 get users as of 42 where name = "elchi"
 ```
 
-Embedded in Rust:
+Embedded in Rust. This part is built, and ADR-030 fixes the surface:
 
 ```rust
-use quanty::Quanty;
+use quanty::Database;
 
-let db = Quanty::open("app.qdb")?;
+let mut db = Database::open("app.qdb")?;
 
-db.exec(r#"insert users { id: 1, name: "elchi" }"#)?;
+// a transaction is a borrow, so it cannot outlive the database and
+// cannot be left open: the closure returning decides commit or rollback
+db.transaction(|tx| tx.execute(r#"put users { id: 1, name: "elchi" }"#))?;
 
 // the SQL front end understands your existing sqlite queries too
-let rows = db.sql("SELECT name FROM users WHERE id = 1")?;
+let rows = db.query_sql("SELECT name FROM users WHERE id = 1")?;
+for row in &rows {
+    println!("{}", row[0]);
+}
 ```
 
 Branching from the CLI:

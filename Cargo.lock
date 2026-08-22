@@ -3,6 +3,14 @@
 version = 3
 
 [[package]]
+name = "quanty"
+version = "0.3.0"
+dependencies = [
+ "quanty-core",
+ "quanty-exec",
+]
+
+[[package]]
 name = "quanty-auth"
 version = "0.3.0"
 

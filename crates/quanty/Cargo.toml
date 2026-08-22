@@ -1,0 +1,12 @@
+[package]
+name = "quanty"
+description = "QuantyDB embedded: a crash-safe versioned database in your process"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+quanty-core = { path = "../quanty-core" }
+quanty-exec = { path = "../quanty-exec" }

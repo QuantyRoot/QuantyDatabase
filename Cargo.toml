@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "crates/quanty",
     "crates/quanty-core",
     "crates/quanty-auth",
     "crates/quanty-ql",

@@ -274,7 +274,7 @@ quanty/
     quanty-core/        pager, btree, commits, mvcc, blobs, encoding
     quanty-ql/          QQL + SQL front ends (pure syntax)
     quanty-exec/        catalog, planner, executor
-    quanty/             public embedded API, re-exports, the crate users add
+    quanty/             public embedded API, the crate users add
     quanty-derive/      ORM derive macros
     quanty-proto/       wire protocol codec (bytes only, no I/O)
     quanty-server/      reactor, connection state machine, dispatch
@@ -289,8 +289,11 @@ quanty/
   tests/                cross-crate integration + crash harness
 ```
 
-`quanty/` and `quanty-derive/` are still unbuilt; the roadmap says why and
-what waits on them.
+`quanty/` is built and its surface is fixed by ADR-030: concrete types
+only, statements as text, transactions as a borrow, and nothing from the
+internal crates re-exported, so no internal type reaches an embedder's
+signatures. `quanty-derive/` is still unbuilt; the roadmap says why and
+what waits on it.
 
 There is no dependency budget, because there are no dependencies. This
 section used to name crc32c, blake3 and parking_lot; ADR-020 wrote out the
