@@ -1,5 +1,7 @@
 //! The embedded surface, exercised the way an embedder would.
 
+mod common;
+
 use quanty::{Database, ErrorKind, Outcome, Value};
 
 fn seeded() -> Database {
@@ -161,10 +163,8 @@ fn gc_refuses_inside_a_transaction() {
 
 #[test]
 fn a_file_database_survives_being_closed_and_opened() {
-    let dir = std::env::temp_dir().join(format!("quanty-embedded-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("temp dir");
-    let path = dir.join("round-trip.qdb");
-    let _ = std::fs::remove_file(&path);
+    let dir = common::TestDir::new();
+    let path = dir.path().join("round-trip.qdb");
 
     {
         let mut db = Database::create(&path).expect("create");
@@ -176,10 +176,6 @@ fn a_file_database_survives_being_closed_and_opened() {
     let rows = db.query("get t { id }").expect("get");
     assert_eq!(rows.rows()[0][0], Value::Int(42));
     assert_eq!(db.branch(), "main");
-
-    drop(db);
-    let _ = std::fs::remove_file(&path);
-    let _ = std::fs::remove_dir(&dir);
 }
 
 #[test]

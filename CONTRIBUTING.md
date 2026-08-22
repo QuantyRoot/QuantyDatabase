@@ -59,6 +59,16 @@ something invisible, break the thing on purpose and watch the test go red
 before you commit it. Several tests here have a comment saying exactly
 what was switched off to prove they would catch it.
 
+**Take the instrument from the repository before building one.** Every
+crate with integration tests carries `tests/common/mod.rs` with `TestDir`,
+a temp directory that is unique across concurrent test binaries and
+removes itself on drop. It has been hand rolled twice by people who did
+not look, and both replacements were worse: one keyed the directory on the
+process id alone, which collides across test binaries and across a rerun
+that reuses a pid, and cleaned up at the end of the test rather than on
+drop, so a panic leaked it. Copy the file into the new crate, change only
+the first line, and check it stays byte identical to the core copy.
+
 **English and plain ASCII** in code, comments, commit messages and
 documentation, wrapped at 79 columns in the docs.
 
