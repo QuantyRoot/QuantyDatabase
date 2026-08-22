@@ -245,6 +245,9 @@ Quanty database.
   commit record's parent link into a DAG edge, enabling branches, `AS OF`, and
   garbage collection with a free list.
 
+Phase 6 added blob chunks to the catalog tree without a bump, for the
+reason given under the catalog tree below.
+
 Pre-1.0, format versions are not migrated. A file written by an older version
 is rejected with a clear message rather than upgraded in place; the project is
 young enough that carrying migration code is not yet worth its weight (see
@@ -263,7 +266,26 @@ order preserving, self delimiting. `(a, b)` denotes such a tuple.
 ```
 ("seq")            next object id, u64 LE (tables and indexes share it)
 ("table", name)    serialized table definition
+("blob", hash)     the bytes of one content addressed chunk
+("blobrefs", hash) how many descriptors name that chunk, u64 LE
 ```
+
+`hash` is the 32 byte SHA-256 of the chunk, so the key is the address.
+Bytes and count sit at separate keys on purpose: a B-tree replaces a
+value whole, so a count stored in front of the payload would copy the
+payload's whole overflow chain every time it moved (ADR-033). A chunk
+larger than a page takes the same overflow chain as any other large
+value; there is no blob page type, and the one reserved in the page type
+list has never been written.
+
+Blob keys arrived after version 2 and did not bump it. They add no page
+type and no meta field, and the compatibility rule above is about those.
+A reader that predates them sees catalog entries it does not interpret
+and is unharmed: table scans are bounded by the `("table", ...)` prefix,
+and the collector works on page reachability rather than on what a key
+means. A `blob` **column type** would be a different matter, because it
+adds a tag to the list below, and a reader must reject what it cannot
+read: that one bumps the version when it lands.
 
 Table definitions serialize as: version byte (1), table id u64, name
 (u16 length + UTF-8), column count u16, then per column: name, type tag
