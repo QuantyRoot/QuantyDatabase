@@ -38,6 +38,8 @@ usage:
   quanty switch <database.qdb> <branch>
   quanty merge <database.qdb> <branch>
   quanty log <database.qdb>
+  quanty stats <database.qdb>
+  quanty gc <database.qdb> <keep>
   quanty token <label>
   quanty connect <addr> [statement] [--token <t>] [--sql]
   quanty about
@@ -55,6 +57,8 @@ usage:
   switch   move to another branch
   merge    fast forward the current branch onto another one
   log      print the commits of the current branch
+  stats    page counts for the file as it stands
+  gc       drop history, keeping <keep> commits per branch
   token    mint one and print it, with the line that accepts it
   connect  talk to a running server; with a statement it runs that one,
              without it reads statements from stdin, as shell does
@@ -293,6 +297,22 @@ fn run(args: &[String]) -> Result<(), Failure> {
         "log" => match rest {
             [database] => run_ours(database, &Statement::Log),
             _ => Err(usage("log takes a database")),
+        },
+        "stats" => match rest {
+            [database] => run_ours(database, &Statement::ShowStats),
+            _ => Err(usage("stats takes a database")),
+        },
+        "gc" => match rest {
+            [database, keep] => {
+                let keep = keep
+                    .parse::<u64>()
+                    .map_err(|_| usage(format!("gc wants a number of commits, got {keep}")))?;
+                if keep == 0 {
+                    return Err(usage("gc must keep at least one commit per branch"));
+                }
+                run_ours(database, &Statement::Gc { keep })
+            }
+            _ => Err(usage("gc takes a database and how many commits to keep")),
         },
         "help" => Err(usage("")),
         other => Err(usage(format!("unknown command {other}"))),

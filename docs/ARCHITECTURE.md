@@ -140,8 +140,8 @@ durations were planned here and do not exist.
 GC walks commits outside the retention window, moves their exclusively
 owned pages to the free list once retention allows it (phase 3, ADR-010).
 The free list is itself a small tree of page ranges. It runs only when
-asked, never incrementally on commit, and there is no `quanty gc`
-subcommand: `quanty run <db> "gc keep 5"`.
+asked, never incrementally on commit: `gc keep 5` as a statement, or
+`quanty gc <db> 5`.
 
 ### Key encoding
 
@@ -340,5 +340,5 @@ backends, which is also what keeps a WASM build possible.
 - bloom filters per leaf range and prefix compression in nodes: v2.
 - the adaptive story (auto index suggestions, hot/cold tiering, layout
   switching) needs a stats collector first. `DbStats` counts pages, head
-  pages and free pages; nothing surfaces it, and `quanty stats` was named
-  here and is not built. Make decisions from real numbers.
+  pages and free pages, and `show stats` and `quanty stats` surface it.
+  Make decisions from real numbers.

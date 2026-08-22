@@ -176,12 +176,18 @@ impl Parser {
             }
             "show" => {
                 let what_at = self.at();
-                match self.ident("'tables' or 'branches' after show")?.as_str() {
+                match self
+                    .ident("'tables', 'branches' or 'stats' after show")?
+                    .as_str()
+                {
                     "tables" => Ok(Statement::ShowTables),
                     "branches" => Ok(Statement::ShowBranches),
+                    "stats" => Ok(Statement::ShowStats),
                     other => Err(ParseError::at(
                         what_at,
-                        format!("show knows 'tables' and 'branches', not '{other}'"),
+                        format!(
+                            "show knows 'tables', 'branches' and 'stats', not '{other}'"
+                        ),
                     )),
                 }
             }

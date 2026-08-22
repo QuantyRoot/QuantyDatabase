@@ -620,6 +620,11 @@ impl<S: Storage> Db<S> {
     }
 
     /// Diagnostic counters.
+    /// Bytes per page, fixed when the file was created.
+    pub fn page_size(&self) -> u32 {
+        self.pager.page_size()
+    }
+
     pub fn stats(&self) -> Result<DbStats> {
         let meta = self.pager.committed_meta();
         let head = self

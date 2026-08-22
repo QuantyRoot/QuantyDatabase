@@ -39,6 +39,8 @@ pub enum Statement {
     DropBranch { name: String },
     /// `show branches`
     ShowBranches,
+    /// `show stats`, page counts for the file as it stands
+    ShowStats,
     /// `log`, the current branch's history
     Log,
     /// `gc keep 10`

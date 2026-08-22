@@ -447,3 +447,106 @@ fn the_branch_verbs_want_their_arguments() {
         assert!(stderr(&out).contains("usage:"), "{args:?}");
     }
 }
+
+// ---------------------------------------------------------------------------
+// stats and gc
+// ---------------------------------------------------------------------------
+
+fn stat_line(text: &str, field: &str) -> u64 {
+    text.lines()
+        .find_map(|l| l.strip_prefix(field))
+        .unwrap_or_else(|| panic!("no {field} line in {text}"))
+        .trim()
+        .parse()
+        .expect("a number")
+}
+
+#[test]
+fn stats_describes_the_file_that_is_actually_there() {
+    let dir = TestDir::new();
+    let path = seeded(&dir);
+
+    let text = stdout(&quanty(&["stats", &path]));
+    let on_disk = std::fs::metadata(&path).unwrap().len();
+
+    assert_eq!(
+        stat_line(&text, "bytes"),
+        on_disk,
+        "stats and the file disagree: {text}"
+    );
+    assert_eq!(
+        stat_line(&text, "pages") * stat_line(&text, "page size"),
+        on_disk
+    );
+    assert!(stat_line(&text, "head pages") > 0, "no live pages: {text}");
+}
+
+#[test]
+fn gc_frees_pages_and_stats_shows_it() {
+    let dir = TestDir::new();
+    let path = seeded(&dir);
+    for i in 2..8 {
+        assert!(quanty(&[
+            "run",
+            &path,
+            &format!("put users {{ id: {i}, name: \"u{i}\" }}")
+        ])
+        .status
+        .success());
+    }
+
+    assert_eq!(
+        stat_line(&stdout(&quanty(&["stats", &path])), "free pages"),
+        0
+    );
+
+    let run = quanty(&["gc", &path, "2"]);
+    assert!(run.status.success(), "{}", stderr(&run));
+    assert!(stdout(&run).contains("pruned"), "{}", stdout(&run));
+
+    let after = stdout(&quanty(&["stats", &path]));
+    assert!(
+        stat_line(&after, "free pages") > 0,
+        "gc reported work but freed nothing: {after}"
+    );
+    // the rows are still there
+    assert_eq!(
+        stdout(&quanty(&["run", &path, "get users { id }"]))
+            .lines()
+            .count(),
+        7
+    );
+}
+
+#[test]
+fn gc_wants_a_number_and_refuses_zero() {
+    let dir = TestDir::new();
+    let path = seeded(&dir);
+
+    let words = quanty(&["gc", &path, "viele"]);
+    assert!(!words.status.success());
+    assert!(stderr(&words).contains("number of commits"));
+
+    let zero = quanty(&["gc", &path, "0"]);
+    assert!(!zero.status.success());
+    assert!(stderr(&zero).contains("at least one commit"));
+
+    let missing = quanty(&["gc", &path]);
+    assert!(!missing.status.success());
+    assert!(stderr(&missing).contains("usage:"));
+}
+
+#[test]
+fn show_stats_is_a_statement_too_not_only_a_verb() {
+    // The verb is sugar; the capability has to be reachable through run
+    // and therefore over the wire, like every other one here. The rule
+    // about transactions lives with the executor, which is where a
+    // session outlives a single statement.
+    let dir = TestDir::new();
+    let path = seeded(&dir);
+
+    let out = quanty(&["run", &path, "show stats"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(stdout(&out).contains("page size"));
+    assert_eq!(stdout(&out), stdout(&quanty(&["stats", &path])));
+}

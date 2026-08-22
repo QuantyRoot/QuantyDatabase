@@ -226,6 +226,17 @@ impl<S: Storage> Session<S> {
                 self.db.drop_branch(name)?;
                 Ok(Output::Ok)
             }
+            Statement::ShowStats => {
+                let stats = self.db.stats()?;
+                let page_size = self.db.page_size() as u64;
+                Ok(Output::Lines(vec![
+                    format!("page size {page_size}"),
+                    format!("pages {}", stats.page_count),
+                    format!("head pages {}", stats.head_pages),
+                    format!("free pages {}", stats.free_pages),
+                    format!("bytes {}", stats.page_count * page_size),
+                ]))
+            }
             Statement::ShowBranches => {
                 let current = self.db.current_branch();
                 let lines = self
@@ -300,6 +311,7 @@ impl<S: Storage> Session<S> {
             | Statement::Merge { .. }
             | Statement::DropBranch { .. }
             | Statement::ShowBranches
+            | Statement::ShowStats
             | Statement::Log
             | Statement::Gc { .. } => Err(ExecError::exec(NOT_IN_TXN)),
             // history reads are independent of the pending writes
@@ -863,6 +875,7 @@ impl<S: Storage> Run<'_, S> {
             | Statement::Merge { .. }
             | Statement::DropBranch { .. }
             | Statement::ShowBranches
+            | Statement::ShowStats
             | Statement::Log
             | Statement::Gc { .. }
             | Statement::Begin

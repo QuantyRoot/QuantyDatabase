@@ -83,6 +83,11 @@ error: branch and history statements cannot run inside a transaction; commit or 
 > gc keep 5
 error: branch and history statements cannot run inside a transaction; commit or rollback first
 
+# show stats reads the committed file, so it follows the same rule rather
+# than reporting numbers that leave the open transaction out
+> show stats
+error: branch and history statements cannot run inside a transaction; commit or rollback first
+
 # reads of history inside a transaction ignore the pending writes
 > put t { id: 5, n: 50 }
 put 1
