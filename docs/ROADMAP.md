@@ -155,7 +155,9 @@ Acceptance:
 ## Phase 6: Blobs + assets
 
 Content-addressed chunked blob store, dedup, streaming read/write API,
-inline threshold config.
+and an `asset` column that holds a descriptor. There is no inline
+threshold: ADR-034 counted what an invisible spill would cost and chose a
+declared column type instead.
 
 Acceptance:
 - [x] store/retrieve 1 GiB asset with constant memory: 16 MiB resident on
@@ -164,19 +166,13 @@ Acceptance:
       heavy suite. The spread is allocator retention, not the database
 - [x] identical files stored twice use ~1x space (dedup verified): the
       second copy of a 200 kB chunk costs two pages
-- [ ] blob GC integrates with commit GC without dangling chunks (checker):
-      rows now hold references. An `asset` column claims its chunks on
-      insert and gives them back on delete, on overwrite and when the
-      table is dropped, and `check_blobs` reports the store as sound
-      after each. What is left is the sweep for chunks a run that died
-      mid upload left behind, which ADR-033 explains is not the simple
-      thing it looks like.
-      Previously:
-      `check_blobs` walks the store and reports sound, unclaimed and half
-      present chunks, and a test builds a half present one by hand so the
-      broken arm is actually reached. What it cannot yet do is reconcile
-      chunks against the descriptors naming them, because no column holds
-      a descriptor yet; ADR-034 chose where that goes
+- [x] blob GC integrates with commit GC without dangling chunks (checker):
+      an `asset` column claims its chunks on insert and gives them back on
+      delete, on overwrite and when the table is dropped; `gc blobs`
+      collects what a run that died mid upload left behind, by walking the
+      rows rather than trusting a count; and `check_blobs` reports the
+      store sound after every one of those. ADR-033 records why the race
+      that blocked this is gone.
 
 ## Phase 7: Search
 

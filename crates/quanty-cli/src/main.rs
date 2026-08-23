@@ -39,7 +39,7 @@ usage:
   quanty merge <database.qdb> <branch>
   quanty log <database.qdb>
   quanty stats <database.qdb>
-  quanty gc <database.qdb> <keep>
+  quanty gc <database.qdb> <keep> | blobs
   quanty token <label>
   quanty connect <addr> [statement] [--token <t>] [--sql]
   quanty about
@@ -59,6 +59,7 @@ usage:
   log      print the commits of the current branch
   stats    page counts for the file as it stands
   gc       drop history, keeping <keep> commits per branch
+             blobs    drop chunks no row names any more
   token    mint one and print it, with the line that accepts it
   connect  talk to a running server; with a statement it runs that one,
              without it reads statements from stdin, as shell does
@@ -303,6 +304,7 @@ fn run(args: &[String]) -> Result<(), Failure> {
             _ => Err(usage("stats takes a database")),
         },
         "gc" => match rest {
+            [database, "blobs"] => run_ours(database, &Statement::GcBlobs),
             [database, keep] => {
                 let keep = keep
                     .parse::<u64>()

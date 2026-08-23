@@ -1225,6 +1225,28 @@ because they are needed whichever way that goes and are testable on
 their own; the sweep does not, and orphaned chunks occupy space until
 somebody decides which it is.
 
+**Resolved: the sweep walks rows, and two other changes took the race
+away.** `gc blobs` collects every chunk named by an asset column in the
+current head and deletes the rest. It is the reachability pass this
+record called exact and O(rows) and put outside the storage layer, and
+that is where it went: `WriteTx::sweep_chunks` takes the reachable set
+and knows nothing about what a column means, while the executor, which
+does, builds it.
+
+The race is gone for two reasons that were not true when the paragraph
+above was written. Rows hold references now (ADR-034), so a chunk no
+committed row names is garbage by definition rather than possibly
+in-flight. And two handles can no longer interleave their commits at all:
+the guard from ADR-035 fails one of them, so a sweep cannot slide between
+the commit that stores a chunk and the commit that names it. A caller
+holding a descriptor it has not stored is holding uncommitted state, and
+finds out at its next `retain_chunk`, which refuses rather than storing a
+row that points at nothing. That was run, not reasoned about.
+
+Only the current head is walked. Older commits keep their own catalog
+tree, so a swept chunk is still readable through `as of`, and the cost
+stays linear in the rows that exist now rather than in history.
+
 **SHA-256, not BLAKE3.** ARCHITECTURE named BLAKE3 back when the
 dependency question was still open. There is a hand written SHA-256 in
 this repository already, checked against the published vectors, and a

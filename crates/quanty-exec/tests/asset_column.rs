@@ -179,3 +179,114 @@ fn a_table_without_an_asset_column_stays_at_catalog_version_one() {
         other => panic!("unexpected {other:?}"),
     }
 }
+
+// ---------------------------------------------------------------------------
+// gc blobs: reachability over rows (ADR-033's open criterion)
+// ---------------------------------------------------------------------------
+
+fn swept(s: &mut Session<MemStorage>) -> String {
+    match s.execute("gc blobs").expect("gc blobs") {
+        Output::Lines(l) => l.join("\n"),
+        other => panic!("unexpected {other:?}"),
+    }
+}
+
+#[test]
+fn a_blob_nobody_stored_is_collected() {
+    // This is exactly what ADR-033 could not decide: chunks left by a run
+    // that died between write_blob and storing the descriptor. Reference
+    // counts cannot tell that from an upload in flight; the rows can.
+    let mut s = session();
+    let orphan = stored(&s, &pattern(2 * quanty_core::CHUNK_SIZE));
+    assert_eq!(unclaimed(&s), 2);
+
+    let text = swept(&mut s);
+    assert!(text.contains("dropped 2 chunks"), "{text}");
+
+    let report = s.db().check_blobs().expect("check");
+    assert_eq!(report.unclaimed, 0);
+    assert_eq!(report.sound, 0);
+    assert!(report.is_sound(), "half a chunk was left behind");
+
+    // and the descriptor now names nothing, loudly
+    let err = s
+        .execute(&format!(
+            "put files {{ id: 1, body: x\"{}\" }}",
+            hex(&orphan)
+        ))
+        .expect_err("its chunks are gone");
+    assert!(err.to_string().contains("chunk"), "{err}");
+}
+
+#[test]
+fn a_blob_a_row_names_survives_the_sweep() {
+    let mut s = session();
+    let kept = stored(&s, &pattern(quanty_core::CHUNK_SIZE));
+    let orphan = stored(&s, &pattern(3 * quanty_core::CHUNK_SIZE + 11));
+    s.execute(&format!("put files {{ id: 1, body: x\"{}\" }}", hex(&kept)))
+        .expect("put");
+
+    // the orphan shares its first chunk with the stored one, so the sweep
+    // has to keep that and drop only the rest
+    let text = swept(&mut s);
+    assert!(text.contains("kept 1"), "{text}");
+
+    let report = s.db().check_blobs().expect("check");
+    assert_eq!(report.sound, 1);
+    assert_eq!(report.unclaimed, 0);
+    assert!(!orphan.chunks.is_empty());
+
+    // the row still reads back
+    let out = s.execute("get files { id }").expect("get");
+    assert!(matches!(out, Output::Rows { .. }));
+}
+
+#[test]
+fn sweeping_twice_drops_nothing_the_second_time() {
+    let mut s = session();
+    let blob = stored(&s, &pattern(2 * quanty_core::CHUNK_SIZE));
+    s.execute(&format!("put files {{ id: 1, body: x\"{}\" }}", hex(&blob)))
+        .expect("put");
+    stored(&s, &pattern(quanty_core::CHUNK_SIZE + 3));
+
+    let first = swept(&mut s);
+    assert!(first.contains("dropped 1 chunks"), "{first}");
+    let second = swept(&mut s);
+    assert!(second.contains("dropped 0 chunks"), "{second}");
+    assert!(second.contains("kept 2"), "{second}");
+}
+
+#[test]
+fn a_deleted_row_leaves_nothing_for_the_sweep_to_find() {
+    // del already releases, so the count reaches zero and the entry goes.
+    // The sweep is for what never got a reference, not for cleaning up
+    // after the paths that work.
+    let mut s = session();
+    let blob = stored(&s, &pattern(2 * quanty_core::CHUNK_SIZE));
+    s.execute(&format!("put files {{ id: 1, body: x\"{}\" }}", hex(&blob)))
+        .expect("put");
+    s.execute("del files where id = 1").expect("del");
+
+    let text = swept(&mut s);
+    assert!(text.contains("dropped 0 chunks"), "{text}");
+    assert!(text.contains("kept 0"), "{text}");
+}
+
+#[test]
+fn a_table_without_asset_columns_is_not_scanned_into_the_reachable_set() {
+    // A plain table must not make chunks reachable by accident, and a
+    // bytes column that happens to hold descriptor-shaped bytes is still
+    // just bytes.
+    let mut s = session();
+    let blob = stored(&s, &pattern(quanty_core::CHUNK_SIZE));
+    s.execute("table plain { id: int @key, body: bytes }")
+        .expect("table");
+    s.execute(&format!("put plain {{ id: 1, body: x\"{}\" }}", hex(&blob)))
+        .expect("put");
+
+    let text = swept(&mut s);
+    assert!(
+        text.contains("dropped 1 chunks"),
+        "a bytes column held it: {text}"
+    );
+}

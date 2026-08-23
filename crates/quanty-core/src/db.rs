@@ -27,7 +27,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::sync::RwLock;
 
-use crate::blob::{self, BlobCheck, BlobRef, ChunkHash};
+use crate::blob::{self, BlobCheck, BlobRef, BlobSweep, ChunkHash};
 use crate::btree::{self, Scan};
 use crate::commit::{self, CommitInfo};
 use crate::error::{Error, Result};
@@ -951,6 +951,56 @@ impl<S: Storage> WriteTx<'_, S> {
 
     pub fn catalog_get(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
         btree::get(&self.batch, self.catalog_root, key)
+    }
+
+    /// Delete every chunk `reachable` does not name.
+    ///
+    /// Only this commit's view changes. Older commits keep their own
+    /// version of the catalog tree, so a chunk swept here is still
+    /// readable through `as of`, which is what copy-on-write means and
+    /// why this does not have to look at history at all.
+    ///
+    /// A chunk no committed row names is garbage by definition. A caller
+    /// holding a descriptor it has not stored yet is holding uncommitted
+    /// state, and finds out at the next `retain_chunk`, which fails
+    /// rather than storing a row that points at nothing.
+    pub fn sweep_chunks(
+        &mut self,
+        reachable: &std::collections::HashSet<ChunkHash>,
+    ) -> Result<BlobSweep> {
+        let prefix = blob::refs_prefix();
+        let mut doomed = Vec::new();
+        let mut report = BlobSweep::default();
+        {
+            let scan = Scan::new(
+                &self.batch,
+                self.catalog_root,
+                Some(&prefix),
+                prefix_successor(&prefix).as_deref(),
+            )?;
+            for item in scan {
+                let (key, _) = item?;
+                let hash = blob::hash_from_key(&key)?;
+                if reachable.contains(&hash) {
+                    report.kept += 1;
+                } else {
+                    doomed.push(hash);
+                }
+            }
+        }
+
+        for hash in doomed {
+            let bytes_key = blob::chunk_key(&hash);
+            if let Some(bytes) = btree::get(&self.batch, self.catalog_root, &bytes_key)? {
+                report.bytes += bytes.len() as u64;
+            }
+            for key in [blob::refs_key(&hash), bytes_key] {
+                let (root, _) = btree::remove(&mut self.batch, self.catalog_root, &key)?;
+                self.catalog_root = root;
+            }
+            report.removed += 1;
+        }
+        Ok(report)
     }
 
     /// Store a chunk under its own hash, or leave the one already there.

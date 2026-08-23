@@ -45,6 +45,8 @@ pub enum Statement {
     Log,
     /// `gc keep 10`
     Gc { keep: u64 },
+    /// `gc blobs`, drop chunks no row in the current head names
+    GcBlobs,
     /// `begin`, open an explicit transaction spanning statements
     Begin,
     /// `commit`, make the open transaction durable

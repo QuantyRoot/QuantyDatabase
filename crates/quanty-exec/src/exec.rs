@@ -887,6 +887,7 @@ impl<S: Storage> Run<'_, S> {
             Statement::Del { table, filter } => self.del(table, filter.as_ref()),
             Statement::IndexDef { table, column } => self.create_index(table, column),
             Statement::ShowTables => self.show_tables(),
+            Statement::GcBlobs => self.gc_blobs(),
             Statement::Explain(inner) => self.explain(inner),
             // branch and history statements never reach here: Session::execute
             // routes them before any write transaction opens
@@ -1029,6 +1030,65 @@ impl<S: Storage> Run<'_, S> {
         }
         self.store_table(&table)?;
         Ok(Output::Ok)
+    }
+
+    /// Drop every chunk no row in the current head names.
+    ///
+    /// This is what closes the criterion ADR-033 left open. The storage
+    /// layer cannot do it because only the schema says which columns hold
+    /// a descriptor; here that is known, so reachability is exact rather
+    /// than a guess about reference counts.
+    ///
+    /// Only the current head is walked. Older commits keep their own
+    /// catalog tree, so a chunk removed here is still readable through
+    /// `as of`, and the walk stays linear in the rows that exist now.
+    fn gc_blobs(&mut self) -> Result<Output, ExecError> {
+        let prefix = catalog::tables_prefix();
+        let end = key_successor(&prefix);
+        let mut tables = Vec::new();
+        for item in self.tx.catalog_scan(Some(&prefix), end.as_deref())? {
+            let (_, bytes) = item?;
+            tables.push(Table::deserialize(&bytes)?);
+        }
+
+        let mut reachable = std::collections::HashSet::new();
+        for table in &tables {
+            let positions: Vec<usize> = table
+                .columns
+                .iter()
+                .enumerate()
+                .filter(|(_, c)| c.ty == TypeName::Asset)
+                .map(|(pos, _)| pos)
+                .collect();
+            if positions.is_empty() {
+                continue;
+            }
+            let rows = self.fetch(
+                table,
+                &AccessPlan {
+                    access: Access::SeqScan,
+                    residual: None,
+                },
+            )?;
+            for (_, values) in &rows {
+                for &pos in &positions {
+                    if let Value::Bytes(d) = &values[pos] {
+                        for hash in quanty_core::BlobRef::decode(d)?.chunks {
+                            reachable.insert(hash);
+                        }
+                    }
+                }
+            }
+        }
+
+        let report = self.tx.sweep_chunks(&reachable)?;
+        if report.removed > 0 {
+            self.mutated = true;
+        }
+        Ok(Output::Lines(vec![format!(
+            "gc blobs dropped {} chunks holding {} bytes, kept {}",
+            report.removed, report.bytes, report.kept
+        )]))
     }
 
     fn show_tables(&self) -> Result<Output, ExecError> {

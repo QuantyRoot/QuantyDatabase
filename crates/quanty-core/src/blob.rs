@@ -72,6 +72,17 @@ pub(crate) fn hash_from_key(key: &[u8]) -> Result<ChunkHash> {
     }
 }
 
+/// What a sweep of the chunk store removed.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BlobSweep {
+    /// Chunks nothing reachable named any more.
+    pub removed: u64,
+    /// Bytes those held.
+    pub bytes: u64,
+    /// Chunks still named, left alone.
+    pub kept: u64,
+}
+
 /// What a walk over the chunk store found.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct BlobCheck {

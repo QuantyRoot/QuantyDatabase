@@ -32,7 +32,9 @@ mod sha256;
 mod storage;
 mod sync;
 
-pub use blob::{hash_chunk, BlobCheck, BlobRef, ChunkHash, CHUNKS_PER_COMMIT, CHUNK_SIZE};
+pub use blob::{
+    hash_chunk, BlobCheck, BlobRef, BlobSweep, ChunkHash, CHUNKS_PER_COMMIT, CHUNK_SIZE,
+};
 pub use btree::{max_key_len, ReadPages, Scan};
 pub use commit::CommitInfo;
 pub use db::{Db, DbStats, GcReport, Snapshot, SuspendedTx, WriteTx};

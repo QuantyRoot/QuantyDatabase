@@ -213,13 +213,22 @@ impl Parser {
             "merge" => Ok(Statement::Merge { name: self.ident("a branch name")? }),
             "log" => Ok(Statement::Log),
             "gc" => {
-                self.expect_kw("keep")?;
-                let n_at = self.at();
-                match self.bump() {
-                    Token::Int(n) if n >= 0 => Ok(Statement::Gc { keep: n as u64 }),
-                    _ => Err(ParseError::at(
-                        n_at,
-                        "gc keep wants the number of commits to retain per branch",
+                let what_at = self.at();
+                match self.ident("'keep' or 'blobs' after gc")?.as_str() {
+                    "blobs" => Ok(Statement::GcBlobs),
+                    "keep" => {
+                        let n_at = self.at();
+                        match self.bump() {
+                            Token::Int(n) if n >= 0 => Ok(Statement::Gc { keep: n as u64 }),
+                            _ => Err(ParseError::at(
+                                n_at,
+                                "gc keep wants the number of commits to retain per branch",
+                            )),
+                        }
+                    }
+                    other => Err(ParseError::at(
+                        what_at,
+                        format!("gc knows 'keep' and 'blobs', not '{other}'"),
                     )),
                 }
             }
