@@ -9,6 +9,7 @@ mod catalog;
 mod error;
 mod exec;
 mod plan;
+mod text;
 mod value_ops;
 mod verify;
 
@@ -16,5 +17,6 @@ pub use catalog::{Column, Table};
 pub use error::ExecError;
 pub use exec::{Output, Parked, Session};
 pub use plan::{Access, AccessPlan};
+pub use text::{length as text_length, postings, tokenize, Token, MAX_TERM_LEN};
 pub use value_ops::render as render_value;
 pub use verify::verify_indexes;

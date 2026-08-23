@@ -1396,3 +1396,52 @@ and it detects rather than prevents: two writers still race, the loser
 just learns about it instead of winning silently. A crash between the
 read and the meta write leaves the file exactly as the loser found it,
 which is the same guarantee as any other commit that never happened.
+
+## ADR-036: A text index is a secondary index whose value is a term
+
+Phase 7 wants an inverted index with positions and BM25, consistent under
+the crash harness. Reading the index code first: a secondary index entry
+is `(index_id, value, ...pk)` in the data tree, written and deleted
+alongside the row that produced it. A posting is the same shape with the
+term where the value goes. One row makes one entry per distinct term
+instead of one entry, and the entry carries its positions instead of
+being empty.
+
+**That is the whole storage design, and it is deliberate.** ARCHITECTURE
+says no feature gets its own storage path, and search is the feature most
+likely to want one. Reusing the entry key means postings are versioned,
+branched, time travelled and collected by machinery that already exists
+and is already under the crash harness, and it means the second
+acceptance criterion is mostly inherited rather than built.
+
+**Statistics live in the same index under an integer namespace.** BM25
+needs the document frequency of a term, the length of each document and
+the corpus average. Keys are typed tuples and the encoding orders types
+before values, integers before text, so `(index_id, 0, ...pk)` holds a
+document's length and `(index_id, 1)` holds the corpus counters, both
+sorting ahead of every term without a prefix anyone has to reserve.
+Document frequency sits at `(index_id, term)`, a tuple shorter than any
+posting for that term, so it sorts immediately before the postings it
+counts and a term lookup reads it on the way past.
+
+**The tokenizer is ASCII and says so.** It lowercases ASCII letters,
+splits on anything that is not a letter or a digit, and does nothing
+else. No stemming, no stop words, no Unicode case folding, no
+segmentation for languages that do not put spaces between words. Each of
+those is a table or an algorithm, and the dependency rule means writing
+it rather than taking it; none of them earns that before there is a
+corpus to measure against. What this costs is real and worth naming:
+a German word split by an umlaut tokenizes into two pieces around it,
+and Japanese does not tokenize at all. The tokenizer is one function behind one call, so
+replacing it is a change to one file and a reindex.
+
+**Ranking is BM25 with the usual constants**, k1 = 1.2 and b = 0.75,
+because a phase that has to beat a brute force scan by a hundredfold
+should spend its budget on the index rather than on inventing a scoring
+function.
+
+**The price.** A row with a text column now writes one index entry per
+distinct term in it, so an insert into an indexed table is no longer a
+fixed amount of work; a thousand word document is a thousand entries.
+Deleting is symmetric and pays the same. Reindexing is the only migration
+path for a tokenizer change, and nothing automates it yet.

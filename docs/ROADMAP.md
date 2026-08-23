@@ -176,8 +176,14 @@ Acceptance:
 
 ## Phase 7: Search
 
-Inverted index for full text (tokenizer, positions, BM25 ranking) maintained
-transactionally with the data.
+Inverted index for full text (tokenizer, positions, BM25 ranking)
+maintained transactionally with the data. ADR-036 fixes the shape: a
+posting is a secondary index entry whose value is a term, so postings
+inherit versioning, branching and the crash harness rather than getting a
+storage path of their own.
+
+Built so far: the tokenizer, ASCII and deliberately so, with its
+limitations tested rather than described.
 
 Acceptance:
 - [ ] indexed search returns identical results to a brute force scan on a
