@@ -29,7 +29,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use quanty_core::{Db, Value};
-use quanty_exec::{Output, Session};
+use quanty_exec::{verify_indexes, Output, Session};
 
 const ENV_CHILD: &str = "QUANTY_TXN_CRASH_CHILD";
 const ENV_DB: &str = "QUANTY_TXN_CRASH_DB";
@@ -46,6 +46,18 @@ fn ids_of(k: i64) -> std::ops::Range<i64> {
     (k * GROUP)..(k * GROUP + GROUP)
 }
 
+/// A deterministic document for row `id`, so the parent can rebuild the
+/// expected postings without being told what the child wrote.
+///
+/// Words repeat across rows on purpose: a term that only ever appears
+/// once would not exercise a posting list that has to grow and shrink.
+fn body_of(id: i64) -> String {
+    const WORDS: [&str; 5] = ["alpha", "beta", "gamma", "delta", "epsilon"];
+    let a = WORDS[(id % 5) as usize];
+    let b = WORDS[((id / 5) % 5) as usize];
+    format!("{a} {b} {a}")
+}
+
 /// Child mode: write transactions until killed.
 ///
 /// A #[test] only so it lives in the same binary as the parent; it exits
@@ -59,7 +71,7 @@ fn txn_crash_child_entry() {
     let db = Db::create_file(&path).expect("child create db");
     let mut session = Session::new(db);
     session
-        .execute("table t { id: int @key, n: int }")
+        .execute("table t { id: int @key, n: int, body: text @text }")
         .expect("child create table");
 
     let mut out = std::io::stdout();
@@ -70,7 +82,10 @@ fn txn_crash_child_entry() {
         session.execute("begin").expect("begin");
         for id in ids_of(k) {
             session
-                .execute(&format!("put t {{ id: {id}, n: {k} }}"))
+                .execute(&format!(
+                    "put t {{ id: {id}, n: {k}, body: \"{}\" }}",
+                    body_of(id)
+                ))
                 .expect("put in txn");
         }
         session.execute("commit").expect("commit");
@@ -174,6 +189,24 @@ fn verify(path: &std::path::Path, acked: u64, iter: u64) {
         Err(_) if acked == 0 => return,
         Err(e) => panic!("iter {iter}: read failed: {e} ({path:?})"),
     };
+
+    // The text index is rebuilt from the surviving rows and compared
+    // entry by entry, so a kill between a row and its postings shows up
+    // here rather than as a search that quietly misses a document.
+    verify_indexes(&session)
+        .unwrap_or_else(|e| panic!("iter {iter}: index verification failed: {e} ({path:?})"));
+
+    // and the document is the one the child would have written for that id
+    for row in &rows {
+        let (Value::Int(id), Value::Text(body)) = (&row[0], &row[2]) else {
+            panic!("iter {iter}: unexpected row shape {row:?} ({path:?})");
+        };
+        assert_eq!(
+            body,
+            &body_of(*id),
+            "iter {iter}: row {id} carries the wrong document ({path:?})"
+        );
+    }
 
     // group the surviving rows by the transaction that wrote them
     let mut groups: BTreeMap<i64, Vec<i64>> = BTreeMap::new();

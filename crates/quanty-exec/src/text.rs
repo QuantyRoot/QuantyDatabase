@@ -80,12 +80,46 @@ pub fn length(text: &str) -> u32 {
     tokenize(text).len() as u32
 }
 
+/// Positions as they sit in a posting: little endian u32, in order.
+///
+/// Term frequency is the length of this and is never stored beside it,
+/// so the two cannot disagree (ADR-036).
+pub fn encode_positions(positions: &[u32]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(positions.len() * 4);
+    for p in positions {
+        out.extend_from_slice(&p.to_le_bytes());
+    }
+    out
+}
+
+/// Read a posting back, or None if it is not a whole number of positions.
+pub fn decode_positions(bytes: &[u8]) -> Option<Vec<u32>> {
+    if bytes.len() % 4 != 0 {
+        return None;
+    }
+    Some(
+        bytes
+            .chunks_exact(4)
+            .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+            .collect(),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn terms(text: &str) -> Vec<String> {
         tokenize(text).into_iter().map(|t| t.term).collect()
+    }
+
+    #[test]
+    fn positions_survive_a_round_trip_and_junk_is_refused() {
+        for case in [vec![], vec![0u32], vec![0, 1, 7, 4_000_000_000]] {
+            assert_eq!(decode_positions(&encode_positions(&case)), Some(case));
+        }
+        assert_eq!(decode_positions(&[1, 2, 3]), None);
+        assert_eq!(decode_positions(&[1, 2, 3, 4, 5]), None);
     }
 
     #[test]

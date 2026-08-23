@@ -294,19 +294,27 @@ impl Parser {
             nullable: false,
             key: false,
             index: false,
+            text: false,
             default: None,
         };
         loop {
             if self.eat(&Token::At) {
                 let attr_at = self.at();
-                match self.ident("an attribute (key, index, null)")?.as_str() {
+                match self
+                    .ident("an attribute (key, index, text, null)")?
+                    .as_str()
+                {
                     "key" => col.key = true,
                     "index" => col.index = true,
+                    "text" => col.text = true,
                     "null" => col.nullable = true,
                     other => {
                         return Err(ParseError::at(
                             attr_at,
-                            format!("'@{other}' is not an attribute (@key, @index, @null)"),
+                            format!(
+                                "'@{other}' is not an attribute \
+                                 (@key, @index, @text, @null)"
+                            ),
                         ))
                     }
                 }

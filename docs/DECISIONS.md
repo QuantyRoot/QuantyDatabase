@@ -1420,9 +1420,14 @@ the corpus average. Keys are typed tuples and the encoding orders types
 before values, integers before text, so `(index_id, 0, ...pk)` holds a
 document's length and `(index_id, 1)` holds the corpus counters, both
 sorting ahead of every term without a prefix anyone has to reserve.
-Document frequency sits at `(index_id, term)`, a tuple shorter than any
-posting for that term, so it sorts immediately before the postings it
-counts and a term lookup reads it on the way past.
+Document frequency is not stored. It was going to sit at `(index_id,
+term)`, and writing the maintenance made the reason to drop it obvious:
+document frequency is the number of postings a term has, and scoring
+reads every one of them anyway, because BM25 has to score every document
+that contains the term. A stored counter would be a second truth that can
+drift from the first and buys nothing. What cannot be derived from one
+term's postings is the corpus size and the average document length, and
+those are what the counters at `(index_id, 1)` are for.
 
 **The tokenizer is ASCII and says so.** It lowercases ASCII letters,
 splits on anything that is not a letter or a digit, and does nothing

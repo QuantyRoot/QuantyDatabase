@@ -147,6 +147,8 @@ pub struct ColumnDef {
     pub nullable: bool,
     pub key: bool,
     pub index: bool,
+    /// `@text`: keep an inverted index over this column's words.
+    pub text: bool,
     pub default: Option<Value>,
 }
 

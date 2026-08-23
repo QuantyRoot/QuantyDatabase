@@ -30,6 +30,10 @@ pub struct Column {
     pub key: bool,
     /// Object id of this column's secondary index, if one exists.
     pub index_id: Option<u64>,
+    /// Object id of this column's text index, if it was declared `@text`.
+    /// Separate from `index_id` because the two answer different
+    /// questions and a column may want both (ADR-036).
+    pub text_index_id: Option<u64>,
     pub default: Option<Value>,
 }
 
@@ -75,6 +79,7 @@ impl Table {
                     nullable: col.nullable,
                     key: col.key,
                     index_id: None,
+                    text_index_id: None,
                     default: Some(coerced),
                 });
             } else {
@@ -84,6 +89,7 @@ impl Table {
                     nullable: col.nullable,
                     key: col.key,
                     index_id: None,
+                    text_index_id: None,
                     default: None,
                 });
             }
@@ -129,6 +135,8 @@ pub fn seq_key() -> Vec<u8> {
 /// before it (FORMAT.md, ADR-034).
 const CATALOG_V1: u8 = 1;
 const CATALOG_V2: u8 = 2;
+/// Version 3 carries a second object id per column, for a text index.
+const CATALOG_V3: u8 = 3;
 
 fn type_tag(ty: TypeName) -> u8 {
     match ty {
@@ -166,7 +174,13 @@ impl Table {
         let version = self
             .columns
             .iter()
-            .map(|c| version_for(c.ty))
+            .map(|c| {
+                if c.text_index_id.is_some() {
+                    CATALOG_V3
+                } else {
+                    version_for(c.ty)
+                }
+            })
             .max()
             .unwrap_or(CATALOG_V1);
         let mut out = vec![version];
@@ -185,6 +199,9 @@ impl Table {
             }
             out.push(flags);
             out.extend_from_slice(&col.index_id.unwrap_or(0).to_le_bytes());
+            if version >= CATALOG_V3 {
+                out.extend_from_slice(&col.text_index_id.unwrap_or(0).to_le_bytes());
+            }
             match &col.default {
                 Some(v) => {
                     out.push(1);
@@ -201,7 +218,8 @@ impl Table {
     pub fn deserialize(buf: &[u8]) -> Result<Table, ExecError> {
         let bad = || ExecError::exec("catalog entry does not deserialize, this is a bug");
         let mut r = Reader { buf, at: 0 };
-        if !matches!(r.u8().ok_or_else(bad)?, CATALOG_V1 | CATALOG_V2) {
+        let version = r.u8().ok_or_else(bad)?;
+        if !matches!(version, CATALOG_V1 | CATALOG_V2 | CATALOG_V3) {
             return Err(ExecError::exec("catalog entry has an unknown version"));
         }
         let id = r.u64().ok_or_else(bad)?;
@@ -213,6 +231,11 @@ impl Table {
             let ty = type_from_tag(r.u8().ok_or_else(bad)?).ok_or_else(bad)?;
             let flags = r.u8().ok_or_else(bad)?;
             let index_id = r.u64().ok_or_else(bad)?;
+            let text_index_id = if version >= CATALOG_V3 {
+                r.u64().ok_or_else(bad)?
+            } else {
+                0
+            };
             let default = match r.u8().ok_or_else(bad)? {
                 0 => None,
                 1 => {
@@ -233,6 +256,7 @@ impl Table {
                 nullable: flags & 2 != 0,
                 key: flags & 1 != 0,
                 index_id: (index_id != 0).then_some(index_id),
+                text_index_id: (text_index_id != 0).then_some(text_index_id),
                 default,
             });
         }
@@ -314,5 +338,78 @@ mod tests {
             };
             assert!(Table::from_ast(&def, 1).is_err(), "accepted: {src}");
         }
+    }
+}
+
+#[cfg(test)]
+mod version_tests {
+    use super::*;
+    use quanty_ql::ast::TypeName;
+
+    fn table(columns: Vec<Column>) -> Table {
+        Table {
+            id: 7,
+            name: "t".into(),
+            columns,
+        }
+    }
+
+    fn col(ty: TypeName) -> Column {
+        Column {
+            name: "c".into(),
+            ty,
+            nullable: false,
+            key: false,
+            index_id: None,
+            text_index_id: None,
+            default: None,
+        }
+    }
+
+    /// A definition is written at the lowest version that can express it,
+    /// so an older reader keeps working on tables that gained nothing
+    /// (FORMAT.md, ADR-034, ADR-036).
+    #[test]
+    fn the_version_is_the_lowest_that_can_express_the_table() {
+        assert_eq!(table(vec![col(TypeName::Int)]).serialize()[0], CATALOG_V1);
+        assert_eq!(table(vec![col(TypeName::Asset)]).serialize()[0], CATALOG_V2);
+
+        let mut c = col(TypeName::Text);
+        c.text_index_id = Some(9);
+        assert_eq!(table(vec![c.clone()]).serialize()[0], CATALOG_V3);
+
+        // and the highest wins when a table has both
+        assert_eq!(
+            table(vec![col(TypeName::Asset), c]).serialize()[0],
+            CATALOG_V3
+        );
+    }
+
+    #[test]
+    fn every_version_round_trips_including_the_ones_it_did_not_write() {
+        for mut columns in [
+            vec![col(TypeName::Int)],
+            vec![col(TypeName::Asset)],
+            vec![col(TypeName::Text)],
+        ] {
+            columns[0].index_id = Some(3);
+            let before = table(columns.clone());
+            let after = Table::deserialize(&before.serialize()).expect("round trip");
+            assert_eq!(after.columns[0].index_id, Some(3));
+            assert_eq!(after.columns[0].text_index_id, None);
+
+            columns[0].text_index_id = Some(11);
+            let before = table(columns);
+            let after = Table::deserialize(&before.serialize()).expect("round trip v3");
+            assert_eq!(after.columns[0].index_id, Some(3));
+            assert_eq!(after.columns[0].text_index_id, Some(11));
+        }
+    }
+
+    #[test]
+    fn a_version_from_the_future_is_refused_rather_than_guessed() {
+        let mut bytes = table(vec![col(TypeName::Int)]).serialize();
+        bytes[0] = CATALOG_V3 + 1;
+        assert!(Table::deserialize(&bytes).is_err());
     }
 }

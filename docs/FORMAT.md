@@ -301,6 +301,14 @@ nullable), index id u64 (0 = none), default marker byte (0 = none,
 1 = tuple-encoded value with u32 length prefix). All integers little
 endian.
 
+Version 3 carries a second object id per column, after the secondary
+index id, for a text index. Its entries live under that id like any
+index: `(text_index_id, term, ...pk)` holds a term's positions as little
+endian u32, `(text_index_id, 0, ...pk)` a document's length, and
+`(text_index_id, 1)` the corpus counters. Integers sort before text in
+the key encoding, so the two statistics entries sit ahead of every term
+without a reserved prefix (ADR-036).
+
 The version byte is 1 for every definition that predates the `asset`
 column type. A definition is written at the lowest version that can
 express it, so a table gains version 2 by using a tag that version 1 has

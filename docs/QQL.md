@@ -61,6 +61,9 @@ Every column is `name: type` with optional attributes and default:
   composite key in declaration order; every table needs at least one
 - `@index` creates a secondary index on the column
 - `@null` allows null; key columns cannot be `@null`
+- `@text` keeps an inverted index over the column's words, for search.
+  Only on a `text` column, and only at table creation: there is no
+  statement that adds one to a table that already exists
 - `= literal` sets a default used when `put` omits the column
 
 A `put` that omits a column uses the default, then null if the column is

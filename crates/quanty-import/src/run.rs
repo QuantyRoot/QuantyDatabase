@@ -133,6 +133,10 @@ fn import_table<S: Source, T: Storage>(
                 nullable: column.nullable,
                 key: column.key,
                 index: column.indexed,
+                // SQLite has no full text column attribute to carry over,
+                // and guessing which imported text wants an inverted index
+                // is not the importer's call.
+                text: false,
                 default: column.default.clone(),
             })
             .collect(),

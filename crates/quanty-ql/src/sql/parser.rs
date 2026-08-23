@@ -767,6 +767,7 @@ impl Parser {
             nullable: true,
             key: false,
             index: false,
+            text: false,
             default: None,
         };
 

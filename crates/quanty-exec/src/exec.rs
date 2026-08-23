@@ -18,6 +18,7 @@ use quanty_ql::ast::{AsOf, ColumnRef, Direction, Expr, Get, Statement, TypeName}
 use crate::catalog::{self, Table};
 use crate::error::ExecError;
 use crate::plan::{self, Access, AccessPlan, ExplainNode};
+use crate::text;
 use crate::value_ops::{self, NoScope, Scope};
 use quanty_core::Snapshot;
 
@@ -873,6 +874,69 @@ impl<S: Storage> Run<'_, S> {
         Ok(())
     }
 
+    /// Add or remove one row's postings for one text-indexed column.
+    ///
+    /// Symmetric on purpose: the same walk produces the same keys either
+    /// way, so a delete cannot miss an entry an insert made.
+    fn move_postings(
+        &mut self,
+        index_id: u64,
+        pk: &[Value],
+        value: &Value,
+        adding: bool,
+    ) -> Result<(), ExecError> {
+        let text = match value {
+            Value::Text(s) => s.as_str(),
+            // A null column is not a document. It contributes no postings
+            // and is not counted in the corpus, so avgdl stays the average
+            // over documents that exist.
+            _ => return Ok(()),
+        };
+
+        for (term, positions) in text::postings(text) {
+            let key = index_entry_key(index_id, &Value::Text(term), pk);
+            if adding {
+                self.tx.put(&key, &text::encode_positions(&positions))?;
+            } else {
+                self.tx.delete(&key)?;
+            }
+        }
+
+        let length = text::length(text);
+        let len_key = index_entry_key(index_id, &Value::Int(0), pk);
+        if adding {
+            self.tx.put(&len_key, &length.to_le_bytes())?;
+        } else {
+            self.tx.delete(&len_key)?;
+        }
+        self.move_corpus(index_id, length, adding)
+    }
+
+    /// Keep the two numbers BM25 cannot get from a posting list: how many
+    /// documents there are and how long they are on average.
+    fn move_corpus(&mut self, index_id: u64, length: u32, adding: bool) -> Result<(), ExecError> {
+        let key = corpus_key(index_id);
+        let (mut docs, mut total) = match self.tx.get(&key)? {
+            Some(bytes) => decode_corpus(&bytes)?,
+            None => (0u64, 0u64),
+        };
+        if adding {
+            docs += 1;
+            total += length as u64;
+        } else {
+            docs = docs.saturating_sub(1);
+            total = total.saturating_sub(length as u64);
+        }
+        if docs == 0 {
+            self.tx.delete(&key)?;
+        } else {
+            let mut bytes = docs.to_le_bytes().to_vec();
+            bytes.extend_from_slice(&total.to_le_bytes());
+            self.tx.put(&key, &bytes)?;
+        }
+        Ok(())
+    }
+
     fn statement(&mut self, stmt: &Statement) -> Result<Output, ExecError> {
         match stmt {
             Statement::TableDef(def) => self.create_table(def),
@@ -959,6 +1023,16 @@ impl<S: Storage> Run<'_, S> {
             if def.columns[i].index {
                 table.columns[i].index_id = Some(self.alloc_id()?);
             }
+            if def.columns[i].text {
+                if table.columns[i].ty != TypeName::Text {
+                    return Err(ExecError::plan(format!(
+                        "'@text' wants a text column, and '{}' is {}",
+                        table.columns[i].name,
+                        table.columns[i].ty.as_str()
+                    )));
+                }
+                table.columns[i].text_index_id = Some(self.alloc_id()?);
+            }
         }
         self.store_table(&table)?;
         Ok(Output::Ok)
@@ -996,6 +1070,11 @@ impl<S: Storage> Run<'_, S> {
         for col in &table.columns {
             if let Some(index_id) = col.index_id {
                 self.delete_range(&index_prefix(index_id))?;
+            }
+            // Postings, lengths and the corpus counters all live under the
+            // text index's own id, so one range takes the lot.
+            if let Some(text_id) = col.text_index_id {
+                self.delete_range(&index_prefix(text_id))?;
             }
         }
         self.tx.catalog_delete(&catalog::table_key(name))?;
@@ -1126,6 +1205,10 @@ impl<S: Storage> Run<'_, S> {
                 if col.ty == TypeName::Asset {
                     self.move_asset_refs(&values[pos], 1)?;
                 }
+                if let Some(text_id) = col.text_index_id {
+                    let pk = row_pk(&table, &values);
+                    self.move_postings(text_id, &pk, &values[pos], true)?;
+                }
                 if let Some(index_id) = col.index_id {
                     let entry = index_entry_key(index_id, &values[pos], &row_pk(&table, &values));
                     self.tx.put(&entry, &[])?;
@@ -1236,6 +1319,12 @@ impl<S: Storage> Run<'_, S> {
             self.tx.put(&key, &encode_key(&new))?;
             let pk = row_pk(&table, &old);
             for (pos, col) in table.columns.iter().enumerate() {
+                if let Some(text_id) = col.text_index_id {
+                    if old[pos] != new[pos] {
+                        self.move_postings(text_id, &pk, &old[pos], false)?;
+                        self.move_postings(text_id, &pk, &new[pos], true)?;
+                    }
+                }
                 if col.ty == TypeName::Asset && old[pos] != new[pos] {
                     // new first: if the two share chunks, releasing the old
                     // one first could take a shared chunk to zero and drop
@@ -1276,6 +1365,9 @@ impl<S: Storage> Run<'_, S> {
             for (pos, col) in table.columns.iter().enumerate() {
                 if col.ty == TypeName::Asset {
                     self.move_asset_refs(&values[pos], -1)?;
+                }
+                if let Some(text_id) = col.text_index_id {
+                    self.move_postings(text_id, &pk, &values[pos], false)?;
                 }
                 if let Some(index_id) = col.index_id {
                     self.tx
@@ -1418,6 +1510,23 @@ pub(crate) fn row_pk(table: &Table, values: &[Value]) -> Vec<Value> {
         .iter()
         .map(|&p| values[p].clone())
         .collect()
+}
+
+/// Where a text index keeps how many documents it has and how long they
+/// are in total. Integers sort before text in the key encoding, so this
+/// and the per-document lengths sit ahead of every term (ADR-036).
+pub(crate) fn corpus_key(index_id: u64) -> Vec<u8> {
+    encode_key(&[Value::Int(index_id as i64), Value::Int(1)])
+}
+
+pub(crate) fn decode_corpus(bytes: &[u8]) -> Result<(u64, u64), ExecError> {
+    let bad = || ExecError::exec("text index corpus counters do not decode");
+    if bytes.len() != 16 {
+        return Err(bad());
+    }
+    let docs = u64::from_le_bytes(bytes[..8].try_into().map_err(|_| bad())?);
+    let total = u64::from_le_bytes(bytes[8..].try_into().map_err(|_| bad())?);
+    Ok((docs, total))
 }
 
 pub(crate) fn index_entry_key(index_id: u64, value: &Value, pk: &[Value]) -> Vec<u8> {

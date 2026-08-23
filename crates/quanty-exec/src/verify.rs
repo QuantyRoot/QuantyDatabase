@@ -6,15 +6,18 @@
 //! failure. This is the tool the phase 2 acceptance runs after random
 //! workloads, and later the backbone of a `quanty check` command.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use quanty_core::Storage;
 
 use crate::catalog::{self, Table};
 use crate::error::ExecError;
 use crate::exec::{
-    decode_row, index_entry_key, index_prefix, key_successor, row_pk, table_prefix, Session,
+    corpus_key, decode_row, index_entry_key, index_prefix, key_successor, row_pk, table_prefix,
+    Session,
 };
+use crate::text;
+use quanty_core::Value;
 
 /// Check every index of every table. Returns a human-readable report of
 /// all problems found, or `Ok(())` when everything lines up.
@@ -45,6 +48,68 @@ pub fn verify_indexes<S: Storage>(session: &Session<S>) -> Result<(), ExecError>
             for (pos, col) in table.columns.iter().enumerate() {
                 if let Some(index_id) = col.index_id {
                     expected[pos].insert(index_entry_key(index_id, &values[pos], &pk));
+                }
+            }
+        }
+
+        // text indexes carry values, so they are rebuilt as key to value
+        // and compared on both. A posting whose positions drifted is a
+        // wrong answer, not a missing entry, and only comparing keys
+        // would call that fine.
+        for (pos, col) in table.columns.iter().enumerate() {
+            let Some(text_id) = col.text_index_id else {
+                continue;
+            };
+            let mut expected: BTreeMap<Vec<u8>, Vec<u8>> = BTreeMap::new();
+            let (mut docs, mut total) = (0u64, 0u64);
+            for item in tx.scan(Some(&tprefix), tend.as_deref())? {
+                let (_, bytes) = item?;
+                let values = decode_row(table, &bytes)?;
+                let pk = row_pk(table, &values);
+                let Value::Text(s) = &values[pos] else {
+                    continue;
+                };
+                for (term, positions) in text::postings(s) {
+                    expected.insert(
+                        index_entry_key(text_id, &Value::Text(term), &pk),
+                        text::encode_positions(&positions),
+                    );
+                }
+                let length = text::length(s);
+                expected.insert(
+                    index_entry_key(text_id, &Value::Int(0), &pk),
+                    length.to_le_bytes().to_vec(),
+                );
+                docs += 1;
+                total += length as u64;
+            }
+            if docs > 0 {
+                let mut counters = docs.to_le_bytes().to_vec();
+                counters.extend_from_slice(&total.to_le_bytes());
+                expected.insert(corpus_key(text_id), counters);
+            }
+
+            let mut actual: BTreeMap<Vec<u8>, Vec<u8>> = BTreeMap::new();
+            let iprefix = index_prefix(text_id);
+            let iend = key_successor(&iprefix);
+            for item in tx.scan(Some(&iprefix), iend.as_deref())? {
+                let (key, value) = item?;
+                actual.insert(key, value);
+            }
+
+            let where_ = format!("text index {}.{}", table.name, col.name);
+            for (key, want) in &expected {
+                match actual.get(key) {
+                    None => problems.push(format!("{where_}: missing entry {key:02x?}")),
+                    Some(got) if got != want => problems.push(format!(
+                        "{where_}: entry {key:02x?} holds {got:02x?}, expected {want:02x?}"
+                    )),
+                    Some(_) => {}
+                }
+            }
+            for key in actual.keys() {
+                if !expected.contains_key(key) {
+                    problems.push(format!("{where_}: stray entry {key:02x?}"));
                 }
             }
         }

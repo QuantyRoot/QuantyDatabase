@@ -182,13 +182,18 @@ posting is a secondary index entry whose value is a term, so postings
 inherit versioning, branching and the crash harness rather than getting a
 storage path of their own.
 
-Built so far: the tokenizer, ASCII and deliberately so, with its
-limitations tested rather than described.
+Built so far: the tokenizer, and postings kept in step with the rows on
+insert, overwrite, delete and drop. What is left is the query and the
+ranking.
 
 Acceptance:
 - [ ] indexed search returns identical results to a brute force scan on a
       test corpus, but >100x faster at 100k docs
-- [ ] index stays consistent under the crash harness
+- [x] index stays consistent under the crash harness: the harness table
+      now carries a `@text` column, and recovery is followed by
+      `verify_indexes`, which rebuilds every posting from the surviving
+      rows and compares keys and values. 1000 kills, 999 of them with
+      acknowledged transactions, all clean
 
 ## Phase 8: The adaptive layer
 
