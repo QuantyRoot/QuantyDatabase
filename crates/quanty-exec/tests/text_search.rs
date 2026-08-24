@@ -531,3 +531,102 @@ fn a_phrase_with_a_second_condition_filters_too() {
     };
     assert_eq!(out, 1, "phrase and filter did not combine");
 }
+
+// ---------------------------------------------------------------------------
+// top-k: a limit that stops before the rows are read
+// ---------------------------------------------------------------------------
+
+fn limited(s: &mut Session<MemStorage>, query: &str, tail: &str) -> Vec<i64> {
+    let statement = format!("get indexed {{ id }} where body match \"{query}\"{tail}");
+    match s
+        .execute(&statement)
+        .unwrap_or_else(|e| panic!("{statement}: {e}"))
+    {
+        Output::Rows { rows, .. } => rows
+            .into_iter()
+            .map(|r| match r[0] {
+                Value::Int(n) => n,
+                ref other => panic!("unexpected id {other:?}"),
+            })
+            .collect(),
+        other => panic!("expected rows, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_limit_returns_the_same_rows_the_full_answer_starts_with() {
+    // The point of pushing the limit into the access is that it must not
+    // change the answer, only how much work reaching it costs.
+    let docs = corpus(3000);
+    let mut s = loaded(&docs);
+
+    for query in ["w0", "w7", "w50", "w900", "w120 w7"] {
+        let full = limited(&mut s, query, "");
+        for n in [1usize, 3, 10, 50] {
+            let short = limited(&mut s, query, &format!(" limit {n}"));
+            let expected: Vec<i64> = full.iter().copied().take(n).collect();
+            assert_eq!(short, expected, "query {query:?} limit {n}");
+        }
+    }
+}
+
+#[test]
+fn a_limit_larger_than_the_answer_returns_the_answer() {
+    let mut s = with_docs(&[(1, "alpha"), (2, "alpha"), (3, "beta")]);
+    let all = match s
+        .execute("get docs { id } where body match \"alpha\" limit 99")
+        .expect("limit")
+    {
+        Output::Rows { rows, .. } => rows.len(),
+        other => panic!("expected rows, got {other:?}"),
+    };
+    assert_eq!(all, 2);
+}
+
+#[test]
+fn a_limit_with_a_second_condition_still_fills_up() {
+    // The limit cannot travel into the access when a filter after it can
+    // drop rows, or `limit 10` would answer with fewer than ten. Half the
+    // documents fail the filter here, so truncating first would return
+    // five.
+    //
+    // Proved to catch: passing get.limit down regardless of the residual
+    // returns 5 instead of 10.
+    let docs: Vec<(i64, &str)> = (1..=40).map(|i| (i, "alpha")).collect();
+    let mut s = with_docs(&docs);
+
+    let got = match s
+        .execute("get docs { id } where body match \"alpha\" and id > 20 limit 10")
+        .expect("filtered limit")
+    {
+        Output::Rows { rows, .. } => rows.len(),
+        other => panic!("expected rows, got {other:?}"),
+    };
+    assert_eq!(got, 10, "the limit was applied before the filter");
+}
+
+#[test]
+fn a_limit_on_a_phrase_keeps_the_best_ones() {
+    let mut s = with_docs(&[
+        (1, "quick brown"),
+        (2, "quick brown quick brown"),
+        (3, "quick brown quick brown quick brown"),
+        (4, "brown quick"),
+    ]);
+    assert_eq!(phrase_ids(&mut s, "docs", "quick brown"), [3, 2, 1]);
+
+    let two = match s
+        .execute("get docs { id } where body phrase \"quick brown\" limit 2")
+        .expect("limit")
+    {
+        Output::Rows { rows, .. } => rows
+            .into_iter()
+            .map(|r| match r[0] {
+                Value::Int(n) => n,
+                _ => unreachable!(),
+            })
+            .collect::<Vec<i64>>(),
+        other => panic!("expected rows, got {other:?}"),
+    };
+    assert_eq!(two, [3, 2], "the limit did not keep the best");
+}

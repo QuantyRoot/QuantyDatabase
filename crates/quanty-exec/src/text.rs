@@ -150,31 +150,39 @@ pub fn phrase_hits(positions: &[Vec<u32>]) -> u32 {
         .count() as u32
 }
 
-/// Positions as they sit in a posting: little endian u32, in order.
+/// A posting: the document's length, then the positions, all little
+/// endian u32 and the positions in order.
 ///
-/// Term frequency is the length of this and is never stored beside it,
-/// so the two cannot disagree (ADR-036).
-pub fn encode_positions(positions: &[u32]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(positions.len() * 4);
+/// Term frequency is the length of the position list and is never stored
+/// beside it, so the two cannot disagree. The document's length is
+/// stored, and that is a deliberate second copy: scoring needs it for
+/// every candidate, and reading it from an entry of its own cost one
+/// point lookup per candidate, which is what made a query matching most
+/// of the corpus slower than the scan it exists to beat. It is written
+/// once per term of the document and `verify_indexes` rebuilds it from
+/// the row, so it cannot drift unnoticed (ADR-036).
+pub fn encode_posting(length: u32, positions: &[u32]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(4 + positions.len() * 4);
+    out.extend_from_slice(&length.to_le_bytes());
     for p in positions {
         out.extend_from_slice(&p.to_le_bytes());
     }
     out
 }
 
-/// Read a posting back, or None if it is not a whole number of positions.
-pub fn decode_positions(bytes: &[u8]) -> Option<Vec<u32>> {
-    if !bytes.len().is_multiple_of(4) {
+/// Read a posting back, or None if it is not a length and whole
+/// positions.
+pub fn decode_posting(bytes: &[u8]) -> Option<(u32, Vec<u32>)> {
+    if bytes.len() < 4 || !bytes.len().is_multiple_of(4) {
         return None;
     }
-    Some(
-        bytes
-            .as_chunks::<4>()
-            .0
-            .iter()
-            .map(|c| u32::from_le_bytes(*c))
-            .collect(),
-    )
+    let words: Vec<u32> = bytes
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|c| u32::from_le_bytes(*c))
+        .collect();
+    Some((words[0], words[1..].to_vec()))
 }
 
 #[cfg(test)]
@@ -243,12 +251,15 @@ mod tests {
     }
 
     #[test]
-    fn positions_survive_a_round_trip_and_junk_is_refused() {
+    fn a_posting_survives_a_round_trip_and_junk_is_refused() {
         for case in [vec![], vec![0u32], vec![0, 1, 7, 4_000_000_000]] {
-            assert_eq!(decode_positions(&encode_positions(&case)), Some(case));
+            assert_eq!(decode_posting(&encode_posting(42, &case)), Some((42, case)));
         }
-        assert_eq!(decode_positions(&[1, 2, 3]), None);
-        assert_eq!(decode_positions(&[1, 2, 3, 4, 5]), None);
+        // too short to hold even a length
+        assert_eq!(decode_posting(&[]), None);
+        assert_eq!(decode_posting(&[1, 2, 3]), None);
+        // a length and part of a position
+        assert_eq!(decode_posting(&[1, 2, 3, 4, 5]), None);
     }
 
     #[test]

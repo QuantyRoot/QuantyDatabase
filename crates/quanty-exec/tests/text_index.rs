@@ -69,11 +69,9 @@ fn a_document_becomes_postings_a_length_and_a_count() {
             _ => None,
         })
         .collect();
-    assert_eq!(
-        ints,
-        [0, 1],
-        "length and corpus entries missing or out of order"
-    );
+    // Only the corpus counters sit in the integer namespace now; the
+    // per-document length rides in every posting instead.
+    assert_eq!(ints, [1], "the corpus entry is missing or joined");
 }
 
 #[test]
@@ -86,10 +84,12 @@ fn a_repeated_word_keeps_one_posting_with_every_position() {
         .into_iter()
         .find(|(k, _)| matches!(&k[1], Value::Text(t) if t == "one"))
         .expect("posting for 'one'");
+    // The posting carries the document's length in front of the
+    // positions, so scoring never has to read the row (ADR-036).
     assert_eq!(
-        quanty_exec::decode_positions(&the_one.1),
-        Some(vec![0, 2, 4]),
-        "term frequency and positions disagree"
+        quanty_exec::decode_posting(&the_one.1),
+        Some((5, vec![0, 2, 4])),
+        "term frequency, positions or length disagree"
     );
 }
 
@@ -181,9 +181,9 @@ fn a_null_document_is_not_a_document() {
             _ => None,
         })
         .collect();
-    // one length entry and one corpus entry: the null row contributed
-    // neither, so the average is over documents that exist
-    assert_eq!(ints, [0, 1]);
+    // just the corpus entry: the null row contributed nothing to it, so
+    // the average is over documents that exist
+    assert_eq!(ints, [1]);
 }
 
 #[test]

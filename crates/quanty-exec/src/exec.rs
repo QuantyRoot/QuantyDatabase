@@ -438,13 +438,21 @@ fn run_get<V: View>(view: &V, get: &Get) -> Result<Output, ExecError> {
         (
             Access::TextMatch {
                 index_id,
-                column,
                 phrase,
                 terms,
+                ..
             },
             None,
         ) => {
-            let (fetched, scores) = text_match(view, &table, *index_id, *column, *phrase, terms)?;
+            // The limit only travels this far down when nothing after
+            // the access can drop a row. A residual predicate can, and
+            // truncating before it runs would answer `limit 10` with
+            // fewer than ten.
+            let pushed = match plan.residual {
+                Some(_) => None,
+                None => get.limit.map(|l| l as usize),
+            };
+            let (fetched, scores) = text_match(view, &table, *index_id, *phrase, terms, pushed)?;
             let mut ranked: Vec<(f64, Vec<Value>)> = scores
                 .into_iter()
                 .zip(fetched.into_iter().map(|(_, v)| v))
@@ -526,10 +534,15 @@ fn run_get<V: View>(view: &V, get: &Get) -> Result<Output, ExecError> {
 }
 
 /// One document that has a term: its row key, how often the term occurs
-/// in it, and where, which only a phrase query needs.
-type Posting = (Vec<u8>, u32, Vec<u32>);
+/// in it, how long the document is, and where the term sits, which only a
+/// phrase query needs.
+type Posting = (Vec<u8>, u32, u32, Vec<u32>);
 
 /// Intersect the posting lists and score what survives.
+///
+/// `limit` is how many rows the caller will keep, and it is `None`
+/// whenever anything after this could drop one: truncating first would
+/// then return fewer than were asked for.
 ///
 /// Scoring happens here rather than after, because the numbers BM25 needs
 /// are the ones this walk already has: a term's document frequency is the
@@ -540,9 +553,9 @@ fn text_match<V: View>(
     view: &V,
     table: &Table,
     index_id: u64,
-    column: usize,
     phrase: bool,
     terms: &[String],
+    limit: Option<usize>,
 ) -> Result<(Fetched, Vec<f64>), ExecError> {
     // Per term: every document that has it, in row key order, with how
     // often it occurs there.
@@ -557,12 +570,13 @@ fn text_match<V: View>(
             if decoded.len() < 3 {
                 return Err(ExecError::exec("posting is too short, this is a bug"));
             }
-            let at = text::decode_positions(&positions)
-                .ok_or_else(|| ExecError::exec("posting positions do not decode"))?;
+            let (length, at) = text::decode_posting(&positions)
+                .ok_or_else(|| ExecError::exec("posting does not decode"))?;
             let tf = at.len() as u32;
             hits.push((
                 row_key(table, &decoded[2..]),
                 tf,
+                length,
                 if phrase { at } else { Vec::new() },
             ));
         }
@@ -590,24 +604,23 @@ fn text_match<V: View>(
     order.sort_by_key(|&i| lists[i].len());
     let seed = order[0];
 
-    // First pass: everything that survives the intersection, with what a
-    // score will need. A phrase cannot be scored yet, because its
-    // document frequency is how many documents hold it and that is not
-    // known until they have all been checked.
+    // First pass: score every candidate straight from the postings. The
+    // row is not read here, which is the whole point: a `limit 10` over a
+    // query matching eighty thousand documents should not fetch eighty
+    // thousand rows to keep ten.
     struct Candidate {
         key: Vec<u8>,
-        row: Vec<Value>,
+        score: f64,
         length: f64,
-        frequencies: Vec<(usize, u32)>,
         phrase_count: u32,
     }
     let mut candidates: Vec<Candidate> = Vec::new();
 
-    'row: for (seed_at, (key, tf, _)) in lists[seed].iter().enumerate() {
+    'row: for (seed_at, (key, tf, length, _)) in lists[seed].iter().enumerate() {
         let mut frequencies = vec![(seed, *tf)];
         let mut at_in = vec![(seed, seed_at)];
         for &i in &order[1..] {
-            match lists[i].binary_search_by(|(k, _, _)| k.cmp(key)) {
+            match lists[i].binary_search_by(|(k, _, _, _)| k.cmp(key)) {
                 Ok(at) => {
                     frequencies.push((i, lists[i][at].1));
                     at_in.push((i, at));
@@ -623,7 +636,7 @@ fn text_match<V: View>(
         if phrase {
             let mut in_order: Vec<Vec<u32>> = vec![Vec::new(); terms.len()];
             for &(i, at) in &at_in {
-                in_order[i] = lists[i][at].2.clone();
+                in_order[i] = lists[i][at].3.clone();
             }
             phrase_count = text::phrase_hits(&in_order);
             if phrase_count == 0 {
@@ -631,46 +644,55 @@ fn text_match<V: View>(
             }
         }
 
-        let Some(bytes) = view.view_get(key)? else {
-            continue;
-        };
-        let row = decode_row(table, &bytes)?;
-
-        // The length comes from the row that was fetched anyway, not from
-        // the entry at (index_id, 0, pk). Measured: one point lookup per
-        // result put a query matching eighty thousand documents at three
-        // times the cost of the scan it is meant to beat.
-        let length = match &row[column] {
-            Value::Text(s) => text::length(s) as f64,
-            _ => average_length,
+        let length = *length as f64;
+        let score = if phrase {
+            0.0 // scored in the second pass, once the phrase's df is known
+        } else {
+            frequencies
+                .iter()
+                .map(|&(i, tf)| bm25(tf, document_frequency[i], docs, length, average_length))
+                .sum()
         };
         candidates.push(Candidate {
             key: key.clone(),
-            row,
+            score,
             length,
-            frequencies,
             phrase_count,
         });
     }
 
-    // Second pass: score. A phrase is one term of its own, occurring as
-    // often as it occurs and held by as many documents as hold it.
-    // Summing its words instead would rank a document that has them
-    // scattered above one that has them together.
-    let phrase_df = candidates.len();
+    // A phrase is one term of its own, occurring as often as it occurs and
+    // held by as many documents as hold it, so its score waits until every
+    // candidate has been checked. Summing its words instead would rank a
+    // document holding them scattered above one holding them together.
+    if phrase {
+        let phrase_df = candidates.len();
+        for c in &mut candidates {
+            c.score = bm25(c.phrase_count, phrase_df, docs, c.length, average_length);
+        }
+    }
+
+    // Second pass: keep the best `limit` and read only those rows.
+    if let Some(limit) = limit {
+        if candidates.len() > limit {
+            candidates.sort_by(|a, b| {
+                b.score
+                    .partial_cmp(&a.score)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then_with(|| a.key.cmp(&b.key))
+            });
+            candidates.truncate(limit);
+        }
+    }
+
     let mut fetched = Vec::with_capacity(candidates.len());
     let mut scores = Vec::with_capacity(candidates.len());
     for c in candidates {
-        let score = if phrase {
-            bm25(c.phrase_count, phrase_df, docs, c.length, average_length)
-        } else {
-            c.frequencies
-                .iter()
-                .map(|&(i, tf)| bm25(tf, document_frequency[i], docs, c.length, average_length))
-                .sum()
+        let Some(bytes) = view.view_get(&c.key)? else {
+            continue;
         };
-        fetched.push((c.key, c.row));
-        scores.push(score);
+        fetched.push((c.key, decode_row(table, &bytes)?));
+        scores.push(c.score);
     }
     Ok((fetched, scores))
 }
@@ -701,11 +723,11 @@ fn fetch_rows<V: View>(view: &V, table: &Table, plan: &AccessPlan) -> Result<Fet
         }
         Access::TextMatch {
             index_id,
-            column,
             phrase,
             terms,
+            ..
         } => {
-            let (rows, _) = text_match(view, table, *index_id, *column, *phrase, terms)?;
+            let (rows, _) = text_match(view, table, *index_id, *phrase, terms, None)?;
             out.extend(rows);
         }
         Access::IndexScan {
@@ -1120,27 +1142,20 @@ impl<S: Storage> Run<'_, S> {
             _ => return Ok(()),
         };
 
+        // The document's length rides in every one of its postings, so
+        // scoring a candidate needs nothing but the posting it already
+        // read. The entry it used to live at, (index_id, 0, pk), is gone:
+        // one point lookup per candidate is what made a broad query
+        // slower than the scan it exists to beat.
+        let length = text::length(text);
         for (term, positions) in text::postings(text) {
             let key = index_entry_key(index_id, &Value::Text(term), pk);
             if adding {
-                self.tx.put(&key, &text::encode_positions(&positions))?;
+                self.tx
+                    .put(&key, &text::encode_posting(length, &positions))?;
             } else {
                 self.tx.delete(&key)?;
             }
-        }
-
-        // The per-document length. Scoring reads it off the row it
-        // fetches anyway, so nothing reads this today; it stays because
-        // the next thing search wants is a top-k that scores without
-        // materialising every row, and then the length has to be in the
-        // index. verify_indexes rebuilds it from the rows, so it cannot
-        // quietly drift while it waits.
-        let length = text::length(text);
-        let len_key = index_entry_key(index_id, &Value::Int(0), pk);
-        if adding {
-            self.tx.put(&len_key, &length.to_le_bytes())?;
-        } else {
-            self.tx.delete(&len_key)?;
         }
         self.move_corpus(index_id, length, adding)
     }

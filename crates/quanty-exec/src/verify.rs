@@ -69,17 +69,13 @@ pub fn verify_indexes<S: Storage>(session: &Session<S>) -> Result<(), ExecError>
                 let Value::Text(s) = &values[pos] else {
                     continue;
                 };
+                let length = text::length(s);
                 for (term, positions) in text::postings(s) {
                     expected.insert(
                         index_entry_key(text_id, &Value::Text(term), &pk),
-                        text::encode_positions(&positions),
+                        text::encode_posting(length, &positions),
                     );
                 }
-                let length = text::length(s);
-                expected.insert(
-                    index_entry_key(text_id, &Value::Int(0), &pk),
-                    length.to_le_bytes().to_vec(),
-                );
                 docs += 1;
                 total += length as u64;
             }

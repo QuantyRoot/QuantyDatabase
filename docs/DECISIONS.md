@@ -1527,10 +1527,28 @@ candidate has been checked. Summing its words would rank a document that
 holds them scattered above one that holds them together, which is the
 opposite of what was asked for.
 
-The entry at `(index_id, 0, pk)` stays although nothing reads it now. The
-next thing search wants is a top-k that scores without materialising
-every row, and then the length has to be in the index; `verify_indexes`
-rebuilds it from the rows, so it cannot drift while it waits.
+**The length ended up in the posting, and the entry at
+`(index_id, 0, pk)` is gone.** It was kept for a top-k that scores
+without materialising every row, and building that showed the entry was
+the wrong shape for it: reading a length per candidate is a point lookup
+per candidate, which is the cost that was measured and removed once
+already. Every posting now carries its document's length in front of the
+positions, so scoring a candidate needs nothing but the posting the walk
+already read.
+
+That is a second copy of a fact, which this record argued against for
+document frequency. The difference is that it was measured rather than
+assumed, and that `verify_indexes` rebuilds postings from the rows, so a
+copy that drifts is caught rather than believed. It costs four bytes per
+term of a document.
+
+**A limit travels into the access, but only when nothing after it can
+drop a row.** A residual predicate can, and truncating before it runs
+answers `limit 10` with fewer than ten, so the limit is not pushed down
+then. Measured on a hundred thousand documents: `limit 10` over a query
+matching eighty-two thousand of them went from 721ms to 71ms, and the
+same query without a limit from 752ms to 493ms, because scoring no longer
+reads a row it will not return.
 
 **Tried and taken back out: peeking before intersecting.** Reading a
 bounded prefix of every posting list first, to find a rare term without

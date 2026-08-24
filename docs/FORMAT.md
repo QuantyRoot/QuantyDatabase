@@ -303,11 +303,18 @@ endian.
 
 Version 3 carries a second object id per column, after the secondary
 index id, for a text index. Its entries live under that id like any
-index: `(text_index_id, term, ...pk)` holds a term's positions as little
-endian u32, `(text_index_id, 0, ...pk)` a document's length, and
-`(text_index_id, 1)` the corpus counters. Integers sort before text in
-the key encoding, so the two statistics entries sit ahead of every term
-without a reserved prefix (ADR-036).
+index: `(text_index_id, term, ...pk)` holds the document's length
+followed by the term's positions, all little endian u32, and
+`(text_index_id, 1)` holds the corpus counters, eight bytes of document
+count and eight of total length. Integers sort before text in the key
+encoding, so the counters sit ahead of every term without a reserved
+prefix (ADR-036).
+
+The length is in every posting on purpose. Scoring needs it for each
+candidate, and an entry of its own cost a point lookup per candidate,
+which is what made a query matching most of the corpus slower than a
+scan. It is written once per term of a document, and `verify_indexes`
+rebuilds it from the row, so a copy that drifts is caught.
 
 The version byte is 1 for every definition that predates the `asset`
 column type. A definition is written at the lowest version that can

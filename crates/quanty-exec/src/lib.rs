@@ -18,7 +18,7 @@ pub use error::ExecError;
 pub use exec::{Output, Parked, Session};
 pub use plan::{Access, AccessPlan};
 pub use text::{
-    contains_phrase, decode_positions, encode_positions, length as text_length, phrase_hits,
+    contains_phrase, decode_posting, encode_posting, length as text_length, phrase_hits,
     phrase_occurrences, postings, tokenize, Token, MAX_TERM_LEN,
 };
 pub use value_ops::render as render_value;

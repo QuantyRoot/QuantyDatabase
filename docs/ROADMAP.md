@@ -185,11 +185,14 @@ storage path of their own.
 Complete: the tokenizer, postings kept in step with the rows, `match` and
 `phrase` over them, and BM25 ranking scored while the postings are read.
 
+`limit` is pushed into the access when nothing after it can drop a row:
+scoring reads only postings, so only the rows that will be returned are
+fetched. On a hundred thousand documents, `limit 10` over a query
+matching eighty-two thousand of them costs 71ms rather than 721.
+
 Not built, and named rather than implied: `or` and `not` over terms,
-prefix or wildcard terms, adding a text index to a table that already
-exists, and a top-k that stops early. `limit` truncates after every hit
-has been scored and fetched, so `limit 10` on a query matching eighty
-thousand documents still does eighty thousand rows of work.
+prefix or wildcard terms, and adding a text index to a table that already
+exists. The tokenizer is ASCII, which ADR-036 states with its price.
 
 Acceptance:
 - [x] indexed search returns identical results to a brute force scan on a
