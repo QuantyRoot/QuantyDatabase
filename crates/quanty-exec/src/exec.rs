@@ -449,6 +449,25 @@ fn run_get<V: View>(view: &V, get: &Get) -> Result<Output, ExecError> {
                 .into_iter()
                 .zip(fetched.into_iter().map(|(_, v)| v))
                 .collect();
+
+            // The rest of the condition, which fetch_rows applies for
+            // every other access and this path skipped: a ranked
+            // `match ... and id > 3` returned the rows the filter should
+            // have removed, and returned them without a word.
+            if let Some(residual) = &plan.residual {
+                let mut kept = Vec::with_capacity(ranked.len());
+                for (score, values) in ranked {
+                    let scope = RowScope {
+                        table: &table,
+                        values: &values,
+                    };
+                    if value_ops::as_condition(value_ops::eval(residual, &scope)?)? {
+                        kept.push((score, values));
+                    }
+                }
+                ranked = kept;
+            }
+
             // Descending by score, and by primary key where scores tie, so
             // the same query gives the same order twice.
             ranked.sort_by(|a, b| {

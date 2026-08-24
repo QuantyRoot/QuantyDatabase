@@ -473,3 +473,61 @@ fn a_phrase_that_overruns_the_document_finds_nothing() {
     );
     assert_eq!(phrase_ids(&mut s, "docs", "quick brown"), [2]);
 }
+
+#[test]
+fn the_rest_of_the_condition_still_applies_to_a_ranked_search() {
+    // This was wrong for one commit: the ranked path called the text
+    // access directly and skipped the filter that fetch_rows applies for
+    // every other access, so the extra condition was silently ignored.
+    // Nothing caught it because no test asked a match anything else.
+    //
+    // Proved to catch: removing the residual block in the ranked arm
+    // returns all five rows here.
+    let mut s = with_docs(&[
+        (1, "alpha"),
+        (2, "alpha"),
+        (3, "alpha"),
+        (4, "alpha"),
+        (5, "alpha"),
+    ]);
+
+    let ranked_ids = ranked(&mut s, "docs", "alpha");
+    assert_eq!(ranked_ids.len(), 5, "the plain query should see all five");
+
+    let filtered = match s
+        .execute("get docs { id } where body match \"alpha\" and id > 3")
+        .expect("filtered")
+    {
+        Output::Rows { rows, .. } => rows.len(),
+        other => panic!("expected rows, got {other:?}"),
+    };
+    assert_eq!(filtered, 2, "the residual predicate was ignored");
+
+    // and the same query with an explicit order, which takes the other
+    // path, has to agree
+    let ordered = match s
+        .execute("get docs { id } where body match \"alpha\" and id > 3 order by id asc")
+        .expect("ordered")
+    {
+        Output::Rows { rows, .. } => rows.len(),
+        other => panic!("expected rows, got {other:?}"),
+    };
+    assert_eq!(ordered, filtered, "the two paths disagree");
+}
+
+#[test]
+fn a_phrase_with_a_second_condition_filters_too() {
+    let mut s = with_docs(&[
+        (1, "quick brown fox"),
+        (2, "quick brown dog"),
+        (3, "brown quick bird"),
+    ]);
+    let out = match s
+        .execute("get docs { id } where body phrase \"quick brown\" and id > 1")
+        .expect("filtered phrase")
+    {
+        Output::Rows { rows, .. } => rows.len(),
+        other => panic!("expected rows, got {other:?}"),
+    };
+    assert_eq!(out, 1, "phrase and filter did not combine");
+}
