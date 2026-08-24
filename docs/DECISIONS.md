@@ -1506,6 +1506,27 @@ fetched anyway and the column index is in the plan, so the length is
 counted from the text there instead. That took the search mix from 275x
 back to 461x, which is where it was before ranking existed.
 
+**A phrase is a second operator, not a quoting convention inside the
+first.** `where body phrase "quick brown"` rather than quotes nested in
+the query string: QQL is a typed language rather than a search box, and
+an operator says what it means without asking the lexer to carry two
+levels of quoting. It is a plain binary operator like `match`, so a
+column without `@text` evaluates it row by row and the brute force stays
+the same predicate rather than a second implementation written to agree.
+
+Its terms keep the order they were written in, repeats and all, and that
+was a bug before it was a rule: the planner reused the term list built
+for `match`, which sorts and deduplicates because holding every word is a
+question that does not care in what order it is asked. A phrase does
+care, and `"quick brown"` was being looked up as `brown quick`.
+
+**A phrase is scored as one term of its own**, occurring as often as it
+occurs and held by as many documents as hold it, which is why scoring
+needs a second pass: its document frequency is not known until every
+candidate has been checked. Summing its words would rank a document that
+holds them scattered above one that holds them together, which is the
+opposite of what was asked for.
+
 The entry at `(index_id, 0, pk)` stays although nothing reads it now. The
 next thing search wants is a top-k that scores without materialising
 every row, and then the length has to be in the index; `verify_indexes`

@@ -80,12 +80,19 @@ fn eval_binary(
     match op {
         // Brute force by design: this is what a row without a text index
         // falls back to, and what the index has to agree with (ADR-036).
-        BinaryOp::Match => match (&l, &r) {
+        BinaryOp::Match | BinaryOp::Phrase => match (&l, &r) {
             (Value::Null, _) | (_, Value::Null) => Ok(Value::Bool(false)),
             (Value::Text(haystack), Value::Text(needle)) => {
-                Ok(Value::Bool(crate::text::contains_all(haystack, needle)))
+                Ok(Value::Bool(if op == BinaryOp::Phrase {
+                    crate::text::contains_phrase(haystack, needle)
+                } else {
+                    crate::text::contains_all(haystack, needle)
+                }))
             }
-            _ => Err(ExecError::exec("match wants text on both sides")),
+            _ => Err(ExecError::exec(format!(
+                "{} wants text on both sides",
+                op.as_str()
+            ))),
         },
         BinaryOp::Eq => Ok(Value::Bool(values_equal(&l, &r)?)),
         BinaryOp::NotEq => Ok(Value::Bool(!values_equal(&l, &r)?)),

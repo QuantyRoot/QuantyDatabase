@@ -354,3 +354,122 @@ fn ranking_does_not_change_which_documents_come_back() {
         assert_eq!(fast, slow, "query {query:?} changed under ranking");
     }
 }
+
+// ---------------------------------------------------------------------------
+// phrase search: what the positions were stored for
+// ---------------------------------------------------------------------------
+
+fn phrase_ids(s: &mut Session<MemStorage>, table: &str, query: &str) -> Vec<i64> {
+    let statement = format!("get {table} {{ id }} where body phrase \"{query}\"");
+    match s
+        .execute(&statement)
+        .unwrap_or_else(|e| panic!("{statement}: {e}"))
+    {
+        Output::Rows { rows, .. } => rows
+            .into_iter()
+            .map(|r| match r[0] {
+                Value::Int(n) => n,
+                ref other => panic!("unexpected id {other:?}"),
+            })
+            .collect(),
+        other => panic!("expected rows, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_phrase_wants_the_words_in_order_and_adjacent() {
+    let mut s = with_docs(&[
+        (1, "the quick brown fox"),
+        (2, "the brown quick fox"),
+        (3, "quick and then brown"),
+        (4, "nothing here"),
+        (5, "a quick brown thing"),
+    ]);
+
+    let mut hits = phrase_ids(&mut s, "docs", "quick brown");
+    hits.sort_unstable();
+    assert_eq!(hits, [1, 5], "order or adjacency was ignored");
+
+    // the same words as a match are laxer, and that is the point
+    let mut loose = ranked(&mut s, "docs", "quick brown");
+    loose.sort_unstable();
+    assert_eq!(loose, [1, 2, 3, 5]);
+}
+
+#[test]
+fn the_index_and_the_scan_agree_about_phrases() {
+    // The whole reason `phrase` is a plain binary operator: a column
+    // without @text evaluates it row by row, so the brute force is the
+    // same predicate rather than a second implementation.
+    let docs = corpus(2000);
+    let mut s = loaded(&docs);
+
+    for query in [
+        "w0 w1",
+        "w1 w0",
+        "w0 w0",
+        "w5 w12 w3",
+        "w900 w0",
+        "nothinglikethis w0",
+        "w0",
+        "   ...   ",
+    ] {
+        let mut fast = phrase_ids(&mut s, "indexed", query);
+        let mut slow = phrase_ids(&mut s, "plain", query);
+        fast.sort_unstable();
+        slow.sort_unstable();
+        assert_eq!(fast, slow, "phrase {query:?} disagreed");
+    }
+}
+
+#[test]
+fn a_phrase_takes_the_index_and_says_so() {
+    let mut s = with_docs(&[(1, "quick brown fox")]);
+    match s
+        .execute("explain get docs { id } where body phrase \"quick brown\"")
+        .expect("explain")
+    {
+        Output::Lines(lines) => {
+            let text = lines.join("\n");
+            assert!(text.contains("text phrase"), "not the phrase path: {text}");
+            assert!(text.contains("quick"), "{text}");
+        }
+        other => panic!("expected lines, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_repeated_phrase_ranks_above_a_single_one() {
+    // A phrase is scored as a term of its own, so two occurrences beat
+    // one. Summing the words would rank these the other way round, since
+    // the loser here holds more of each word apart.
+    let mut s = with_docs(&[
+        (1, "quick brown and quick and brown and quick and brown"),
+        (2, "quick brown quick brown"),
+    ]);
+    assert_eq!(
+        phrase_ids(&mut s, "docs", "quick brown"),
+        [2, 1],
+        "the document with the phrase twice should lead"
+    );
+}
+
+#[test]
+fn a_one_word_phrase_is_the_same_as_a_match() {
+    let mut s = with_docs(&[(1, "alpha beta"), (2, "beta"), (3, "alpha alpha")]);
+    let mut phrase = phrase_ids(&mut s, "docs", "alpha");
+    let mut plain = ranked(&mut s, "docs", "alpha");
+    phrase.sort_unstable();
+    plain.sort_unstable();
+    assert_eq!(phrase, plain);
+}
+
+#[test]
+fn a_phrase_that_overruns_the_document_finds_nothing() {
+    let mut s = with_docs(&[(1, "quick"), (2, "quick brown")]);
+    assert_eq!(
+        phrase_ids(&mut s, "docs", "quick brown fox"),
+        Vec::<i64>::new()
+    );
+    assert_eq!(phrase_ids(&mut s, "docs", "quick brown"), [2]);
+}

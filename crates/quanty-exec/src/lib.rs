@@ -18,8 +18,8 @@ pub use error::ExecError;
 pub use exec::{Output, Parked, Session};
 pub use plan::{Access, AccessPlan};
 pub use text::{
-    decode_positions, encode_positions, length as text_length, postings, tokenize, Token,
-    MAX_TERM_LEN,
+    contains_phrase, decode_positions, encode_positions, length as text_length, phrase_hits,
+    phrase_occurrences, postings, tokenize, Token, MAX_TERM_LEN,
 };
 pub use value_ops::render as render_value;
 pub use verify::verify_indexes;

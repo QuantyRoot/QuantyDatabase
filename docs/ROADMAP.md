@@ -182,8 +182,14 @@ posting is a secondary index entry whose value is a term, so postings
 inherit versioning, branching and the crash harness rather than getting a
 storage path of their own.
 
-Complete: the tokenizer, postings kept in step with the rows, `match`
-over them, and BM25 ranking scored while the postings are read.
+Complete: the tokenizer, postings kept in step with the rows, `match` and
+`phrase` over them, and BM25 ranking scored while the postings are read.
+
+Not built, and named rather than implied: `or` and `not` over terms,
+prefix or wildcard terms, adding a text index to a table that already
+exists, and a top-k that stops early. `limit` truncates after every hit
+has been scored and fetched, so `limit 10` on a query matching eighty
+thousand documents still does eighty thousand rows of work.
 
 Acceptance:
 - [x] indexed search returns identical results to a brute force scan on a

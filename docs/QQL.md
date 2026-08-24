@@ -93,10 +93,17 @@ converts implicitly.
 
 Comparisons `=`, `!=`, `<`, `<=`, `>`, `>=`; logic `and`, `or`, `not`;
 full text `match`, as in `where body match "quick brown"`, true when the
-column contains every word on the right. Both sides go through the same
+column contains every word on the right, and `phrase`, as in
+`where body phrase "quick brown"`, true when those words appear back to
+back in that order. Both sides go through the same
 tokenizer, so it matches words rather than substrings: `cat` does not
 find `category`, and case does not matter. A query with no words matches
 everything.
+
+A `phrase` is scored as a term of its own: how often the phrase occurs
+is its frequency, and how many documents hold it is its document
+frequency. Summing its words instead would rank a document holding them
+scattered above one holding them together.
 
 A `match` returns its answers best first, ranked by BM25: a term that
 occurs more often in a document counts for more, a shorter document

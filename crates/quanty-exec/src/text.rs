@@ -99,6 +99,57 @@ pub fn terms_of(text: &str) -> Vec<String> {
     postings(text).into_iter().map(|(t, _)| t).collect()
 }
 
+/// How often the words of `needle` appear in `haystack` back to back.
+///
+/// The brute force half of a phrase query, and the definition the index
+/// has to agree with. Both sides tokenize, so a phrase matches words in
+/// sequence rather than a substring, and an empty needle is a phrase of
+/// nothing, which is everywhere: it answers zero here and the caller
+/// treats that shape as matching, exactly as `contains_all` does.
+pub fn phrase_occurrences(haystack: &str, needle: &str) -> u32 {
+    let wanted: Vec<String> = tokenize(needle).into_iter().map(|t| t.term).collect();
+    if wanted.is_empty() {
+        return 0;
+    }
+    let have: Vec<String> = tokenize(haystack).into_iter().map(|t| t.term).collect();
+    if have.len() < wanted.len() {
+        return 0;
+    }
+    have.windows(wanted.len())
+        .filter(|window| *window == wanted.as_slice())
+        .count() as u32
+}
+
+/// Whether `haystack` contains the words of `needle` back to back.
+pub fn contains_phrase(haystack: &str, needle: &str) -> bool {
+    tokenize(needle).is_empty() || phrase_occurrences(haystack, needle) > 0
+}
+
+/// How often a phrase occurs, given one position list per word in order.
+///
+/// The index half, and it has to answer the same as
+/// [`phrase_occurrences`]. A phrase sits at position `p` when the first
+/// word is at `p`, the second at `p + 1`, and so on, which is why
+/// positions count tokens rather than bytes.
+pub fn phrase_hits(positions: &[Vec<u32>]) -> u32 {
+    let Some(first) = positions.first() else {
+        return 0;
+    };
+    if positions.len() == 1 {
+        return first.len() as u32;
+    }
+    first
+        .iter()
+        .filter(|&&start| {
+            positions
+                .iter()
+                .enumerate()
+                .skip(1)
+                .all(|(offset, list)| list.binary_search(&(start + offset as u32)).is_ok())
+        })
+        .count() as u32
+}
+
 /// Positions as they sit in a posting: little endian u32, in order.
 ///
 /// Term frequency is the length of this and is never stored beside it,
@@ -132,6 +183,63 @@ mod tests {
 
     fn terms(text: &str) -> Vec<String> {
         tokenize(text).into_iter().map(|t| t.term).collect()
+    }
+
+    #[test]
+    fn a_phrase_is_words_in_sequence() {
+        assert_eq!(phrase_occurrences("the quick brown fox", "quick brown"), 1);
+        assert_eq!(phrase_occurrences("the quick brown fox", "brown quick"), 0);
+        assert_eq!(phrase_occurrences("a b a b a b", "a b"), 3);
+        assert_eq!(phrase_occurrences("a b a b a b", "b a"), 2);
+        // punctuation between the words does not break the sequence,
+        // because positions count tokens
+        assert_eq!(phrase_occurrences("quick, brown!", "quick brown"), 1);
+        // and a phrase longer than the text cannot fit in it
+        assert_eq!(phrase_occurrences("quick", "quick brown"), 0);
+    }
+
+    #[test]
+    fn an_empty_phrase_is_everywhere_like_an_empty_query() {
+        assert!(contains_phrase("anything at all", "   ...  "));
+        assert!(contains_phrase("", ""));
+        assert_eq!(phrase_occurrences("anything", "  "), 0);
+    }
+
+    #[test]
+    fn the_index_half_answers_what_the_text_half_answers() {
+        // The two are different code over different data and have to
+        // agree, so they are checked against each other rather than each
+        // against a hand written expectation.
+        let texts = [
+            "a b a b a b",
+            "the quick brown fox jumps over the quick brown dog",
+            "one two three",
+            "x",
+            "",
+            "b a b a",
+        ];
+        let queries = ["a b", "b a", "quick brown", "the quick brown", "one", "z"];
+        for text in texts {
+            let table = postings(text);
+            for query in queries {
+                let terms: Vec<String> = tokenize(query).into_iter().map(|t| t.term).collect();
+                let lists: Option<Vec<Vec<u32>>> = terms
+                    .iter()
+                    .map(|term| {
+                        table
+                            .iter()
+                            .find(|(t, _)| t == term)
+                            .map(|(_, p)| p.clone())
+                    })
+                    .collect();
+                let from_index = lists.map_or(0, |l| phrase_hits(&l));
+                assert_eq!(
+                    from_index,
+                    phrase_occurrences(text, query),
+                    "text {text:?} query {query:?}"
+                );
+            }
+        }
     }
 
     #[test]

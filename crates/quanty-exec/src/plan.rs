@@ -32,6 +32,9 @@ pub enum Access {
     TextMatch {
         column: usize,
         index_id: u64,
+        /// Whether the terms have to sit back to back, which is what the
+        /// positions in a posting are for.
+        phrase: bool,
         /// The query's distinct terms, sorted. Empty means the query had
         /// no words, which matches everything and so is never planned as
         /// a text access.
@@ -61,13 +64,19 @@ fn conjuncts(expr: &Expr) -> Vec<&Expr> {
 }
 
 /// If this conjunct is `column = literal` (either side), name them.
-/// `column match "words"`, in either order, with a literal on one side.
-fn as_column_match_literal(expr: &Expr) -> Option<(&ColumnRef, String)> {
-    let Expr::Binary(lhs, BinaryOp::Match, rhs) = expr else {
+/// `column match "words"` or `column phrase "words"`, with a literal on
+/// the right.
+fn as_column_match_literal(expr: &Expr) -> Option<(&ColumnRef, String, bool)> {
+    let Expr::Binary(lhs, op, rhs) = expr else {
         return None;
     };
+    let phrase = match op {
+        BinaryOp::Match => false,
+        BinaryOp::Phrase => true,
+        _ => return None,
+    };
     match (lhs.as_ref(), rhs.as_ref()) {
-        (Expr::Column(col), Expr::Literal(Value::Text(q))) => Some((col, q.clone())),
+        (Expr::Column(col), Expr::Literal(Value::Text(q))) => Some((col, q.clone(), phrase)),
         _ => None,
     }
 }
@@ -179,10 +188,22 @@ pub fn plan_access(table: &Table, filter: Option<&Expr>) -> Result<AccessPlan, E
 
     // 3. a text-indexed column with a match?
     for (part_idx, part) in parts.iter().enumerate() {
-        if let Some((col, query)) = as_column_match_literal(part) {
+        if let Some((col, query, phrase)) = as_column_match_literal(part) {
             if let Some(pos) = position_for_plan(table, col) {
                 if let Some(index_id) = table.columns[pos].text_index_id {
-                    let terms = crate::text::terms_of(&query);
+                    // A phrase keeps the words as written, repeats and
+                    // all: its terms are a sequence, and the positions
+                    // are checked against that order. A match sorts and
+                    // dedups, because holding every word is a question
+                    // that does not care in what order it is asked.
+                    let terms: Vec<String> = if phrase {
+                        crate::text::tokenize(&query)
+                            .into_iter()
+                            .map(|t| t.term)
+                            .collect()
+                    } else {
+                        crate::text::terms_of(&query)
+                    };
                     // A query with no words matches every row, and the
                     // index has nothing to narrow with. Let it fall to a
                     // scan rather than plan a lookup of nothing.
@@ -197,6 +218,7 @@ pub fn plan_access(table: &Table, filter: Option<&Expr>) -> Result<AccessPlan, E
                             access: Access::TextMatch {
                                 column: pos,
                                 index_id,
+                                phrase,
                                 terms,
                             },
                             residual: rebuild_conjunction(&residual),
@@ -263,8 +285,14 @@ pub fn explain_access(table: &Table, plan: &AccessPlan) -> ExplainNode {
                 .collect();
             ExplainNode::leaf(format!("KeyLookup {} ({})", table.name, parts.join(", ")))
         }
-        Access::TextMatch { column, terms, .. } => ExplainNode::leaf(format!(
-            "text match on {} for [{}]",
+        Access::TextMatch {
+            column,
+            phrase,
+            terms,
+            ..
+        } => ExplainNode::leaf(format!(
+            "text {} on {} for [{}]",
+            if *phrase { "phrase" } else { "match" },
             table.columns[*column].name,
             terms.join(", ")
         )),

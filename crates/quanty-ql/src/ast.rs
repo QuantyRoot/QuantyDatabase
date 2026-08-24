@@ -207,6 +207,9 @@ pub enum BinaryOp {
     /// `column match "some words"`: true when the column's text contains
     /// every word on the right, tokenized the same way (ADR-036).
     Match,
+    /// `column phrase "some words"`: true when those words appear back to
+    /// back, which is what the positions in a posting are for.
+    Phrase,
     Lt,
     LtEq,
     Gt,
@@ -261,6 +264,7 @@ impl BinaryOp {
             BinaryOp::Eq => "=",
             BinaryOp::NotEq => "!=",
             BinaryOp::Match => "match",
+            BinaryOp::Phrase => "phrase",
             BinaryOp::Lt => "<",
             BinaryOp::LtEq => "<=",
             BinaryOp::Gt => ">",
