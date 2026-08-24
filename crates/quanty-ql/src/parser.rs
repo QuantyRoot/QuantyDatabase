@@ -537,6 +537,10 @@ impl Parser {
 
     fn cmp_expr(&mut self) -> Result<Expr, ParseError> {
         let lhs = self.add_expr()?;
+        if self.eat_kw("match") {
+            let rhs = self.add_expr()?;
+            return Ok(Expr::Binary(Box::new(lhs), BinaryOp::Match, Box::new(rhs)));
+        }
         let op = match self.peek() {
             Token::Eq => BinaryOp::Eq,
             Token::NotEq => BinaryOp::NotEq,

@@ -80,6 +80,25 @@ pub fn length(text: &str) -> u32 {
     tokenize(text).len() as u32
 }
 
+/// Whether `haystack` contains every word of `needle`.
+///
+/// Both sides go through the same tokenizer, so a query matches on words
+/// rather than on substrings: `cat` does not find `category`. An empty
+/// query matches everything, which is what asking for nothing means.
+pub fn contains_all(haystack: &str, needle: &str) -> bool {
+    let wanted = terms_of(needle);
+    if wanted.is_empty() {
+        return true;
+    }
+    let have = terms_of(haystack);
+    wanted.iter().all(|w| have.contains(w))
+}
+
+/// The distinct terms of `text`, sorted, without their positions.
+pub fn terms_of(text: &str) -> Vec<String> {
+    postings(text).into_iter().map(|(t, _)| t).collect()
+}
+
 /// Positions as they sit in a posting: little endian u32, in order.
 ///
 /// Term frequency is the length of this and is never stored beside it,

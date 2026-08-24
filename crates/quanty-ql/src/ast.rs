@@ -204,6 +204,9 @@ pub enum UnaryOp {
 pub enum BinaryOp {
     Eq,
     NotEq,
+    /// `column match "some words"`: true when the column's text contains
+    /// every word on the right, tokenized the same way (ADR-036).
+    Match,
     Lt,
     LtEq,
     Gt,
@@ -222,6 +225,7 @@ impl BinaryOp {
         match self {
             BinaryOp::Eq => "=",
             BinaryOp::NotEq => "!=",
+            BinaryOp::Match => "match",
             BinaryOp::Lt => "<",
             BinaryOp::LtEq => "<=",
             BinaryOp::Gt => ">",

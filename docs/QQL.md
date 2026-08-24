@@ -92,6 +92,17 @@ converts implicitly.
 ## Expressions
 
 Comparisons `=`, `!=`, `<`, `<=`, `>`, `>=`; logic `and`, `or`, `not`;
+full text `match`, as in `where body match "quick brown"`, true when the
+column contains every word on the right. Both sides go through the same
+tokenizer, so it matches words rather than substrings: `cat` does not
+find `category`, and case does not matter. A query with no words matches
+everything.
+
+`match` works on any text column. On one declared `@text` the planner
+uses the inverted index and `explain` says `text match`; without one it
+falls back to reading each row, which is slower and gives the same
+answer. That is deliberate, and it is what the acceptance test compares
+against.
 arithmetic `+ - * / %` and unary `-`; parentheses. Precedence from loose to
 tight: `or`, `and`, `not`, comparisons, `+ -`, `* / %`, unary minus.
 

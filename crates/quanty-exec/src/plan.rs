@@ -28,6 +28,15 @@ pub enum Access {
         index_id: u64,
         value: Value,
     },
+    /// Intersect the posting lists of a text index.
+    TextMatch {
+        column: usize,
+        index_id: u64,
+        /// The query's distinct terms, sorted. Empty means the query had
+        /// no words, which matches everything and so is never planned as
+        /// a text access.
+        terms: Vec<String>,
+    },
     /// Walk the whole table.
     SeqScan,
 }
@@ -52,6 +61,17 @@ fn conjuncts(expr: &Expr) -> Vec<&Expr> {
 }
 
 /// If this conjunct is `column = literal` (either side), name them.
+/// `column match "words"`, in either order, with a literal on one side.
+fn as_column_match_literal(expr: &Expr) -> Option<(&ColumnRef, String)> {
+    let Expr::Binary(lhs, BinaryOp::Match, rhs) = expr else {
+        return None;
+    };
+    match (lhs.as_ref(), rhs.as_ref()) {
+        (Expr::Column(col), Expr::Literal(Value::Text(q))) => Some((col, q.clone())),
+        _ => None,
+    }
+}
+
 fn as_column_eq_literal(expr: &Expr) -> Option<(&ColumnRef, &Value)> {
     let Expr::Binary(l, BinaryOp::Eq, r) = expr else {
         return None;
@@ -157,7 +177,37 @@ pub fn plan_access(table: &Table, filter: Option<&Expr>) -> Result<AccessPlan, E
         }
     }
 
-    // 3. walk everything
+    // 3. a text-indexed column with a match?
+    for (part_idx, part) in parts.iter().enumerate() {
+        if let Some((col, query)) = as_column_match_literal(part) {
+            if let Some(pos) = position_for_plan(table, col) {
+                if let Some(index_id) = table.columns[pos].text_index_id {
+                    let terms = crate::text::terms_of(&query);
+                    // A query with no words matches every row, and the
+                    // index has nothing to narrow with. Let it fall to a
+                    // scan rather than plan a lookup of nothing.
+                    if !terms.is_empty() {
+                        let residual: Vec<&Expr> = parts
+                            .iter()
+                            .enumerate()
+                            .filter(|(i, _)| *i != part_idx)
+                            .map(|(_, e)| *e)
+                            .collect();
+                        return Ok(AccessPlan {
+                            access: Access::TextMatch {
+                                column: pos,
+                                index_id,
+                                terms,
+                            },
+                            residual: rebuild_conjunction(&residual),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    // 4. walk everything
     Ok(AccessPlan {
         access: Access::SeqScan,
         residual: Some(filter.clone()),
@@ -213,6 +263,11 @@ pub fn explain_access(table: &Table, plan: &AccessPlan) -> ExplainNode {
                 .collect();
             ExplainNode::leaf(format!("KeyLookup {} ({})", table.name, parts.join(", ")))
         }
+        Access::TextMatch { column, terms, .. } => ExplainNode::leaf(format!(
+            "text match on {} for [{}]",
+            table.columns[*column].name,
+            terms.join(", ")
+        )),
         Access::IndexScan { column, value, .. } => ExplainNode::leaf(format!(
             "IndexScan {} via {} = {}",
             table.name,

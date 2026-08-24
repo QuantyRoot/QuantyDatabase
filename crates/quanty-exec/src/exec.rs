@@ -481,6 +481,55 @@ fn fetch_rows<V: View>(view: &V, table: &Table, plan: &AccessPlan) -> Result<Fet
                 out.push((key, decode_row(table, &bytes)?));
             }
         }
+        Access::TextMatch {
+            index_id, terms, ..
+        } => {
+            // Row keys rather than decoded values: a scan yields them in
+            // order already, and Value is not Ord because floats are not.
+            //
+            // Every list is read, then the shortest drives the
+            // intersection. Reading a bounded prefix of each list first
+            // and probing the rest with point lookups was tried and taken
+            // back out: it made a three-term query with one rare term
+            // slower, not faster, because a sequential scan of a posting
+            // list beats a btree descent per survivor.
+            let mut lists: Vec<Vec<Vec<u8>>> = Vec::with_capacity(terms.len());
+            for term in terms {
+                let prefix = encode_key(&[Value::Int(*index_id as i64), Value::Text(term.clone())]);
+                let end = key_successor(&prefix);
+                let mut keys = Vec::new();
+                for (entry_key, _) in view.view_scan(Some(&prefix), end.as_deref())? {
+                    let decoded = decode_key(&entry_key)
+                        .map_err(|_| ExecError::exec("posting does not decode"))?;
+                    if decoded.len() < 3 {
+                        return Err(ExecError::exec("posting is too short, this is a bug"));
+                    }
+                    keys.push(row_key(table, &decoded[2..]));
+                }
+                // A term nothing contains empties the intersection, so
+                // stop rather than read the rest.
+                if keys.is_empty() {
+                    return Ok(out);
+                }
+                lists.push(keys);
+            }
+            lists.sort_by_key(|l| l.len());
+
+            let mut survivors = lists.remove(0);
+            for other in &lists {
+                survivors.retain(|key| other.binary_search(key).is_ok());
+                if survivors.is_empty() {
+                    break;
+                }
+            }
+
+            for key in survivors {
+                if let Some(bytes) = view.view_get(&key)? {
+                    let row = decode_row(table, &bytes)?;
+                    out.push((key, row));
+                }
+            }
+        }
         Access::IndexScan {
             value, index_id, ..
         } => {

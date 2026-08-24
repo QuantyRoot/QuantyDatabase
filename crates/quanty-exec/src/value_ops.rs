@@ -78,6 +78,15 @@ fn eval_binary(
     let l = eval(lhs, scope)?;
     let r = eval(rhs, scope)?;
     match op {
+        // Brute force by design: this is what a row without a text index
+        // falls back to, and what the index has to agree with (ADR-036).
+        BinaryOp::Match => match (&l, &r) {
+            (Value::Null, _) | (_, Value::Null) => Ok(Value::Bool(false)),
+            (Value::Text(haystack), Value::Text(needle)) => {
+                Ok(Value::Bool(crate::text::contains_all(haystack, needle)))
+            }
+            _ => Err(ExecError::exec("match wants text on both sides")),
+        },
         BinaryOp::Eq => Ok(Value::Bool(values_equal(&l, &r)?)),
         BinaryOp::NotEq => Ok(Value::Bool(!values_equal(&l, &r)?)),
         BinaryOp::Lt | BinaryOp::LtEq | BinaryOp::Gt | BinaryOp::GtEq => {

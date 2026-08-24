@@ -1445,6 +1445,14 @@ because a phase that has to beat a brute force scan by a hundredfold
 should spend its budget on the index rather than on inventing a scoring
 function.
 
+**Tried and taken back out: peeking before intersecting.** Reading a
+bounded prefix of every posting list first, to find a rare term without
+reading the common ones out, and then probing the rest with point
+lookups. It measured worse: a three term query with one rare term went
+from 8.6ms to 10.4ms, and a two term query with no hits from 0.3ms to
+1.5ms. A sequential walk of a posting list beats a btree descent per
+survivor, which is not what I expected and is why it was measured.
+
 **The price.** A row with a text column now writes one index entry per
 distinct term in it, so an insert into an indexed table is no longer a
 fixed amount of work; a thousand word document is a thousand entries.
