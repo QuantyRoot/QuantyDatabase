@@ -1380,11 +1380,16 @@ without the guard, 290 with. The read is a real syscall on the fsync
 path, and the fsync is most of the 266. Server mode batches commits, so
 it pays this once per batch rather than once per row.
 
-**The lock itself is not mine to decide.** `File::try_lock` is stable on
-1.98 and does not exist on 1.75, which is this project's MSRV and has a
-CI job named after it. So a real advisory lock costs an MSRV of 1.89 or
-later, and it would make the guard's 9% unnecessary: a lock is paid once
-at open, not once per commit. The alternatives are worse. `libc` is a
+**The lock itself is not mine to decide.** `File::try_lock` needs a newer
+MSRV than 1.75, which is this project's and has a CI job named after it.
+A real advisory lock would make the guard's 9% unnecessary, since a lock
+is paid once at open rather than once per commit.
+
+The version was written here as "1.89 or later" from memory and then
+measured, which moved it: 1.83 has no such method, 1.84 has it behind an
+unstable feature, and **1.85** has it stable. The workspace already
+compiles on 1.85 unchanged, all targets, with the lockfile locked, so the
+cost of that MSRV is exactly the MSRV and nothing else. The alternatives are worse. `libc` is a
 dependency and ADR-020 has answered that four times. Raw syscalls mean
 unsafe in the storage core, in the one crate where that is least welcome.
 

@@ -482,8 +482,9 @@ in `commit` turns what used to be a silently lost commit into a
 durable commit.
 
 The real fix is an advisory lock taken at open, which costs nothing per
-commit. `File::try_lock` is stable on 1.98 and absent on 1.75, so it
-needs the MSRV raised to 1.89 or later. `libc` is a dependency and ADR-020
+commit. `File::try_lock` is stable from 1.85, absent in 1.83 and unstable
+in 1.84, so it needs the MSRV raised from 1.75 to 1.85. The workspace
+already compiles on 1.85 unchanged. `libc` is a dependency and ADR-020
 has answered that four times; raw syscalls mean unsafe in the storage
 core. Elchi's call, and the guard holds until it is made.
 
