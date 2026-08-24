@@ -98,6 +98,13 @@ tokenizer, so it matches words rather than substrings: `cat` does not
 find `category`, and case does not matter. A query with no words matches
 everything.
 
+A `match` returns its answers best first, ranked by BM25: a term that
+occurs more often in a document counts for more, a shorter document
+counts for more at the same frequency, and a rarer term counts for more
+than a common one. An explicit `order by` overrules the ranking, and
+equal scores fall back to the primary key. The score itself is not
+selectable.
+
 `match` works on any text column. On one declared `@text` the planner
 uses the inverted index and `explain` says `text match`; without one it
 falls back to reading each row, which is slower and gives the same

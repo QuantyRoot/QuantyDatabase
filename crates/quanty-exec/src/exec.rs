@@ -430,10 +430,43 @@ fn run_get<V: View>(view: &V, get: &Get) -> Result<Output, ExecError> {
         validate_columns(&table, filter)?;
     }
     let plan = plan::plan_access(&table, get.filter.as_ref())?;
-    let mut rows: Vec<Vec<Value>> = fetch_rows(view, &table, &plan)?
-        .into_iter()
-        .map(|(_, v)| v)
-        .collect();
+
+    // A search returns its answers best first unless asked otherwise.
+    // Nothing else here has an opinion about order, but a match does: the
+    // scores are what the index was read for.
+    let mut rows: Vec<Vec<Value>> = match (&plan.access, &get.order) {
+        (
+            Access::TextMatch {
+                index_id,
+                column,
+                terms,
+            },
+            None,
+        ) => {
+            let (fetched, scores) = text_match(view, &table, *index_id, *column, terms)?;
+            let mut ranked: Vec<(f64, Vec<Value>)> = scores
+                .into_iter()
+                .zip(fetched.into_iter().map(|(_, v)| v))
+                .collect();
+            // Descending by score, and by primary key where scores tie, so
+            // the same query gives the same order twice.
+            ranked.sort_by(|a, b| {
+                b.0.partial_cmp(&a.0)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then_with(|| {
+                        // The encoded key, because Value is not Ord: floats
+                        // have no total order and the encoding gives one.
+                        row_key(&table, &row_pk(&table, &a.1))
+                            .cmp(&row_key(&table, &row_pk(&table, &b.1)))
+                    })
+            });
+            ranked.into_iter().map(|(_, v)| v).collect()
+        }
+        _ => fetch_rows(view, &table, &plan)?
+            .into_iter()
+            .map(|(_, v)| v)
+            .collect(),
+    };
 
     if let Some((col, dir)) = &get.order {
         if let Some(t) = &col.table {
@@ -472,6 +505,116 @@ fn run_get<V: View>(view: &V, get: &Get) -> Result<Output, ExecError> {
     Ok(Output::Rows { columns, rows })
 }
 
+/// One document that has a term: its row key and how often the term
+/// occurs in it.
+type Posting = (Vec<u8>, u32);
+
+/// Intersect the posting lists and score what survives.
+///
+/// Scoring happens here rather than after, because the numbers BM25 needs
+/// are the ones this walk already has: a term's document frequency is the
+/// length of its posting list, and its frequency in a document is the
+/// length of that posting's position list. Reading them again afterwards
+/// would double the cost of the only expensive part (ADR-036).
+fn text_match<V: View>(
+    view: &V,
+    table: &Table,
+    index_id: u64,
+    column: usize,
+    terms: &[String],
+) -> Result<(Fetched, Vec<f64>), ExecError> {
+    // Per term: every document that has it, in row key order, with how
+    // often it occurs there.
+    let mut lists: Vec<Vec<Posting>> = Vec::with_capacity(terms.len());
+    for term in terms {
+        let prefix = encode_key(&[Value::Int(index_id as i64), Value::Text(term.clone())]);
+        let end = key_successor(&prefix);
+        let mut hits = Vec::new();
+        for (entry_key, positions) in view.view_scan(Some(&prefix), end.as_deref())? {
+            let decoded =
+                decode_key(&entry_key).map_err(|_| ExecError::exec("posting does not decode"))?;
+            if decoded.len() < 3 {
+                return Err(ExecError::exec("posting is too short, this is a bug"));
+            }
+            let tf = text::decode_positions(&positions)
+                .ok_or_else(|| ExecError::exec("posting positions do not decode"))?
+                .len() as u32;
+            hits.push((row_key(table, &decoded[2..]), tf));
+        }
+        // A term nothing contains empties the intersection.
+        if hits.is_empty() {
+            return Ok((Vec::new(), Vec::new()));
+        }
+        lists.push(hits);
+    }
+
+    // Document frequency is the list length, taken before the lists are
+    // reordered or consumed.
+    let document_frequency: Vec<usize> = lists.iter().map(|l| l.len()).collect();
+    let (docs, total_length) = match view.view_get(&corpus_key(index_id))? {
+        Some(bytes) => decode_corpus(&bytes)?,
+        None => (0, 0),
+    };
+    let average_length = if docs == 0 {
+        1.0
+    } else {
+        total_length as f64 / docs as f64
+    };
+
+    let mut order: Vec<usize> = (0..lists.len()).collect();
+    order.sort_by_key(|&i| lists[i].len());
+    let seed = order[0];
+
+    let mut fetched = Vec::new();
+    let mut scores = Vec::new();
+    'row: for (key, tf) in &lists[seed] {
+        let mut frequencies = vec![(seed, *tf)];
+        for &i in &order[1..] {
+            match lists[i].binary_search_by(|(k, _)| k.cmp(key)) {
+                Ok(at) => frequencies.push((i, lists[i][at].1)),
+                Err(_) => continue 'row,
+            }
+        }
+
+        let Some(bytes) = view.view_get(key)? else {
+            continue;
+        };
+        let row = decode_row(table, &bytes)?;
+
+        // The length comes from the row that was fetched anyway, not from
+        // the entry at (index_id, 0, pk). Measured: one point lookup per
+        // result put a query matching eighty thousand documents at three
+        // times the cost of the scan it is meant to beat.
+        let length = match &row[column] {
+            Value::Text(s) => text::length(s) as f64,
+            _ => average_length,
+        };
+        let score: f64 = frequencies
+            .iter()
+            .map(|&(i, tf)| bm25(tf, document_frequency[i], docs, length, average_length))
+            .sum();
+
+        fetched.push((key.clone(), row));
+        scores.push(score);
+    }
+    Ok((fetched, scores))
+}
+
+/// One term's contribution to a document's score.
+///
+/// Okapi BM25 with the usual constants. A phase that has to beat a scan
+/// by a hundredfold should spend its budget on the index rather than on
+/// inventing a scoring function (ADR-036).
+fn bm25(tf: u32, document_frequency: usize, docs: u64, length: f64, average_length: f64) -> f64 {
+    const K1: f64 = 1.2;
+    const B: f64 = 0.75;
+    let n = docs as f64;
+    let df = document_frequency as f64;
+    let idf = (1.0 + (n - df + 0.5) / (df + 0.5)).ln();
+    let tf = tf as f64;
+    idf * (tf * (K1 + 1.0)) / (tf + K1 * (1.0 - B + B * length / average_length))
+}
+
 fn fetch_rows<V: View>(view: &V, table: &Table, plan: &AccessPlan) -> Result<Fetched, ExecError> {
     let mut out = Vec::new();
     match &plan.access {
@@ -482,53 +625,12 @@ fn fetch_rows<V: View>(view: &V, table: &Table, plan: &AccessPlan) -> Result<Fet
             }
         }
         Access::TextMatch {
-            index_id, terms, ..
+            index_id,
+            column,
+            terms,
         } => {
-            // Row keys rather than decoded values: a scan yields them in
-            // order already, and Value is not Ord because floats are not.
-            //
-            // Every list is read, then the shortest drives the
-            // intersection. Reading a bounded prefix of each list first
-            // and probing the rest with point lookups was tried and taken
-            // back out: it made a three-term query with one rare term
-            // slower, not faster, because a sequential scan of a posting
-            // list beats a btree descent per survivor.
-            let mut lists: Vec<Vec<Vec<u8>>> = Vec::with_capacity(terms.len());
-            for term in terms {
-                let prefix = encode_key(&[Value::Int(*index_id as i64), Value::Text(term.clone())]);
-                let end = key_successor(&prefix);
-                let mut keys = Vec::new();
-                for (entry_key, _) in view.view_scan(Some(&prefix), end.as_deref())? {
-                    let decoded = decode_key(&entry_key)
-                        .map_err(|_| ExecError::exec("posting does not decode"))?;
-                    if decoded.len() < 3 {
-                        return Err(ExecError::exec("posting is too short, this is a bug"));
-                    }
-                    keys.push(row_key(table, &decoded[2..]));
-                }
-                // A term nothing contains empties the intersection, so
-                // stop rather than read the rest.
-                if keys.is_empty() {
-                    return Ok(out);
-                }
-                lists.push(keys);
-            }
-            lists.sort_by_key(|l| l.len());
-
-            let mut survivors = lists.remove(0);
-            for other in &lists {
-                survivors.retain(|key| other.binary_search(key).is_ok());
-                if survivors.is_empty() {
-                    break;
-                }
-            }
-
-            for key in survivors {
-                if let Some(bytes) = view.view_get(&key)? {
-                    let row = decode_row(table, &bytes)?;
-                    out.push((key, row));
-                }
-            }
+            let (rows, _) = text_match(view, table, *index_id, *column, terms)?;
+            out.extend(rows);
         }
         Access::IndexScan {
             value, index_id, ..
@@ -951,6 +1053,12 @@ impl<S: Storage> Run<'_, S> {
             }
         }
 
+        // The per-document length. Scoring reads it off the row it
+        // fetches anyway, so nothing reads this today; it stays because
+        // the next thing search wants is a top-k that scores without
+        // materialising every row, and then the length has to be in the
+        // index. verify_indexes rebuilds it from the rows, so it cannot
+        // quietly drift while it waits.
         let length = text::length(text);
         let len_key = index_entry_key(index_id, &Value::Int(0), pk);
         if adding {

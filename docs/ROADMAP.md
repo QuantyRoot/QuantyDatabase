@@ -182,13 +182,12 @@ posting is a secondary index entry whose value is a term, so postings
 inherit versioning, branching and the crash harness rather than getting a
 storage path of their own.
 
-Built so far: the tokenizer, postings kept in step with the rows, and
-`match` over them. What is left is BM25 ranking; the postings already
-carry the term frequencies and the corpus counters it needs.
+Complete: the tokenizer, postings kept in step with the rows, `match`
+over them, and BM25 ranking scored while the postings are read.
 
 Acceptance:
 - [x] indexed search returns identical results to a brute force scan on a
-      test corpus, but >100x faster at 100k docs: 446x over a search mix,
+      test corpus, but >100x faster at 100k docs: 461x over a search mix,
       on 100k documents of 15 words drawn Zipf over a 5000 word
       vocabulary. `match` is a plain binary operator, so the brute force
       is the same predicate on a column without `@text` rather than a
@@ -197,9 +196,10 @@ Acceptance:
       The heavy test prints the whole curve rather than one number,
       because the number depends on how much a query matches: 4245x for a
       word nothing contains, 191x at 187 hits, 128x at 215, and 1x for
-      the corpus's most common word at 82607 hits. Nothing can beat a
-      scan at producing eighty thousand rows, and a benchmark that hid
-      that would be measuring the corpus
+      the corpus's most common word at 82607 hits, where the index is
+      slower than the scan because ranking has to score every one of
+      them. Nothing can beat a scan at producing eighty thousand rows,
+      and a benchmark that hid that would be measuring the corpus
 - [x] index stays consistent under the crash harness: the harness table
       now carries a `@text` column, and recovery is followed by
       `verify_indexes`, which rebuilds every posting from the surviving

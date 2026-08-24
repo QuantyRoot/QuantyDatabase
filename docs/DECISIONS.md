@@ -1490,7 +1490,26 @@ replacing it is a change to one file and a reindex.
 **Ranking is BM25 with the usual constants**, k1 = 1.2 and b = 0.75,
 because a phase that has to beat a brute force scan by a hundredfold
 should spend its budget on the index rather than on inventing a scoring
-function.
+function. A `match` returns its answers best first; an explicit
+`order by` overrules that, and ties fall back to the primary key so the
+same query gives the same answer twice.
+
+**Scoring happens while the postings are read, and the document length
+comes off the row.** The first is why document frequency is not stored: a
+term's is the length of its list, and the walk that intersects the lists
+has it. The second was measured rather than assumed. Reading each
+document's length from `(index_id, 0, pk)` costs one point lookup per
+result, which is invisible on a selective query and ruinous on a broad
+one: a query matching eighty thousand of a hundred thousand documents
+went to three times the cost of the scan it exists to beat. The row is
+fetched anyway and the column index is in the plan, so the length is
+counted from the text there instead. That took the search mix from 275x
+back to 461x, which is where it was before ranking existed.
+
+The entry at `(index_id, 0, pk)` stays although nothing reads it now. The
+next thing search wants is a top-k that scores without materialising
+every row, and then the length has to be in the index; `verify_indexes`
+rebuilds it from the rows, so it cannot drift while it waits.
 
 **Tried and taken back out: peeking before intersecting.** Reading a
 bounded prefix of every posting list first, to find a rare term without

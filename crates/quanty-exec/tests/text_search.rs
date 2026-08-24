@@ -224,3 +224,133 @@ fn a_hundred_thousand_documents_and_a_hundredfold() {
         "only {factor:.1}x faster than the scan over the search mix"
     );
 }
+
+// ---------------------------------------------------------------------------
+// ranking (ADR-036)
+// ---------------------------------------------------------------------------
+
+/// Ids in the order the engine returned them, unsorted.
+fn ranked(s: &mut Session<MemStorage>, table: &str, query: &str) -> Vec<i64> {
+    let statement = format!("get {table} {{ id }} where body match \"{query}\"");
+    match s
+        .execute(&statement)
+        .unwrap_or_else(|e| panic!("{statement}: {e}"))
+    {
+        Output::Rows { rows, .. } => rows
+            .into_iter()
+            .map(|r| match r[0] {
+                Value::Int(n) => n,
+                ref other => panic!("unexpected id {other:?}"),
+            })
+            .collect(),
+        other => panic!("expected rows, got {other:?}"),
+    }
+}
+
+fn with_docs(docs: &[(i64, &str)]) -> Session<MemStorage> {
+    let db = Db::in_memory().expect("open");
+    let mut s = Session::new(db);
+    s.execute("table docs { id: int @key, body: text @text }")
+        .expect("table");
+    for (id, body) in docs {
+        s.execute(&format!("put docs {{ id: {id}, body: \"{body}\" }}"))
+            .expect("put");
+    }
+    s
+}
+
+#[test]
+fn a_term_that_occurs_more_often_ranks_higher() {
+    let mut s = with_docs(&[
+        (1, "quick"),
+        (2, "quick quick quick quick"),
+        (3, "quick quick"),
+    ]);
+    // all three documents are the same length in terms of nothing else,
+    // so only term frequency separates them
+    assert_eq!(ranked(&mut s, "docs", "quick"), [2, 3, 1]);
+}
+
+#[test]
+fn a_shorter_document_ranks_higher_at_the_same_frequency() {
+    // BM25 normalises by length: one hit in five words is worth more than
+    // one hit in fifty.
+    let long = format!("quick {}", vec!["filler"; 50].join(" "));
+    let mut s = with_docs(&[(1, &long), (2, "quick and short")]);
+    assert_eq!(ranked(&mut s, "docs", "quick"), [2, 1]);
+}
+
+#[test]
+fn a_rare_term_counts_for_more_than_a_common_one() {
+    // Both documents hold both terms, four words each, so frequency and
+    // length cancel out and only the rarity of the terms separates them.
+    // The one whose occurrences are of the rare word has to win.
+    //
+    // Proved to catch: fixing idf at 1.0 makes these two tie and the
+    // order fall back to the key, which is 1 before 2.
+    let mut s = with_docs(&[
+        (1, "rare common common common"),
+        (2, "rare rare rare common"),
+        (3, "common filler filler filler"),
+        (4, "common filler filler filler"),
+        (5, "common filler filler filler"),
+        (6, "common filler filler filler"),
+    ]);
+    assert_eq!(
+        ranked(&mut s, "docs", "common rare"),
+        [2, 1],
+        "the rarer term did not count for more"
+    );
+}
+
+#[test]
+fn an_explicit_order_wins_over_the_ranking() {
+    let mut s = with_docs(&[(1, "quick"), (2, "quick quick quick"), (3, "quick quick")]);
+    assert_eq!(ranked(&mut s, "docs", "quick"), [2, 3, 1], "not ranked");
+
+    let out = s
+        .execute("get docs { id } where body match \"quick\" order by id asc")
+        .expect("ordered");
+    match out {
+        Output::Rows { rows, .. } => {
+            let ids: Vec<i64> = rows
+                .into_iter()
+                .map(|r| match r[0] {
+                    Value::Int(n) => n,
+                    _ => unreachable!(),
+                })
+                .collect();
+            assert_eq!(ids, [1, 2, 3], "the explicit order was overruled");
+        }
+        other => panic!("expected rows, got {other:?}"),
+    }
+}
+
+#[test]
+fn ties_come_out_in_key_order_and_stay_there() {
+    // What this pins is the observable property: equal scores come back
+    // in primary key order, and the same query gives the same answer
+    // twice. The explicit tie break in the sort is what keeps that true
+    // if the seed list ever stops arriving in key order; taking it out
+    // does not fail this test today, and the comment says so rather than
+    // claiming a proof it does not have.
+    let mut s = with_docs(&[(7, "same words"), (3, "same words"), (5, "same words")]);
+    let first = ranked(&mut s, "docs", "same words");
+    for _ in 0..5 {
+        assert_eq!(ranked(&mut s, "docs", "same words"), first);
+    }
+    assert_eq!(first, [3, 5, 7], "ties should fall back to the key");
+}
+
+#[test]
+fn ranking_does_not_change_which_documents_come_back() {
+    // The set is what the scan agrees with; the order is extra.
+    let docs = corpus(500);
+    let mut s = loaded(&docs);
+    for query in QUERIES {
+        let mut fast = ranked(&mut s, "indexed", query);
+        let slow = ids(&mut s, "plain", query);
+        fast.sort_unstable();
+        assert_eq!(fast, slow, "query {query:?} changed under ranking");
+    }
+}
