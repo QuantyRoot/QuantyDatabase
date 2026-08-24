@@ -190,9 +190,18 @@ scoring reads only postings, so only the rows that will be returned are
 fetched. On a hundred thousand documents, `limit 10` over a query
 matching eighty-two thousand of them costs 71ms rather than 721.
 
-Not built, and named rather than implied: `or` and `not` over terms,
-prefix or wildcard terms, and adding a text index to a table that already
-exists. The tokenizer is ASCII, which ADR-036 states with its price.
+`or`, `and` and `not` combine `match` and `phrase` with everything else
+in the language, because both are ordinary binary operators and the
+expression evaluator was already there. That was true before it was
+tested and is stated here after checking rather than before. What a
+disjunction does not do is use the index: the planner picks a conjunct
+and `a or b` has none, so it reads every row and filters. Right answers,
+wrong amount of work, and a test pins the plan so the day it changes is
+noticed.
+
+Not built: prefix or wildcard terms, adding a text index to a table that
+already exists, and a union plan for disjunctions. The tokenizer is
+ASCII, which ADR-036 states with its price.
 
 Acceptance:
 - [x] indexed search returns identical results to a brute force scan on a

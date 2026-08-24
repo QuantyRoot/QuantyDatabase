@@ -630,3 +630,110 @@ fn a_limit_on_a_phrase_keeps_the_best_ones() {
     };
     assert_eq!(two, [3, 2], "the limit did not keep the best");
 }
+
+// ---------------------------------------------------------------------------
+// combining with the rest of the language
+// ---------------------------------------------------------------------------
+
+fn rows_of(s: &mut Session<MemStorage>, statement: &str) -> Vec<i64> {
+    match s
+        .execute(statement)
+        .unwrap_or_else(|e| panic!("{statement}: {e}"))
+    {
+        Output::Rows { rows, .. } => {
+            let mut out: Vec<i64> = rows
+                .into_iter()
+                .map(|r| match r[0] {
+                    Value::Int(n) => n,
+                    ref other => panic!("unexpected id {other:?}"),
+                })
+                .collect();
+            out.sort_unstable();
+            out
+        }
+        other => panic!("expected rows, got {other:?}"),
+    }
+}
+
+#[test]
+fn or_and_not_work_over_match_because_it_is_an_ordinary_operator() {
+    // Untested until now, and working by construction rather than by
+    // design: match is a binary operator, so the expression evaluator
+    // handles or, and and not without search knowing about them.
+    let mut s = with_docs(&[
+        (1, "alpha"),
+        (2, "beta"),
+        (3, "alpha beta"),
+        (4, "gamma"),
+        (5, "alpha gamma"),
+    ]);
+
+    assert_eq!(
+        rows_of(
+            &mut s,
+            "get docs { id } where body match \"alpha\" or body match \"beta\""
+        ),
+        [1, 2, 3, 5]
+    );
+    assert_eq!(
+        rows_of(
+            &mut s,
+            "get docs { id } where body match \"alpha\" and not body match \"beta\""
+        ),
+        [1, 5]
+    );
+    assert_eq!(
+        rows_of(&mut s, "get docs { id } where not body match \"alpha\""),
+        [2, 4]
+    );
+    assert_eq!(
+        rows_of(
+            &mut s,
+            "get docs { id } where body phrase \"alpha beta\" or body match \"gamma\""
+        ),
+        [3, 4, 5]
+    );
+}
+
+#[test]
+fn a_disjunction_does_not_use_the_index_and_the_plan_says_so() {
+    // What or costs today: the planner takes one conjunct, and there is
+    // no conjunct in `a or b`, so it reads every row. The answers are
+    // right and the work is not, and that is worth pinning rather than
+    // discovering later.
+    let mut s = with_docs(&[(1, "alpha"), (2, "beta")]);
+    match s
+        .execute("explain get docs { id } where body match \"alpha\" or body match \"beta\"")
+        .expect("explain")
+    {
+        Output::Lines(lines) => {
+            let text = lines.join("\n");
+            assert!(text.contains("SeqScan"), "expected a scan: {text}");
+            assert!(!text.contains("text match"), "the index was used: {text}");
+        }
+        other => panic!("expected lines, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_null_document_matches_nothing_and_is_not_matched_by_not_either() {
+    // A null is not a document, so it holds no words. `not match` on it
+    // is the interesting half: it says true, because the row does not
+    // contain the word.
+    let db = Db::in_memory().expect("open");
+    let mut s = Session::new(db);
+    s.execute("table docs { id: int @key, body: text @text @null }")
+        .expect("table");
+    s.execute("put docs { id: 1, body: null }").expect("put");
+    s.execute("put docs { id: 2, body: \"alpha\" }")
+        .expect("put");
+
+    assert_eq!(
+        rows_of(&mut s, "get docs { id } where body match \"alpha\""),
+        [2]
+    );
+    assert_eq!(
+        rows_of(&mut s, "get docs { id } where not body match \"alpha\""),
+        [1]
+    );
+}
