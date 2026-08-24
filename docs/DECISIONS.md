@@ -1389,9 +1389,11 @@ The version was written here as "1.89 or later" from memory and then
 measured, which moved it: 1.83 has no such method, 1.84 has it behind an
 unstable feature, and **1.85** has it stable. The workspace already
 compiles on 1.85 unchanged, all targets, with the lockfile locked, so the
-cost of that MSRV is exactly the MSRV and nothing else. The alternatives are worse. `libc` is a
-dependency and ADR-020 has answered that four times. Raw syscalls mean
-unsafe in the storage core, in the one crate where that is least welcome.
+cost of that MSRV is exactly the MSRV and nothing else.
+
+The alternatives are worse. `libc` is a dependency and ADR-020 has
+answered that four times. Raw syscalls mean unsafe in the storage core,
+in the one crate where that is least welcome.
 
 Until that is decided the guard stands on its own and the documentation
 says single writer per file rather than pretending something enforces it.
