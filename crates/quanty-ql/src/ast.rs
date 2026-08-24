@@ -220,6 +220,41 @@ pub enum BinaryOp {
     Mod,
 }
 
+impl Statement {
+    /// Whether running this can change the file.
+    ///
+    /// A reader needs no writer lock, so the tool asks before it opens.
+    /// Listed the long way rather than with a catch-all: a statement
+    /// added later should fail to compile here rather than default to
+    /// being called harmless.
+    pub fn writes(&self) -> bool {
+        match self {
+            Statement::Get(_)
+            | Statement::ShowTables
+            | Statement::ShowBranches
+            | Statement::ShowStats
+            | Statement::Log => false,
+            // `explain` runs the planner, never the plan.
+            Statement::Explain(_) => false,
+            Statement::TableDef(_)
+            | Statement::DropTable { .. }
+            | Statement::Put { .. }
+            | Statement::Set { .. }
+            | Statement::Del { .. }
+            | Statement::IndexDef { .. }
+            | Statement::Branch { .. }
+            | Statement::Switch { .. }
+            | Statement::Merge { .. }
+            | Statement::DropBranch { .. }
+            | Statement::Gc { .. }
+            | Statement::GcBlobs
+            | Statement::Begin
+            | Statement::Commit
+            | Statement::Rollback => true,
+        }
+    }
+}
+
 impl BinaryOp {
     pub fn as_str(self) -> &'static str {
         match self {

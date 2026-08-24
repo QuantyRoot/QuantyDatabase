@@ -238,8 +238,12 @@ fn lex_number(source: &str, start: usize) -> Result<(Token, usize), ParseError> 
     Ok((token, i))
 }
 
-fn decode_hex(s: &str) -> Option<Vec<u8>> {
-    if s.len() % 2 != 0 {
+/// Hex to bytes, or None if it is not a whole number of pairs.
+///
+/// Shared with the SQL lexer, which wants exactly the same thing: two
+/// copies of a decoder are two places for it to drift.
+pub(crate) fn decode_hex(s: &str) -> Option<Vec<u8>> {
+    if !s.len().is_multiple_of(2) {
         return None;
     }
     (0..s.len())

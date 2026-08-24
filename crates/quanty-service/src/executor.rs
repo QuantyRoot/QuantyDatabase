@@ -422,7 +422,7 @@ impl<S: Storage> State<S> {
             let clean = self
                 .conns
                 .get(&pending.job.id)
-                .map_or(true, |c| !c.parked.is_open() && c.aborted.is_none());
+                .is_none_or(|c| !c.parked.is_open() && c.aborted.is_none());
             if !batchable || !clean {
                 break;
             }

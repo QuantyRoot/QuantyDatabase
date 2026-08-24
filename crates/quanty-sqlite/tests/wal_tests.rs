@@ -42,7 +42,7 @@ fn open_err(bytes: &[u8]) -> SqliteError {
 /// about it.
 fn reseal_header(bytes: &mut [u8]) {
     let (mut s0, mut s1) = (0u32, 0u32);
-    for chunk in bytes[..24].chunks_exact(8) {
+    for chunk in bytes[..24].as_chunks::<8>().0 {
         let x = u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
         let y = u32::from_le_bytes([chunk[4], chunk[5], chunk[6], chunk[7]]);
         s0 = s0.wrapping_add(x).wrapping_add(s1);

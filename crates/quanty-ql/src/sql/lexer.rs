@@ -236,7 +236,7 @@ pub(crate) fn lex(source: &str) -> Result<Vec<Spanned>, ParseError> {
                 // x'...' is a blob literal
                 if (word == "x" || word == "X") && bytes.get(i) == Some(&b'\'') {
                     let (s, next) = lex_string(source, i)?;
-                    let raw = decode_hex(&s).ok_or_else(|| {
+                    let raw = crate::lexer::decode_hex(&s).ok_or_else(|| {
                         ParseError::at(at, "blob literal wants hex digits, like x'deadbeef'")
                     })?;
                     out.push(Spanned {
@@ -369,16 +369,6 @@ fn lex_number(source: &str, start: usize) -> Result<(Tok, usize), ParseError> {
         )
     };
     Ok((token, i))
-}
-
-fn decode_hex(s: &str) -> Option<Vec<u8>> {
-    if s.len() % 2 != 0 {
-        return None;
-    }
-    (0..s.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(s.get(i..i + 2)?, 16).ok())
-        .collect()
 }
 
 #[cfg(test)]

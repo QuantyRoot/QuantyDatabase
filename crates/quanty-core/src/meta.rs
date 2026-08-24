@@ -183,7 +183,7 @@ pub(crate) fn recover(storage: &dyn Storage) -> Result<Meta> {
                 saw_magic = true;
             }
             match Meta::decode(&buf, slot) {
-                Ok(meta) if best.as_ref().map_or(true, |b| meta.txid > b.txid) => best = Some(meta),
+                Ok(meta) if best.as_ref().is_none_or(|b| meta.txid > b.txid) => best = Some(meta),
                 _ => {}
             }
         }

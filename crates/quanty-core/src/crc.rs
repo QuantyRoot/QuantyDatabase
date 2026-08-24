@@ -89,8 +89,8 @@ pub fn crc32c_append(previous: u32, data: &[u8]) -> u32 {
     // invert at the end, so that leading zero bytes are not invisible
     let mut crc = !previous;
 
-    let mut chunks = data.chunks_exact(16);
-    for chunk in &mut chunks {
+    let (blocks, tail) = data.as_chunks::<16>();
+    for chunk in blocks {
         let a = u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]) ^ crc;
         let b = u32::from_le_bytes([chunk[4], chunk[5], chunk[6], chunk[7]]);
         let c = u32::from_le_bytes([chunk[8], chunk[9], chunk[10], chunk[11]]);
@@ -112,7 +112,7 @@ pub fn crc32c_append(previous: u32, data: &[u8]) -> u32 {
             ^ TABLES[1][((d >> 16) & 0xff) as usize]
             ^ TABLES[0][((d >> 24) & 0xff) as usize];
     }
-    for byte in chunks.remainder() {
+    for byte in tail {
         crc = (crc >> 8) ^ TABLES[0][((crc ^ *byte as u32) & 0xff) as usize];
     }
 

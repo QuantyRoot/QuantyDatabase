@@ -226,7 +226,7 @@ mod tests {
         ];
         match rng.next() % 6 {
             0 => Value::Null,
-            1 => Value::Bool(rng.next() % 2 == 0),
+            1 => Value::Bool(rng.next().is_multiple_of(2)),
             2 => Value::Int(match rng.next() % 4 {
                 0 => i64::MIN,
                 1 => i64::MAX,

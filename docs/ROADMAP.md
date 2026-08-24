@@ -473,21 +473,6 @@ is a change to the write path, and in a storage engine both can lose data
 in ways a test suite does not notice. Neither should start before the
 allocator work says what is left.
 
-## Known problem: nothing stops a second writer
-
-There is no file lock. Two handles on one file, in one process or two,
-each hold their own writer mutex and each believe they are alone. A guard
-in `commit` turns what used to be a silently lost commit into a
-`WriterRaced` error (ADR-035), and it costs nine percent on an unbatched
-durable commit.
-
-The real fix is an advisory lock taken at open, which costs nothing per
-commit. `File::try_lock` is stable from 1.85, absent in 1.83 and unstable
-in 1.84, so it needs the MSRV raised from 1.75 to 1.85. The workspace
-already compiles on 1.85 unchanged. `libc` is a dependency and ADR-020
-has answered that four times; raw syscalls mean unsafe in the storage
-core. Elchi's call, and the guard holds until it is made.
-
 ## Later / unscheduled
 
 Live query subscriptions, Postgres wire protocol, vector index, real merge

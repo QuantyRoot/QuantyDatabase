@@ -113,13 +113,15 @@ pub fn encode_positions(positions: &[u32]) -> Vec<u8> {
 
 /// Read a posting back, or None if it is not a whole number of positions.
 pub fn decode_positions(bytes: &[u8]) -> Option<Vec<u32>> {
-    if bytes.len() % 4 != 0 {
+    if !bytes.len().is_multiple_of(4) {
         return None;
     }
     Some(
         bytes
-            .chunks_exact(4)
-            .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|c| u32::from_le_bytes(*c))
             .collect(),
     )
 }

@@ -117,14 +117,23 @@ reuse.
 ### MVCC and concurrency
 
 v1: single writer, many readers. One write transaction at a time per
-handle, held by a mutex in the pager. Readers are lock free (they pin a
-commit). This is the LMDB/SQLite model and it is enough for a long time.
+handle, held by a mutex in the pager, and one writing handle per file,
+held by an exclusive advisory lock taken at open. A second writer is
+refused with `AlreadyOpen`; the operating system drops the lock when the
+process ends, killed or not.
 
-There is no file lock, so two handles on one file, in one process or two,
-each believe they are the only writer. That used to lose an acknowledged
-commit silently; `commit` now reads the meta slot it is about to
-overwrite and refuses with `WriterRaced` instead. ADR-035 has the numbers
-and says why the lock itself waits on an MSRV decision.
+Readers take no lock at all. A snapshot pins a commit and copy-on-write
+means nothing rewrites the pages under it, so a shared lock would buy
+nothing and would conflict with the writer's. `Db::open_file_unlocked` is
+that path, and the tool asks whether a statement writes before it opens,
+so a `get` still answers while a server holds the file.
+
+`commit` also reads the meta slot it is about to overwrite and refuses
+with `WriterRaced` if something moved. That is not redundant with the
+lock: advisory locking is not universal, and a reader that writes is not
+prevented. ADR-035 has the reasoning and what happened before it existed.
+
+This is the LMDB/SQLite model and it is enough for a long time.
 
 v2 (later): optimistic multi-writer per branch. Writers build against a base
 commit, at commit time we check for page-level conflicts and retry losers.

@@ -80,7 +80,7 @@ Every one of these has to pass before a commit, no exceptions:
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace -- --test-threads=8
-cargo +1.75.0 test --workspace --locked -- --test-threads=8
+cargo +1.89.0 test --workspace --locked -- --test-threads=8
 ```
 
 `--test-threads=8` is not optional. A machine with one core runs the tests
@@ -88,9 +88,11 @@ serially and hides every concurrency bug in them; the CI runner has four
 and will find them at the worst moment. If your change touches anything
 concurrent, run the affected test file twenty times before you believe it.
 
-The minimum supported Rust version is 1.75. Clippy checks it, so a method
-stabilized in 1.82 fails the lint rather than the build, which is easy to
-misread as a formatting problem.
+The minimum supported Rust version is 1.89. Clippy checks it, so a method
+stabilized in 1.92 fails the lint rather than the build, which is easy to
+misread as a formatting problem. Trust that lint over a hand rolled
+probe: `let _ = thing.method()` compiles against any return type at all,
+so it proves the name exists and nothing else.
 
 If you add a crate, run `cargo update -p <name>` so the lock file knows
 about it, or the MSRV job fails on `--locked`.

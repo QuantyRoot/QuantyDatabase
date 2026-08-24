@@ -607,11 +607,16 @@ impl<S: Storage> WriteBatch<'_, S> {
         let txid = self.base.txid + 1;
         let ps = self.pager.page_size as u64;
 
-        // The writer lock is per handle. Two handles on one file, in one
-        // process or two, both think they are alone, both compute the same
-        // txid and both write the same meta slot, and the second silently
-        // replaces a commit that was already acknowledged. Two reads before
-        // anything is written turn that into a refusal.
+        // Read the meta slot about to be overwritten, before writing
+        // anything. Without this, two writers on one file compute the same
+        // txid, write the same slot, and the second silently replaces a
+        // commit that was already acknowledged.
+        //
+        // This runs even when the handle holds the writer lock, and that
+        // is not an oversight. A locked writer and an unlocked reader
+        // coexist by design, a reader that writes is not prevented, and a
+        // locked handle skipping this check would overwrite such a commit
+        // in exactly the silence the check exists to end (ADR-035).
         let found = meta::txid_in_slot(&self.pager.storage, self.pager.page_size, txid % 2)?;
         if found > self.base.txid {
             return Err(Error::WriterRaced {

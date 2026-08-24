@@ -24,6 +24,9 @@ pub enum Error {
     PageOutOfBounds(u64),
     /// Bad caller-supplied option, e.g. an invalid page size.
     InvalidArgument(&'static str),
+    /// Another handle holds the writer lock on this file. One writer per
+    /// file is the model; the other one has not let go yet.
+    AlreadyOpen,
     /// Something else committed to this file since this transaction began.
     /// The writer lock is per handle, so two handles on one file, in one
     /// process or two, each believe they are the only writer. Refusing is
@@ -62,6 +65,10 @@ impl fmt::Display for Error {
             }
             Error::PageOutOfBounds(p) => write!(f, "page {p} is out of bounds"),
             Error::InvalidArgument(reason) => write!(f, "invalid argument: {reason}"),
+            Error::AlreadyOpen => write!(
+                f,
+                "another handle already has this database open for writing"
+            ),
             Error::WriterRaced { expected, found } => write!(
                 f,
                 "another writer committed to this file: began at commit {expected}, \

@@ -281,7 +281,7 @@ fn tree_ops_for_commit(c: u64) -> (Puts, Option<Vec<u8>>) {
         }
         puts.push((key(c, j), value));
     }
-    let delete = (c % 3 == 0 && c > 1).then(|| key(c - 1, 0));
+    let delete = (c.is_multiple_of(3) && c > 1).then(|| key(c - 1, 0));
     (puts, delete)
 }
 

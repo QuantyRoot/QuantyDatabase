@@ -250,16 +250,68 @@ fn encoded_tuples_work_as_keys_and_sort_correctly() {
 }
 
 #[test]
-fn a_second_handle_cannot_silently_replace_a_commit() {
-    // Before this guard existed, the second commit returned Ok with the
-    // same txid as the first and the first row was gone from the file.
-    // Proved to catch: removing the txid_in_slot check in Pager::commit
-    // makes `first` disappear and this test fail on the last assert.
+fn a_second_writer_is_turned_away_at_the_door() {
+    // The lock is the first defence and the cheap one: it is taken once
+    // at open rather than checked once per commit (ADR-035).
     let dir = TestDir::new();
-    let path = dir.path().join("two-handles.qdb");
+    let path = dir.path().join("two-writers.qdb");
+
+    let first = Db::create_file(&path).unwrap();
+    match Db::open_file(&path) {
+        Err(Error::AlreadyOpen) => {}
+        Err(other) => panic!("wrong refusal: {other:?}"),
+        Ok(_) => panic!("a second writer got in"),
+    }
+
+    // and it is a lock, not a tombstone: once the first lets go, the
+    // next one may have it
+    drop(first);
+    let second = Db::open_file(&path).expect("the lock outlived its holder");
+    drop(second);
+}
+
+#[test]
+fn a_reader_does_not_need_the_writer_to_stand_aside() {
+    // Many readers alongside one writer is the model, so a reader takes
+    // no lock at all. A shared one would conflict with the writer's.
+    let dir = TestDir::new();
+    let path = dir.path().join("readers.qdb");
+
+    let writer = Db::create_file(&path).unwrap();
+    let mut tx = writer.begin();
+    tx.put(&encode_key(&[Value::Int(1)]), b"written").unwrap();
+    tx.commit().unwrap();
+
+    let reader = Db::open_file_unlocked(&path).expect("a reader was refused");
+    let other = Db::open_file_unlocked(&path).expect("a second reader was refused");
+    for r in [&reader, &other] {
+        assert_eq!(
+            r.snapshot()
+                .get(&encode_key(&[Value::Int(1)]))
+                .unwrap()
+                .as_deref(),
+            Some(&b"written"[..])
+        );
+    }
+
+    // and the writer still has its lock while they read
+    assert!(matches!(Db::open_file(&path), Err(Error::AlreadyOpen)));
+}
+
+#[test]
+fn the_commit_guard_still_catches_what_the_lock_cannot() {
+    // Advisory locking is not everywhere; some network filesystems treat
+    // it as a suggestion. open_file_unlocked is how that is reached on
+    // purpose, and what this pins is the behaviour when the lock did not
+    // help: a refusal, never a lost commit.
+    //
+    // Proved to catch: removing the txid_in_slot check in Pager::commit
+    // makes the second commit succeed and `first` disappear.
+    let dir = TestDir::new();
+    let path = dir.path().join("no-lock.qdb");
 
     let a = Db::create_file(&path).unwrap();
-    let b = Db::open_file(&path).unwrap();
+    let b = Db::open_file_unlocked(&path).expect("unlocked open");
 
     let mut ta = a.begin();
     ta.put(&encode_key(&[Value::Int(1)]), b"first").unwrap();
@@ -275,6 +327,7 @@ fn a_second_handle_cannot_silently_replace_a_commit() {
         other => panic!("the second writer was allowed through: {other:?}"),
     }
 
+    drop(a);
     let fresh = Db::open_file(&path).unwrap();
     let snap = fresh.snapshot();
     assert_eq!(
@@ -293,7 +346,7 @@ fn a_handle_that_reopens_after_the_race_works_again() {
     let path = dir.path().join("recover.qdb");
 
     let a = Db::create_file(&path).unwrap();
-    let b = Db::open_file(&path).unwrap();
+    let b = Db::open_file_unlocked(&path).unwrap();
     let mut ta = a.begin();
     ta.put(&encode_key(&[Value::Int(1)]), b"first").unwrap();
     ta.commit().unwrap();
@@ -302,7 +355,7 @@ fn a_handle_that_reopens_after_the_race_works_again() {
     tb.put(&encode_key(&[Value::Int(2)]), b"second").unwrap();
     assert!(tb.commit().is_err());
 
-    let b = Db::open_file(&path).unwrap();
+    let b = Db::open_file_unlocked(&path).unwrap();
     let mut tb = b.begin();
     tb.put(&encode_key(&[Value::Int(2)]), b"second").unwrap();
     tb.commit().expect("a reopened handle should commit");

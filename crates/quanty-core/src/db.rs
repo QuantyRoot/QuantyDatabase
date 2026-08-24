@@ -72,9 +72,28 @@ impl Db<FileStorage> {
         Db::create(FileStorage::create(path)?, PagerOptions::default())
     }
 
-    /// Open an existing database file.
+    /// Open an existing database file and take the writer lock.
+    ///
+    /// Fails with [`Error::AlreadyOpen`] if another handle has it. One
+    /// writer per file is the model (ADR-035).
     pub fn open_file(path: impl AsRef<Path>) -> Result<Self> {
         Db::open(FileStorage::open(path)?, PagerOptions::default())
+    }
+
+    /// Open without taking the writer lock, for reading.
+    ///
+    /// Readers need no lock: a snapshot pins a commit and copy-on-write
+    /// means nothing rewrites the pages under it, so many readers
+    /// alongside one writer is the model and a shared lock would only get
+    /// in the writer's way.
+    ///
+    /// Nothing here stops a caller writing through such a handle. The
+    /// type system is not asked to prove it, because `begin` returning a
+    /// transaction rather than a result is worth more than the proof; a
+    /// write that races another writer is refused at commit with
+    /// [`Error::WriterRaced`] instead.
+    pub fn open_file_unlocked(path: impl AsRef<Path>) -> Result<Self> {
+        Db::open(FileStorage::open_unlocked(path)?, PagerOptions::default())
     }
 }
 

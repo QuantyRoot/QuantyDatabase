@@ -40,6 +40,13 @@ pub trait Storage: Send + Sync {
 /// safe to share across threads.
 pub struct FileStorage {
     file: File,
+    /// Whether `claim` got the lock. Kept for the message it allows, not
+    /// as licence to skip the commit guard: a locked writer and an
+    /// unlocked reader coexist by design, so a locked handle is not
+    /// provably alone and skipping the guard would let it overwrite the
+    /// other's commit in silence.
+    #[allow(dead_code)]
+    locked: bool,
 }
 
 impl FileStorage {
@@ -51,13 +58,62 @@ impl FileStorage {
             .write(true)
             .create_new(true)
             .open(path)?;
-        Ok(FileStorage { file })
+        Self::claim(file)
     }
 
-    /// Open an existing file read/write.
+    /// Open an existing file read/write, taking the writer lock.
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let file = OpenOptions::new().read(true).write(true).open(path)?;
-        Ok(FileStorage { file })
+        Self::claim(file)
+    }
+
+    /// Open without taking the writer lock.
+    ///
+    /// For readers, which need no lock at all: a snapshot pins a commit
+    /// and copy-on-write means the pages under it are never rewritten, so
+    /// many readers alongside one writer is the model and always was. A
+    /// shared lock would be worse than none, because it would conflict
+    /// with the writer's.
+    ///
+    /// Also the way the commit guard is exercised, since with the lock in
+    /// place two writing handles are no longer reachable by accident.
+    /// This crate carries no stability promise (ADR-030), which is why an
+    /// escape hatch may live here rather than behind a feature.
+    pub fn open_unlocked(path: impl AsRef<Path>) -> Result<Self> {
+        let file = OpenOptions::new().read(true).write(true).open(path)?;
+        Ok(FileStorage {
+            file,
+            locked: false,
+        })
+    }
+
+    /// Take the writer lock, or say who has it.
+    ///
+    /// One writer per file is the model (ADR-035). Before this existed,
+    /// two handles on one file each believed they were alone, computed
+    /// the same transaction id and wrote the same meta slot, and the
+    /// second silently replaced a commit that had been acknowledged.
+    ///
+    /// The lock is advisory and held for as long as the handle lives; the
+    /// operating system drops it when the process ends, including when
+    /// the process is killed, so a crash does not leave a database
+    /// unopenable. It is also not everywhere: some network filesystems
+    /// treat locking as a suggestion. The guard in `Pager::commit` stays
+    /// for exactly that, and costs a page read per commit to turn a lost
+    /// commit into a refused one where this cannot help.
+    fn claim(file: File) -> Result<Self> {
+        match file.try_lock() {
+            Ok(()) => Ok(FileStorage { file, locked: true }),
+            Err(std::fs::TryLockError::WouldBlock) => Err(Error::AlreadyOpen),
+            // Locking is unsupported here, or the filesystem refused. That
+            // is not a reason to refuse the database; it is a reason to
+            // rely on the commit guard, which does not need the kernel's
+            // help.
+            Err(std::fs::TryLockError::Error(_)) => Ok(FileStorage {
+                file,
+                locked: false,
+            }),
+        }
     }
 }
 

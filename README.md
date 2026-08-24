@@ -13,7 +13,7 @@
 
 [![CI](https://github.com/QuantyRoot/QuantyDatabase/actions/workflows/ci.yml/badge.svg)](https://github.com/QuantyRoot/QuantyDatabase/actions/workflows/ci.yml)
 ![Status](https://img.shields.io/badge/status-pre--alpha-orange)
-[![Rust](https://img.shields.io/badge/Rust-1.75+-B7410E?logo=rust)](https://www.rust-lang.org)
+[![Rust](https://img.shields.io/badge/Rust-1.89+-B7410E?logo=rust)](https://www.rust-lang.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Made by Elchi](https://img.shields.io/badge/made%20by-Elchi-8A2BE2)](https://github.com/Elchi-dev)
 

@@ -195,7 +195,7 @@ fn text_from(bytes: &[u8], encoding: TextEncoding) -> Result<String> {
             )),
         },
         TextEncoding::Utf16Le | TextEncoding::Utf16Be => {
-            if bytes.len() % 2 != 0 {
+            if !bytes.len().is_multiple_of(2) {
                 return Err(SqliteError::malformed(
                     None,
                     format!(
@@ -207,7 +207,9 @@ fn text_from(bytes: &[u8], encoding: TextEncoding) -> Result<String> {
             }
             let big_endian = encoding == TextEncoding::Utf16Be;
             let units: Vec<u16> = bytes
-                .chunks_exact(2)
+                .as_chunks::<2>()
+                .0
+                .iter()
                 .map(|pair| {
                     if big_endian {
                         u16::from_be_bytes([pair[0], pair[1]])

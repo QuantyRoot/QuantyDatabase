@@ -154,6 +154,11 @@ that is a thirty line helper in tests/common now, and the workspace has zero
 external dev dependencies. New ones are welcome when they are worth carrying
 under this rule.
 
+The number in this record is the one that was current when it was
+written. The rule is what it decides, not the number: the MSRV is 1.89
+since ADR-035, and CI runs `cargo test --workspace --locked` on whatever
+it is.
+
 The crash, heavy and fuzz jobs stay on stable. They exist to catch storage
 bugs, not toolchain drift, and one pinned job is enough for that.
 
@@ -1375,28 +1380,63 @@ slot, and every later one leaves something higher in one slot or the
 other; one read catches all of it. A raced commit returns `WriterRaced`
 and changes nothing, and the caller can reopen and try again.
 
-**It costs 9%.** Two thousand durable commits, one row each: 266us each
-without the guard, 290 with. The read is a real syscall on the fsync
-path, and the fsync is most of the 266. Server mode batches commits, so
-it pays this once per batch rather than once per row.
+**It was reported as costing 9%, and that number was noise.** Two
+thousand durable commits measured 266us without the guard and 290 with,
+one run each, and that difference drove a decision. Measured properly,
+seven rounds of each in one process, a single configuration spreads from
+302us to 493us: the variance is six times the effect. The median even
+came out lower with the guard than without, which is impossible for pure
+added work and is the tell.
+
+What is true is that the guard is one page read on a path dominated by
+an fsync, and that on this single core container it cannot be told apart
+from the noise. What it costs belongs on the Ryzen, with the rest of the
+measurements that need more than one core.
 
 **The lock itself is not mine to decide.** `File::try_lock` needs a newer
 MSRV than 1.75, which is this project's and has a CI job named after it.
 A real advisory lock would make the guard's 9% unnecessary, since a lock
 is paid once at open rather than once per commit.
 
-The version was written here as "1.89 or later" from memory and then
-measured, which moved it: 1.83 has no such method, 1.84 has it behind an
-unstable feature, and **1.85** has it stable. The workspace already
-compiles on 1.85 unchanged, all targets, with the lockfile locked, so the
-cost of that MSRV is exactly the MSRV and nothing else.
+The version was written here as "1.89 or later" from memory, then
+"measured" as 1.85, then measured properly as 1.89. The middle step is
+worth keeping, because the probe that produced it was
+`let _ = f.try_lock();`, which compiles against any return type and so
+proved that the name existed and nothing more. 1.85 has a `try_lock` that
+returns `Result<bool, io::Error>`; the `Result<(), TryLockError>` this
+code matches on arrives in 1.89. Clippy's `incompatible_msrv` caught it,
+which is the lint doing the job a careless measurement did not.
+
+So: 1.75 to 1.89. The workspace needed no code change to compile there,
+but the toolchain brought lints with it, and CONTRIBUTING says moving one
+means reading its new lints rather than silencing them. Fourteen of
+them, all mechanical: `chunks_exact` with a constant size becomes
+`as_chunks`, `x % n == 0` becomes `is_multiple_of`, `map_or(true, ..)`
+becomes `is_none_or`. Four sit in the hand written CRC and SHA-256, whose
+published vectors are what makes such a rewrite checkable, and they still
+pass. One turned up two byte identical copies of a hex decoder in the two
+lexers, now one.
 
 The alternatives are worse. `libc` is a dependency and ADR-020 has
 answered that four times. Raw syscalls mean unsafe in the storage core,
 in the one crate where that is least welcome.
 
-Until that is decided the guard stands on its own and the documentation
-says single writer per file rather than pretending something enforces it.
+**Resolved: the MSRV moved to 1.89 and the lock exists.**
+`FileStorage::open` takes an exclusive advisory lock and a second writer
+is refused with `AlreadyOpen`. The operating system drops it when the
+process ends, killed or not, so a crash leaves no database unopenable.
+
+Readers take no lock, because many readers alongside one writer is the
+model and always was; a shared lock would only conflict with the
+writer's. `Db::open_file_unlocked` is that path, and the tool asks
+`Statement::writes()` before it opens, so `quanty run db "get users"`
+still answers while a server holds the file and `put` is refused.
+
+**The guard stays, and skipping it when the lock is held would be a
+bug.** That was built, and then thought about: a locked writer and an
+unlocked reader coexist by design, nothing stops a reader writing, and a
+locked handle that skipped the check would overwrite such a commit in
+exactly the silence the check exists to end. It runs on every commit.
 
 **The price of the guard.** Nine percent on an unbatched durable commit,
 and it detects rather than prevents: two writers still race, the loser

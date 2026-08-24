@@ -27,22 +27,21 @@ const K: [u32; 64] = [
 pub fn sha256(input: &[u8]) -> [u8; 32] {
     let mut h = H0;
 
-    let mut blocks = input.chunks_exact(64);
-    for block in blocks.by_ref() {
+    let (blocks, rest) = input.as_chunks::<64>();
+    for block in blocks {
         compress(&mut h, block);
     }
 
     // The tail: the remainder, a one bit, zeroes, and the length in bits as
     // a big endian u64. It needs one block, or two when the remainder
     // leaves no room for the length.
-    let rest = blocks.remainder();
     let mut tail = [0u8; 128];
     tail[..rest.len()].copy_from_slice(rest);
     tail[rest.len()] = 0x80;
     let bits = (input.len() as u64).wrapping_mul(8);
     let tail_len = if rest.len() < 56 { 64 } else { 128 };
     tail[tail_len - 8..tail_len].copy_from_slice(&bits.to_be_bytes());
-    for block in tail[..tail_len].chunks_exact(64) {
+    for block in tail[..tail_len].as_chunks::<64>().0 {
         compress(&mut h, block);
     }
 

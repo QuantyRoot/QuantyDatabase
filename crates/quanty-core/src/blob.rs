@@ -170,10 +170,11 @@ impl BlobRef {
             return Err(bad());
         }
         let mut chunks = Vec::with_capacity(count);
-        for slot in rest.chunks_exact(32) {
-            let mut hash = [0u8; 32];
-            hash.copy_from_slice(slot);
-            chunks.push(hash);
+        // as_chunks over chunks_exact: the length was checked above, and
+        // this hands back arrays rather than slices that have to be
+        // copied into one.
+        for hash in rest.as_chunks::<32>().0 {
+            chunks.push(*hash);
         }
         Ok(BlobRef { len, chunks })
     }

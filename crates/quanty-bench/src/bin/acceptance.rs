@@ -231,7 +231,7 @@ fn run() -> Result<(), String> {
                 serial += 1;
                 let unique = id * 10_000_000 + serial;
                 let source = if write_every > 0 {
-                    if serial % write_every == 0 {
+                    if serial.is_multiple_of(write_every) {
                         format!("put t {{ id: {unique}, n: {unique} }}")
                     } else {
                         "get t where id = 1".to_string()

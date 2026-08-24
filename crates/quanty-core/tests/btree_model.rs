@@ -179,9 +179,12 @@ fn run_sequence<S: Storage, F: FnMut() -> Db<S>>(
                 .unwrap_or_else(|e| panic!("seed {seed}: gc: {e}"));
         }
 
-        // occasionally drop everything and reopen from disk
+        // occasionally drop everything and reopen from disk. The old
+        // handle has to go first: it holds the writer lock, and `db =
+        // reopen()` would build the new one before dropping the old.
         if let Some(reopen) = reopen.as_mut() {
             if rng.below(8) == 0 {
+                drop(db);
                 db = reopen();
             }
         }

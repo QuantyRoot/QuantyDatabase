@@ -234,8 +234,7 @@ impl<S: Source> Wal<S> {
 /// matches what sqlite does.
 fn checksum(big_endian: bool, start: (u32, u32), data: &[u8]) -> (u32, u32) {
     let (mut s0, mut s1) = start;
-    let mut chunks = data.chunks_exact(8);
-    for chunk in &mut chunks {
+    for chunk in data.as_chunks::<8>().0 {
         let (x, y) = if big_endian {
             (
                 u32::from_be_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]),

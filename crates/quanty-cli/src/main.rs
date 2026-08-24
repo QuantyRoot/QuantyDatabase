@@ -406,10 +406,25 @@ fn import(source: &Path, target: &Path, flags: &Flags) -> Result<(), Failure> {
 // ---------------------------------------------------------------------------
 
 fn open(database: &Path) -> Result<Session<FileStorage>, Failure> {
+    open_for(database, true)
+}
+
+/// Open the database, taking the writer lock only if we are going to
+/// write.
+///
+/// A `get` or a `show` changes nothing, and holding an exclusive lock to
+/// answer one would mean a served database could not be read from the
+/// shell. Many readers alongside one writer is the model (ADR-035).
+fn open_for(database: &Path, writing: bool) -> Result<Session<FileStorage>, Failure> {
     if !database.exists() {
         return Err(failed(format!("{} does not exist", database.display())));
     }
-    let db = Db::open_file(database).map_err(|e| failed(format!("{}: {e}", database.display())))?;
+    let opened = if writing {
+        Db::open_file(database)
+    } else {
+        Db::open_file_unlocked(database)
+    };
+    let db = opened.map_err(|e| failed(format!("{}: {e}", database.display())))?;
     Ok(Session::new(db))
 }
 
@@ -420,7 +435,7 @@ fn open(database: &Path) -> Result<Session<FileStorage>, Failure> {
 /// flags deliberately do not apply: reading `branch x` as SQL could only
 /// ever be a mistake (ADR-032).
 fn run_ours(database: &str, statement: &Statement) -> Result<(), Failure> {
-    let mut session = open(Path::new(database))?;
+    let mut session = open_for(Path::new(database), statement.writes())?;
     let output = session
         .execute_ast(statement)
         .map_err(|e| failed(e.to_string()))?;
@@ -428,7 +443,16 @@ fn run_ours(database: &str, statement: &Statement) -> Result<(), Failure> {
 }
 
 fn run_statement(database: &Path, statement: &str, flags: &Flags) -> Result<(), Failure> {
-    let mut session = open(database)?;
+    // Parse before opening, so a read does not ask for the writer lock.
+    // Something that will not parse cannot write either, so it opens
+    // unlocked and fails with the parser's message; asking for the lock
+    // first would answer a typo with a complaint about locks.
+    let writing = if flags.sql {
+        quanty_ql::parse_sql(statement).is_ok_and(|s| s.writes())
+    } else {
+        quanty_ql::parse(statement).is_ok_and(|s| s.writes())
+    };
+    let mut session = open_for(database, writing)?;
     let output = execute_one(&mut session, statement, flags.sql).map_err(failed)?;
     print_output(&output)
 }

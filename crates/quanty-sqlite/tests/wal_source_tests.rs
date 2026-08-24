@@ -143,7 +143,7 @@ fn a_log_written_for_another_page_size_is_refused() {
     // is the thing that gets caught rather than the checksum
     log[8..12].copy_from_slice(&1024u32.to_be_bytes());
     let (mut s0, mut s1) = (0u32, 0u32);
-    for chunk in log[..24].chunks_exact(8) {
+    for chunk in log[..24].as_chunks::<8>().0 {
         let x = u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
         let y = u32::from_le_bytes([chunk[4], chunk[5], chunk[6], chunk[7]]);
         s0 = s0.wrapping_add(x).wrapping_add(s1);
