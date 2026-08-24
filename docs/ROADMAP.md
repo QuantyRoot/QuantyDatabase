@@ -196,19 +196,19 @@ exists. The tokenizer is ASCII, which ADR-036 states with its price.
 
 Acceptance:
 - [x] indexed search returns identical results to a brute force scan on a
-      test corpus, but >100x faster at 100k docs: 461x over a search mix,
+      test corpus, but >100x faster at 100k docs: 502x over a search mix,
       on 100k documents of 15 words drawn Zipf over a 5000 word
       vocabulary. `match` is a plain binary operator, so the brute force
       is the same predicate on a column without `@text` rather than a
       second implementation written to agree.
 
       The heavy test prints the whole curve rather than one number,
-      because the number depends on how much a query matches: 4245x for a
-      word nothing contains, 191x at 187 hits, 128x at 215, and 1x for
-      the corpus's most common word at 82607 hits, where the index is
-      slower than the scan because ranking has to score every one of
-      them. Nothing can beat a scan at producing eighty thousand rows,
-      and a benchmark that hid that would be measuring the corpus
+      because the number depends on how much a query matches: 4715x for a
+      word nothing contains, 199x at 187 hits, 177x at 215, and about
+      parity for the corpus's most common word at 82607 hits, where 479ms
+      of index meets 380ms of scan. Nothing can beat a scan at producing
+      eighty thousand rows, and a benchmark that hid that would be
+      measuring the corpus
 - [x] index stays consistent under the crash harness: the harness table
       now carries a `@text` column, and recovery is followed by
       `verify_indexes`, which rebuilds every posting from the surviving
