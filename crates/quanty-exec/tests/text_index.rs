@@ -254,3 +254,110 @@ fn a_random_workload_leaves_the_index_verifiable() {
     let out = s.execute("get docs { id }").expect("get");
     assert!(matches!(out, Output::Rows { .. } | Output::Lines(_)));
 }
+
+// ---------------------------------------------------------------------------
+// building one over rows that are already there
+// ---------------------------------------------------------------------------
+
+#[test]
+fn an_index_built_afterwards_holds_what_one_kept_all_along_holds() {
+    // The strongest thing to check: two databases with the same rows, one
+    // indexed from the start and one indexed at the end, have to end up
+    // with byte identical entries. Backfill goes through the same
+    // maintenance an insert does, so this is really asking whether that
+    // is true.
+    let docs = [
+        (1, "the quick brown fox"),
+        (2, "quick quick brown"),
+        (3, "nothing in common"),
+        (4, "fox and quick fox"),
+    ];
+
+    let mut kept = session();
+    for (id, body) in docs {
+        put(&mut kept, id, body);
+    }
+
+    let mut built = Session::new(Db::in_memory().unwrap());
+    built
+        .execute("table docs { id: int @key, body: text }")
+        .expect("table without an index");
+    for (id, body) in docs {
+        built
+            .execute(&format!("put docs {{ id: {id}, body: \"{body}\" }}"))
+            .expect("put");
+    }
+    built.execute("index docs.body text").expect("index");
+
+    ok(&kept);
+    ok(&built);
+    assert_eq!(
+        entries(&kept, TEXT_ID),
+        entries(&built, TEXT_ID),
+        "a backfilled index differs from one kept in step"
+    );
+}
+
+#[test]
+fn a_backfilled_index_is_used_and_keeps_up_afterwards() {
+    let mut s = Session::new(Db::in_memory().unwrap());
+    s.execute("table docs { id: int @key, body: text }")
+        .unwrap();
+    s.execute("put docs { id: 1, body: \"alpha beta\" }")
+        .unwrap();
+    s.execute("index docs.body text").expect("index");
+
+    match s
+        .execute("explain get docs { id } where body match \"alpha\"")
+        .expect("explain")
+    {
+        Output::Lines(lines) => {
+            let text = lines.join("\n");
+            assert!(
+                text.contains("text match"),
+                "the new index is unused: {text}"
+            );
+        }
+        other => panic!("unexpected {other:?}"),
+    }
+
+    // and it is maintained from here on like any other
+    s.execute("put docs { id: 2, body: \"alpha gamma\" }")
+        .unwrap();
+    s.execute("del docs where id = 1").unwrap();
+    ok(&s);
+}
+
+#[test]
+fn a_second_text_index_on_the_same_column_is_refused() {
+    let mut s = session();
+    let err = s
+        .execute("index docs.body text")
+        .expect_err("already has one");
+    assert!(err.to_string().contains("a text index"), "{err}");
+
+    // the equality kind is a different index and is still available
+    s.execute("index docs.body").expect("equality index");
+    let err = s.execute("index docs.body").expect_err("now it has one");
+    assert!(err.to_string().contains("already indexed"), "{err}");
+}
+
+#[test]
+fn a_text_index_is_refused_on_a_column_that_is_not_text() {
+    let mut s = session();
+    let err = s.execute("index docs.id text").expect_err("id is an int");
+    assert!(err.to_string().contains("wants a text column"), "{err}");
+}
+
+#[test]
+fn backfilling_an_empty_table_leaves_an_empty_index() {
+    let mut s = Session::new(Db::in_memory().unwrap());
+    s.execute("table docs { id: int @key, body: text }")
+        .unwrap();
+    s.execute("index docs.body text").expect("index");
+    ok(&s);
+    assert!(
+        entries(&s, TEXT_ID).is_empty(),
+        "counters without documents"
+    );
+}

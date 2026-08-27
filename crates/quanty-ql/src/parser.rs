@@ -172,7 +172,12 @@ impl Parser {
                 let table = self.name("a table name")?;
                 self.expect(Token::Dot, "'.' as in index users.name")?;
                 let column = self.name("a column name")?;
-                Ok(Statement::IndexDef { table, column })
+                let text = self.eat_kw("text");
+                Ok(Statement::IndexDef {
+                    table,
+                    column,
+                    text,
+                })
             }
             "show" => {
                 let what_at = self.at();

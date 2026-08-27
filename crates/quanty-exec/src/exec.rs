@@ -1215,7 +1215,11 @@ impl<S: Storage> Run<'_, S> {
                 assigns,
             } => self.set(table, filter.as_ref(), assigns),
             Statement::Del { table, filter } => self.del(table, filter.as_ref()),
-            Statement::IndexDef { table, column } => self.create_index(table, column),
+            Statement::IndexDef {
+                table,
+                column,
+                text,
+            } => self.create_index(table, column, *text),
             Statement::ShowTables => self.show_tables(),
             Statement::GcBlobs => self.gc_blobs(),
             Statement::Explain(inner) => self.explain(inner),
@@ -1348,20 +1352,46 @@ impl<S: Storage> Run<'_, S> {
         Ok(Output::Ok)
     }
 
-    fn create_index(&mut self, table_name: &str, column: &str) -> Result<Output, ExecError> {
+    fn create_index(
+        &mut self,
+        table_name: &str,
+        column: &str,
+        text: bool,
+    ) -> Result<Output, ExecError> {
         let mut table = self.load_table(table_name)?;
         let pos = table.column_position(column).ok_or_else(|| {
             ExecError::plan(format!("table '{table_name}' has no column '{column}'"))
         })?;
-        if table.columns[pos].index_id.is_some() {
+        let existing = if text {
+            table.columns[pos].text_index_id
+        } else {
+            table.columns[pos].index_id
+        };
+        if existing.is_some() {
+            return Err(ExecError::plan(if text {
+                format!("'{table_name}.{column}' already has a text index")
+            } else {
+                format!("'{table_name}.{column}' is already indexed")
+            }));
+        }
+        if text && table.columns[pos].ty != TypeName::Text {
             return Err(ExecError::plan(format!(
-                "'{table_name}.{column}' is already indexed"
+                "a text index wants a text column, and '{column}' is {}",
+                table.columns[pos].ty.as_str()
             )));
         }
-        let index_id = self.alloc_id()?;
-        table.columns[pos].index_id = Some(index_id);
 
-        // backfill from existing rows
+        let index_id = self.alloc_id()?;
+        if text {
+            table.columns[pos].text_index_id = Some(index_id);
+        } else {
+            table.columns[pos].index_id = Some(index_id);
+        }
+
+        // Backfill from the rows that are already there. A text index
+        // goes through the same maintenance an insert would, so the
+        // postings and the corpus counters are built the one way rather
+        // than a second way that has to agree.
         let rows = self.fetch(
             &table,
             &AccessPlan {
@@ -1370,8 +1400,13 @@ impl<S: Storage> Run<'_, S> {
             },
         )?;
         for (_, values) in &rows {
-            let entry = index_entry_key(index_id, &values[pos], &row_pk(&table, values));
-            self.tx.put(&entry, &[])?;
+            let pk = row_pk(&table, values);
+            if text {
+                self.move_postings(index_id, &pk, &values[pos], true)?;
+            } else {
+                let entry = index_entry_key(index_id, &values[pos], &pk);
+                self.tx.put(&entry, &[])?;
+            }
         }
         self.store_table(&table)?;
         Ok(Output::Ok)

@@ -22,6 +22,7 @@ get users join cities on users.city = cities.id { users.name, cities.name }
 set users where id = 1 { score += 5 }
 del users where score < 0
 index users.score
+index docs.body text                          # inverted, for match
 drop table users
 show tables
 explain get users where name = "elchi"
@@ -62,8 +63,8 @@ Every column is `name: type` with optional attributes and default:
 - `@index` creates a secondary index on the column
 - `@null` allows null; key columns cannot be `@null`
 - `@text` keeps an inverted index over the column's words, for search.
-  Only on a `text` column, and only at table creation: there is no
-  statement that adds one to a table that already exists
+  Only on a `text` column. `index docs.body text` adds one to a table
+  that already exists and builds it from the rows that are there
 - `= literal` sets a default used when `put` omits the column
 
 A `put` that omits a column uses the default, then null if the column is
@@ -290,7 +291,7 @@ as_of      = "as" "of" ("time")? int
 set        = "set" ident ("where" expr)? "{" assign ("," assign)* "}"
 assign     = ident ("=" | "+=" | "-=" | "*=" | "/=") expr
 del        = "del" ident ("where" expr)?
-index      = "index" ident "." ident
+index      = "index" ident "." ident [ "text" ]
 show       = "show" ("tables" | "branches")
 branch     = "branch" ident ("at" int)?
 switch     = "switch" ident

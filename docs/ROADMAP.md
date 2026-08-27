@@ -198,9 +198,13 @@ sides are common enough to answer ninety thousand rows. A disjunction
 spanning two columns falls back to a scan, since one access reads one
 index.
 
-Not built: prefix or wildcard terms, and adding a text index to a table
-that already exists. The tokenizer is ASCII, which ADR-036 states with
-its price.
+`index docs.body text` builds one over a table that already has rows,
+through the same maintenance an insert goes through, so a backfilled
+index is byte identical to one kept in step from the start and a test
+compares them.
+
+Not built: prefix or wildcard terms, and dropping an index. The tokenizer
+is ASCII, which ADR-036 states with its price.
 
 Acceptance:
 - [x] indexed search returns identical results to a brute force scan on a

@@ -84,7 +84,11 @@ pub fn pretty(stmt: &Statement) -> String {
             }
             out
         }
-        Statement::IndexDef { table, column } => format!("index {table}.{column}"),
+        Statement::IndexDef {
+            table,
+            column,
+            text,
+        } => format!("index {table}.{column}{}", if *text { " text" } else { "" }),
         Statement::ShowTables => "show tables".to_string(),
         Statement::Branch { name, at: Some(n) } => format!("branch {name} at {n}"),
         Statement::Branch { name, at: None } => format!("branch {name}"),

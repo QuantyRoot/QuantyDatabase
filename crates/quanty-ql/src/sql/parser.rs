@@ -1066,7 +1066,13 @@ impl Parser {
         if self.at_kw("where") {
             return Err(self.not_yet("partial indexes"));
         }
-        Ok(Statement::IndexDef { table, column })
+        // CREATE INDEX has no full text spelling in the dialect, so a
+        // SQL index is always the equality kind.
+        Ok(Statement::IndexDef {
+            table,
+            column,
+            text: false,
+        })
     }
 
     fn drop(&mut self) -> Result<Statement, ParseError> {

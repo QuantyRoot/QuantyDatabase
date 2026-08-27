@@ -26,7 +26,13 @@ pub enum Statement {
     /// `del users where id = 1`
     Del { table: String, filter: Option<Expr> },
     /// `index users.name`
-    IndexDef { table: String, column: String },
+    IndexDef {
+        table: String,
+        column: String,
+        /// `index docs.body text` builds an inverted index over the
+        /// column's words rather than an equality index over its value.
+        text: bool,
+    },
     /// `show tables`
     ShowTables,
     /// `branch experiment` or `branch fix at 42`
