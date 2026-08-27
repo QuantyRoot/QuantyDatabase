@@ -1542,6 +1542,28 @@ assumed, and that `verify_indexes` rebuilds postings from the rows, so a
 copy that drifts is caught rather than believed. It costs four bytes per
 term of a document.
 
+**A disjunction is a union of groups, not a second access path.** The
+planner splits a condition on `and` and narrows on one conjunct, so
+`a or b` has no conjunct to narrow on and used to read every row. The
+text access now holds a list of groups rather than one term list: a
+document has to hold every term of a group and is answered by any one
+group. One group is a plain `match` and is unchanged, which is why this
+generalised the access instead of adding another.
+
+Every leaf has to name the same column, since one access reads one index,
+and a mixture falls back to a scan. So does any group with no words,
+because `match ""` matches everything and one such group makes the whole
+disjunction match everything. Measured on a hundred thousand documents:
+229x to 328x for selective disjunctions against the scan they replace,
+and parity when both terms are common enough to answer ninety thousand
+rows, which is the same wall every other query meets.
+
+Scoring sums BM25 over the query terms a document actually holds. For one
+`match` that is all of them and nothing changes; for a union it is the
+classic answer to what `or` should rank higher, and a document holding
+both terms outranks one holding either. A lone `phrase` keeps its own
+rule, since it is one term of its own.
+
 **A limit travels into the access, but only when nothing after it can
 drop a row.** A residual predicate can, and truncating before it runs
 answers `limit 10` with fewer than ten, so the limit is not pushed down

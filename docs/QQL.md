@@ -112,9 +112,11 @@ than a common one. An explicit `order by` overrules the ranking, and
 equal scores fall back to the primary key. The score itself is not
 selectable.
 
-Both combine with `and`, `or` and `not` like any other condition. A
-disjunction reads every row rather than using the index, since the
-planner narrows on a conjunct and `a or b` has none.
+Both combine with `and`, `or` and `not` like any other condition, and a
+disjunction of searches on one column uses the index: a document has to
+hold every word of one side and is answered by either. Sides on different
+columns fall back to reading every row, since one access reads one
+index.
 
 `match` works on any text column. On one declared `@text` the planner
 uses the inverted index and `explain` says `text match`; without one it

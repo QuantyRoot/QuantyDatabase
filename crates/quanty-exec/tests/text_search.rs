@@ -696,11 +696,7 @@ fn or_and_not_work_over_match_because_it_is_an_ordinary_operator() {
 }
 
 #[test]
-fn a_disjunction_does_not_use_the_index_and_the_plan_says_so() {
-    // What or costs today: the planner takes one conjunct, and there is
-    // no conjunct in `a or b`, so it reads every row. The answers are
-    // right and the work is not, and that is worth pinning rather than
-    // discovering later.
+fn a_disjunction_reads_the_index_as_a_union() {
     let mut s = with_docs(&[(1, "alpha"), (2, "beta")]);
     match s
         .execute("explain get docs { id } where body match \"alpha\" or body match \"beta\"")
@@ -708,11 +704,137 @@ fn a_disjunction_does_not_use_the_index_and_the_plan_says_so() {
     {
         Output::Lines(lines) => {
             let text = lines.join("\n");
-            assert!(text.contains("SeqScan"), "expected a scan: {text}");
-            assert!(!text.contains("text match"), "the index was used: {text}");
+            assert!(text.contains("text union"), "not a union: {text}");
+            assert!(text.contains("[alpha] or [beta]"), "{text}");
+            assert!(!text.contains("SeqScan"), "still scanning: {text}");
         }
         other => panic!("expected lines, got {other:?}"),
     }
+}
+
+#[test]
+fn a_disjunction_over_two_columns_falls_back_to_a_scan() {
+    // One access reads one index, so a mixture has to scan. Answering it
+    // correctly and slowly beats answering it fast and wrong.
+    let db = Db::in_memory().expect("open");
+    let mut s = Session::new(db);
+    s.execute("table docs { id: int @key, body: text @text, note: text @text }")
+        .expect("table");
+    s.execute("put docs { id: 1, body: \"alpha\", note: \"beta\" }")
+        .expect("put");
+
+    match s
+        .execute("explain get docs { id } where body match \"alpha\" or note match \"beta\"")
+        .expect("explain")
+    {
+        Output::Lines(lines) => {
+            let text = lines.join("\n");
+            assert!(text.contains("SeqScan"), "expected a scan: {text}");
+        }
+        other => panic!("expected lines, got {other:?}"),
+    }
+    assert_eq!(
+        rows_of(
+            &mut s,
+            "get docs { id } where body match \"alpha\" or note match \"beta\""
+        ),
+        [1],
+        "the scan answered wrongly"
+    );
+}
+
+#[test]
+fn a_union_agrees_with_the_scan() {
+    let docs = corpus(2000);
+    let mut s = loaded(&docs);
+    for (a, b) in [
+        ("w0", "w1"),
+        ("w900", "w4000"),
+        ("w900", "nothinglikethis"),
+        ("nothinglikethis", "alsonothing"),
+        ("w5 w12", "w3"),
+    ] {
+        let fast = rows_of(
+            &mut s,
+            &format!("get indexed {{ id }} where body match \"{a}\" or body match \"{b}\""),
+        );
+        let slow = rows_of(
+            &mut s,
+            &format!("get plain {{ id }} where body match \"{a}\" or body match \"{b}\""),
+        );
+        assert_eq!(fast, slow, "union of {a:?} and {b:?} disagreed");
+    }
+}
+
+#[test]
+fn a_union_ranks_a_document_holding_both_above_one_holding_either() {
+    // Scoring sums over the query terms a document actually holds, which
+    // is the classic answer to what `or` should rank higher.
+    let mut s = with_docs(&[(1, "alpha filler"), (2, "alpha beta"), (3, "beta filler")]);
+    let statement = "get docs { id } where body match \"alpha\" or body match \"beta\"";
+    match s.execute(statement).expect("union") {
+        Output::Rows { rows, .. } => {
+            let ids: Vec<i64> = rows
+                .into_iter()
+                .map(|r| match r[0] {
+                    Value::Int(n) => n,
+                    _ => unreachable!(),
+                })
+                .collect();
+            assert_eq!(ids[0], 2, "the document with both should lead: {ids:?}");
+            assert_eq!(ids.len(), 3);
+        }
+        other => panic!("expected rows, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_document_answering_both_sides_is_returned_once() {
+    let mut s = with_docs(&[(1, "alpha beta"), (2, "alpha")]);
+    assert_eq!(
+        rows_of(
+            &mut s,
+            "get docs { id } where body match \"alpha\" or body match \"beta\""
+        ),
+        [1, 2],
+        "a document was counted twice or lost"
+    );
+}
+
+#[test]
+fn a_union_mixing_a_phrase_and_a_match_still_agrees_with_the_scan() {
+    let mut s = with_docs(&[
+        (1, "quick brown fox"),
+        (2, "brown quick fox"),
+        (3, "gamma"),
+        (4, "quick gamma brown"),
+    ]);
+    let q = "get docs { id } where body phrase \"quick brown\" or body match \"gamma\"";
+    assert_eq!(rows_of(&mut s, q), [1, 3, 4]);
+}
+
+#[test]
+fn an_empty_query_in_a_disjunction_falls_back_to_a_scan() {
+    // `match ""` matches everything, so the union does too and the index
+    // has nothing to narrow with.
+    let mut s = with_docs(&[(1, "alpha"), (2, "beta")]);
+    match s
+        .execute("explain get docs { id } where body match \"alpha\" or body match \"  \"")
+        .expect("explain")
+    {
+        Output::Lines(lines) => {
+            let text = lines.join("\n");
+            assert!(text.contains("SeqScan"), "expected a scan: {text}");
+        }
+        other => panic!("expected lines, got {other:?}"),
+    }
+    assert_eq!(
+        rows_of(
+            &mut s,
+            "get docs { id } where body match \"alpha\" or body match \"  \""
+        ),
+        [1, 2]
+    );
 }
 
 #[test]

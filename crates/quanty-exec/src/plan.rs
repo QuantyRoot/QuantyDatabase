@@ -28,20 +28,32 @@ pub enum Access {
         index_id: u64,
         value: Value,
     },
-    /// Intersect the posting lists of a text index.
+    /// Read a text index: intersect within a group, union across them.
     TextMatch {
         column: usize,
         index_id: u64,
-        /// Whether the terms have to sit back to back, which is what the
-        /// positions in a posting are for.
-        phrase: bool,
-        /// The query's distinct terms, sorted. Empty means the query had
-        /// no words, which matches everything and so is never planned as
-        /// a text access.
-        terms: Vec<String>,
+        /// One group per `match` or `phrase` in the condition. A document
+        /// has to hold every term of a group and is answered by any one
+        /// group, which is what `or` means. One group is the common case
+        /// and is what a plain `match` plans to.
+        groups: Vec<TextGroup>,
     },
     /// Walk the whole table.
     SeqScan,
+}
+
+/// One `match` or `phrase` from the condition.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TextGroup {
+    /// Whether the terms have to sit back to back, which is what the
+    /// positions in a posting are for.
+    pub phrase: bool,
+    /// A match's terms are sorted and distinct, because holding every
+    /// word does not care in what order it is asked. A phrase's keep the
+    /// order they were written in, repeats and all, because it does.
+    /// Never empty: a query with no words matches everything and so is
+    /// never planned as a text access.
+    pub terms: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -64,6 +76,30 @@ fn conjuncts(expr: &Expr) -> Vec<&Expr> {
 }
 
 /// If this conjunct is `column = literal` (either side), name them.
+/// A whole conjunct that is a text search on one column: one `match` or
+/// `phrase`, or several joined by `or`.
+///
+/// Every leaf has to name the same column, since one access reads one
+/// index. A mixture falls through to a scan, which answers correctly and
+/// slowly rather than incorrectly and fast.
+fn as_text_search(expr: &Expr) -> Option<(&ColumnRef, Vec<(String, bool)>)> {
+    match expr {
+        Expr::Binary(l, BinaryOp::Or, r) => {
+            let (left_col, mut left) = as_text_search(l)?;
+            let (right_col, right) = as_text_search(r)?;
+            if left_col.column != right_col.column || left_col.table != right_col.table {
+                return None;
+            }
+            left.extend(right);
+            Some((left_col, left))
+        }
+        other => {
+            let (col, query, phrase) = as_column_match_literal(other)?;
+            Some((col, vec![(query, phrase)]))
+        }
+    }
+}
+
 /// `column match "words"` or `column phrase "words"`, with a literal on
 /// the right.
 fn as_column_match_literal(expr: &Expr) -> Option<(&ColumnRef, String, bool)> {
@@ -188,7 +224,7 @@ pub fn plan_access(table: &Table, filter: Option<&Expr>) -> Result<AccessPlan, E
 
     // 3. a text-indexed column with a match?
     for (part_idx, part) in parts.iter().enumerate() {
-        if let Some((col, query, phrase)) = as_column_match_literal(part) {
+        if let Some((col, queries)) = as_text_search(part) {
             if let Some(pos) = position_for_plan(table, col) {
                 if let Some(index_id) = table.columns[pos].text_index_id {
                     // A phrase keeps the words as written, repeats and
@@ -196,18 +232,25 @@ pub fn plan_access(table: &Table, filter: Option<&Expr>) -> Result<AccessPlan, E
                     // are checked against that order. A match sorts and
                     // dedups, because holding every word is a question
                     // that does not care in what order it is asked.
-                    let terms: Vec<String> = if phrase {
-                        crate::text::tokenize(&query)
-                            .into_iter()
-                            .map(|t| t.term)
-                            .collect()
-                    } else {
-                        crate::text::terms_of(&query)
-                    };
+                    let groups: Vec<TextGroup> = queries
+                        .into_iter()
+                        .map(|(query, phrase)| TextGroup {
+                            phrase,
+                            terms: if phrase {
+                                crate::text::tokenize(&query)
+                                    .into_iter()
+                                    .map(|t| t.term)
+                                    .collect()
+                            } else {
+                                crate::text::terms_of(&query)
+                            },
+                        })
+                        .collect();
                     // A query with no words matches every row, and the
-                    // index has nothing to narrow with. Let it fall to a
-                    // scan rather than plan a lookup of nothing.
-                    if !terms.is_empty() {
+                    // index has nothing to narrow with. One such group in
+                    // a disjunction makes the whole thing match
+                    // everything, so any empty group falls to a scan.
+                    if groups.iter().all(|g| !g.terms.is_empty()) {
                         let residual: Vec<&Expr> = parts
                             .iter()
                             .enumerate()
@@ -218,8 +261,7 @@ pub fn plan_access(table: &Table, filter: Option<&Expr>) -> Result<AccessPlan, E
                             access: Access::TextMatch {
                                 column: pos,
                                 index_id,
-                                phrase,
-                                terms,
+                                groups,
                             },
                             residual: rebuild_conjunction(&residual),
                         });
@@ -285,16 +327,21 @@ pub fn explain_access(table: &Table, plan: &AccessPlan) -> ExplainNode {
                 .collect();
             ExplainNode::leaf(format!("KeyLookup {} ({})", table.name, parts.join(", ")))
         }
-        Access::TextMatch {
-            column,
-            phrase,
-            terms,
-            ..
-        } => ExplainNode::leaf(format!(
-            "text {} on {} for [{}]",
-            if *phrase { "phrase" } else { "match" },
+        Access::TextMatch { column, groups, .. } => ExplainNode::leaf(format!(
+            "text {} on {} for {}",
+            if groups.len() > 1 {
+                "union"
+            } else if groups[0].phrase {
+                "phrase"
+            } else {
+                "match"
+            },
             table.columns[*column].name,
-            terms.join(", ")
+            groups
+                .iter()
+                .map(|g| format!("[{}]", g.terms.join(", ")))
+                .collect::<Vec<_>>()
+                .join(" or ")
         )),
         Access::IndexScan { column, value, .. } => ExplainNode::leaf(format!(
             "IndexScan {} via {} = {}",

@@ -17,7 +17,7 @@ use quanty_ql::ast::{AsOf, ColumnRef, Direction, Expr, Get, Statement, TypeName}
 
 use crate::catalog::{self, Table};
 use crate::error::ExecError;
-use crate::plan::{self, Access, AccessPlan, ExplainNode};
+use crate::plan::{self, Access, AccessPlan, ExplainNode, TextGroup};
 use crate::text;
 use crate::value_ops::{self, NoScope, Scope};
 use quanty_core::Snapshot;
@@ -437,10 +437,7 @@ fn run_get<V: View>(view: &V, get: &Get) -> Result<Output, ExecError> {
     let mut rows: Vec<Vec<Value>> = match (&plan.access, &get.order) {
         (
             Access::TextMatch {
-                index_id,
-                phrase,
-                terms,
-                ..
+                index_id, groups, ..
             },
             None,
         ) => {
@@ -452,7 +449,7 @@ fn run_get<V: View>(view: &V, get: &Get) -> Result<Output, ExecError> {
                 Some(_) => None,
                 None => get.limit.map(|l| l as usize),
             };
-            let (fetched, scores) = text_match(view, &table, *index_id, *phrase, terms, pushed)?;
+            let (fetched, scores) = text_match(view, &table, *index_id, groups, pushed)?;
             let mut ranked: Vec<(f64, Vec<Value>)> = scores
                 .into_iter()
                 .zip(fetched.into_iter().map(|(_, v)| v))
@@ -553,42 +550,57 @@ fn text_match<V: View>(
     view: &V,
     table: &Table,
     index_id: u64,
-    phrase: bool,
-    terms: &[String],
+    groups: &[TextGroup],
     limit: Option<usize>,
 ) -> Result<(Fetched, Vec<f64>), ExecError> {
-    // Per term: every document that has it, in row key order, with how
-    // often it occurs there.
+    // Every distinct term across every group, read once. A term named by
+    // two groups costs one walk, not two.
+    let mut terms: Vec<&str> = Vec::new();
+    let mut in_group: Vec<Vec<usize>> = Vec::with_capacity(groups.len());
+    for group in groups {
+        let mut idx = Vec::with_capacity(group.terms.len());
+        for term in &group.terms {
+            let at = match terms.iter().position(|t| *t == term.as_str()) {
+                Some(at) => at,
+                None => {
+                    terms.push(term);
+                    terms.len() - 1
+                }
+            };
+            idx.push(at);
+        }
+        in_group.push(idx);
+    }
+    let want_positions = groups.iter().any(|g| g.phrase);
+
     let mut lists: Vec<Vec<Posting>> = Vec::with_capacity(terms.len());
-    for term in terms {
-        let prefix = encode_key(&[Value::Int(index_id as i64), Value::Text(term.clone())]);
+    for term in &terms {
+        let prefix = encode_key(&[
+            Value::Int(index_id as i64),
+            Value::Text((*term).to_string()),
+        ]);
         let end = key_successor(&prefix);
         let mut hits = Vec::new();
-        for (entry_key, positions) in view.view_scan(Some(&prefix), end.as_deref())? {
+        for (entry_key, posting) in view.view_scan(Some(&prefix), end.as_deref())? {
             let decoded =
                 decode_key(&entry_key).map_err(|_| ExecError::exec("posting does not decode"))?;
             if decoded.len() < 3 {
                 return Err(ExecError::exec("posting is too short, this is a bug"));
             }
-            let (length, at) = text::decode_posting(&positions)
+            let (length, at) = text::decode_posting(&posting)
                 .ok_or_else(|| ExecError::exec("posting does not decode"))?;
-            let tf = at.len() as u32;
             hits.push((
                 row_key(table, &decoded[2..]),
-                tf,
+                at.len() as u32,
                 length,
-                if phrase { at } else { Vec::new() },
+                if want_positions { at } else { Vec::new() },
             ));
-        }
-        // A term nothing contains empties the intersection.
-        if hits.is_empty() {
-            return Ok((Vec::new(), Vec::new()));
         }
         lists.push(hits);
     }
 
-    // Document frequency is the list length, taken before the lists are
-    // reordered or consumed.
+    // Document frequency is a list's length, taken before anything
+    // consumes or reorders them.
     let document_frequency: Vec<usize> = lists.iter().map(|l| l.len()).collect();
     let (docs, total_length) = match view.view_get(&corpus_key(index_id))? {
         Some(bytes) => decode_corpus(&bytes)?,
@@ -600,86 +612,95 @@ fn text_match<V: View>(
         total_length as f64 / docs as f64
     };
 
-    let mut order: Vec<usize> = (0..lists.len()).collect();
-    order.sort_by_key(|&i| lists[i].len());
-    let seed = order[0];
+    // One group at a time: intersect its terms, then check the positions
+    // if it is a phrase. Holding every word is not holding the phrase,
+    // and only the positions can tell them apart.
+    let mut winners: Vec<(Vec<u8>, u32, u32)> = Vec::new();
+    for (group, idx) in groups.iter().zip(&in_group) {
+        if idx.iter().any(|&i| lists[i].is_empty()) {
+            continue;
+        }
+        let mut order: Vec<usize> = (0..idx.len()).collect();
+        order.sort_by_key(|&slot| lists[idx[slot]].len());
+        let seed = idx[order[0]];
 
-    // First pass: score every candidate straight from the postings. The
-    // row is not read here, which is the whole point: a `limit 10` over a
-    // query matching eighty thousand documents should not fetch eighty
-    // thousand rows to keep ten.
-    struct Candidate {
-        key: Vec<u8>,
-        score: f64,
-        length: f64,
-        phrase_count: u32,
-    }
-    let mut candidates: Vec<Candidate> = Vec::new();
-
-    'row: for (seed_at, (key, tf, length, _)) in lists[seed].iter().enumerate() {
-        let mut frequencies = vec![(seed, *tf)];
-        let mut at_in = vec![(seed, seed_at)];
-        for &i in &order[1..] {
-            match lists[i].binary_search_by(|(k, _, _, _)| k.cmp(key)) {
-                Ok(at) => {
-                    frequencies.push((i, lists[i][at].1));
-                    at_in.push((i, at));
+        'row: for (seed_at, (key, _, length, _)) in lists[seed].iter().enumerate() {
+            let mut at_in = vec![(order[0], seed_at)];
+            for &slot in &order[1..] {
+                match lists[idx[slot]].binary_search_by(|(k, _, _, _)| k.cmp(key)) {
+                    Ok(at) => at_in.push((slot, at)),
+                    Err(_) => continue 'row,
                 }
-                Err(_) => continue 'row,
             }
-        }
 
-        // Holding every word is not holding the phrase. Only the
-        // positions can say which, since a term list records in which
-        // documents a word appears and not in what order.
-        let mut phrase_count = 0;
-        if phrase {
-            let mut in_order: Vec<Vec<u32>> = vec![Vec::new(); terms.len()];
-            for &(i, at) in &at_in {
-                in_order[i] = lists[i][at].3.clone();
+            let mut phrase_count = 0;
+            if group.phrase {
+                let mut in_order: Vec<Vec<u32>> = vec![Vec::new(); idx.len()];
+                for &(slot, at) in &at_in {
+                    in_order[slot] = lists[idx[slot]][at].3.clone();
+                }
+                phrase_count = text::phrase_hits(&in_order);
+                if phrase_count == 0 {
+                    continue 'row;
+                }
             }
-            phrase_count = text::phrase_hits(&in_order);
-            if phrase_count == 0 {
-                continue 'row;
-            }
+            winners.push((key.clone(), *length, phrase_count));
         }
+    }
 
-        let length = *length as f64;
-        let score = if phrase {
-            0.0 // scored in the second pass, once the phrase's df is known
+    // A document answering two groups is one answer. Sorting by key also
+    // makes the order reproducible before scores are involved.
+    winners.sort_by(|a, b| a.0.cmp(&b.0));
+    winners.dedup_by(|a, b| {
+        if a.0 == b.0 {
+            b.2 = b.2.max(a.2);
+            true
         } else {
-            frequencies
-                .iter()
-                .map(|&(i, tf)| bm25(tf, document_frequency[i], docs, length, average_length))
+            false
+        }
+    });
+
+    // A lone phrase is scored as a term of its own, occurring as often as
+    // it occurs and held by as many documents as hold it, which is why it
+    // waits until every candidate is in. Anything else is scored by
+    // summing over the query terms a document actually holds: for one
+    // match that is all of them, and for a union it is the classic answer
+    // to what `or` should rank higher.
+    let lone_phrase = groups.len() == 1 && groups[0].phrase;
+    let phrase_df = winners.len();
+    let mut candidates: Vec<(Vec<u8>, f64)> = Vec::with_capacity(winners.len());
+    for (key, length, phrase_count) in winners {
+        let length = length as f64;
+        let score = if lone_phrase {
+            bm25(phrase_count, phrase_df, docs, length, average_length)
+        } else {
+            (0..terms.len())
+                .filter_map(|i| {
+                    lists[i]
+                        .binary_search_by(|(k, _, _, _)| k.cmp(&key))
+                        .ok()
+                        .map(|at| {
+                            bm25(
+                                lists[i][at].1,
+                                document_frequency[i],
+                                docs,
+                                length,
+                                average_length,
+                            )
+                        })
+                })
                 .sum()
         };
-        candidates.push(Candidate {
-            key: key.clone(),
-            score,
-            length,
-            phrase_count,
-        });
+        candidates.push((key, score));
     }
 
-    // A phrase is one term of its own, occurring as often as it occurs and
-    // held by as many documents as hold it, so its score waits until every
-    // candidate has been checked. Summing its words instead would rank a
-    // document holding them scattered above one holding them together.
-    if phrase {
-        let phrase_df = candidates.len();
-        for c in &mut candidates {
-            c.score = bm25(c.phrase_count, phrase_df, docs, c.length, average_length);
-        }
-    }
-
-    // Second pass: keep the best `limit` and read only those rows.
+    // Keep the best `limit` and read only those rows.
     if let Some(limit) = limit {
         if candidates.len() > limit {
             candidates.sort_by(|a, b| {
-                b.score
-                    .partial_cmp(&a.score)
+                b.1.partial_cmp(&a.1)
                     .unwrap_or(std::cmp::Ordering::Equal)
-                    .then_with(|| a.key.cmp(&b.key))
+                    .then_with(|| a.0.cmp(&b.0))
             });
             candidates.truncate(limit);
         }
@@ -687,12 +708,12 @@ fn text_match<V: View>(
 
     let mut fetched = Vec::with_capacity(candidates.len());
     let mut scores = Vec::with_capacity(candidates.len());
-    for c in candidates {
-        let Some(bytes) = view.view_get(&c.key)? else {
+    for (key, score) in candidates {
+        let Some(bytes) = view.view_get(&key)? else {
             continue;
         };
-        fetched.push((c.key, decode_row(table, &bytes)?));
-        scores.push(c.score);
+        fetched.push((key, decode_row(table, &bytes)?));
+        scores.push(score);
     }
     Ok((fetched, scores))
 }
@@ -722,12 +743,9 @@ fn fetch_rows<V: View>(view: &V, table: &Table, plan: &AccessPlan) -> Result<Fet
             }
         }
         Access::TextMatch {
-            index_id,
-            phrase,
-            terms,
-            ..
+            index_id, groups, ..
         } => {
-            let (rows, _) = text_match(view, table, *index_id, *phrase, terms, None)?;
+            let (rows, _) = text_match(view, table, *index_id, groups, None)?;
             out.extend(rows);
         }
         Access::IndexScan {
