@@ -199,10 +199,20 @@ Pre-alpha, and further along than that sounds. What works today:
 - a network server: `quanty serve` runs the same engine over a versioned
   binary protocol, with token authentication, and `quanty connect` is the
   client for it
+- an embedded crate: `quanty` is what a Rust application depends on, with
+  `#[derive(Row)]` mapping a struct to a table, and neither of them
+  written with `syn` or `quote`
+- assets: a content-addressed chunk store with dedup, and a column type
+  that holds a descriptor rather than the bytes. A gigabyte goes in and
+  comes back holding 16 MiB, and a second copy of a chunk costs two pages
+- full-text search: `match` and `phrase` over an inverted index kept in
+  step with the rows, ranked by BM25, 502x a brute force scan over a
+  search mix of 100k documents
 
 ```sh
 quanty import app.sqlite app.qdb
 quanty run app.qdb "get users { name } where score > 100"
+quanty run app.qdb 'get docs { title } where body match "copy on write"'
 
 quanty serve app.qdb --tokens tokens.txt
 quanty connect 127.0.0.1:7878 "get users { name }" --token <token>
@@ -221,14 +231,16 @@ your behalf and what it tells you about afterwards.
 
 The test bar: property tests against a model, four fuzzers, golden query
 suites, an index consistency checker, row for row verification of an
-imported database against SQLite's own output, two crash harnesses that
-kill -9 the process mid-write a thousand times each per CI run, and a soak
+imported database against SQLite's own output, three crash harnesses that
+kill -9 the process mid-write, two thousand three hundred times per CI
+run between them, and a soak
 that runs many connections against the server at once and checks the
 promises that have to hold whichever way a race went.
 
-No dependencies. Not "few": the lock file holds eleven packages and all
-eleven are this workspace, so `cargo build` fetches nothing, there is no
-supply chain to audit, and the whole suite runs on a toolchain from 2023.
+No dependencies. Not "few": the lock file holds thirteen packages and all
+thirteen are this workspace, so `cargo build` fetches nothing, there is
+no supply chain to audit, and the minimum supported toolchain is only as
+new as the one feature that needed it (ADR-035).
 What that costs is measured and written down in
 [ADR-020](docs/DECISIONS.md) rather than waved at.
 
@@ -236,13 +248,13 @@ What that costs is measured and written down in
 
 | | |
 |---|---|
-| Rust, source | 21210 lines across 11 crates |
-| Rust, tests | 11704 lines, 373 test functions |
-| Design notes | 2816 lines, 29 decision records |
+| Rust, source | 24628 lines across 13 crates |
+| Rust, tests | 15377 lines, 513 test functions |
+| Design notes | 3947 lines, 36 decision records |
 | Dependencies | 0 |
 | People | 1 |
 | Funding | none |
-| CI per push | 11 jobs, 4 fuzzers, 2000 kill -9s, a 10 minute server soak |
+| CI per push | 12 jobs, 4 fuzzers, 2300 kill -9s, a 10 minute server soak |
 
 More than one line of test for every two lines of code, and every one of
 them runs on every push.
