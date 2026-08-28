@@ -859,3 +859,153 @@ fn a_null_document_matches_nothing_and_is_not_matched_by_not_either() {
         [1]
     );
 }
+
+// ---------------------------------------------------------------------------
+// prefix terms
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_trailing_star_matches_every_word_that_starts_with_it() {
+    let mut s = with_docs(&[
+        (1, "quick"),
+        (2, "quickly"),
+        (3, "quicksand and quicker"),
+        (4, "quiet"),
+        (5, "unquick"),
+    ]);
+    assert_eq!(
+        rows_of(&mut s, "get docs { id } where body match \"quick*\""),
+        [1, 2, 3]
+    );
+    assert_eq!(
+        rows_of(&mut s, "get docs { id } where body match \"quick\""),
+        [1]
+    );
+    assert_eq!(
+        rows_of(&mut s, "get docs { id } where body match \"qui*\""),
+        [1, 2, 3, 4]
+    );
+}
+
+#[test]
+fn a_prefix_agrees_with_the_scan() {
+    let docs = corpus(2000);
+    let mut s = loaded(&docs);
+    for query in ["w1*", "w10*", "w4*", "w999*", "zzz*", "w1* w2*", "w1* w20"] {
+        let fast = rows_of(
+            &mut s,
+            &format!("get indexed {{ id }} where body match \"{query}\""),
+        );
+        let slow = rows_of(
+            &mut s,
+            &format!("get plain {{ id }} where body match \"{query}\""),
+        );
+        assert_eq!(fast, slow, "prefix {query:?} disagreed");
+    }
+}
+
+#[test]
+fn a_prefix_takes_the_index_and_the_plan_shows_the_star() {
+    let mut s = with_docs(&[(1, "quick")]);
+    match s
+        .execute("explain get docs { id } where body match \"quick*\"")
+        .expect("explain")
+    {
+        Output::Lines(lines) => {
+            let text = lines.join("\n");
+            assert!(text.contains("text match"), "not the index: {text}");
+            assert!(text.contains("quick*"), "the star is invisible: {text}");
+        }
+        other => panic!("expected lines, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_document_reached_by_two_words_of_one_prefix_is_returned_once() {
+    // quicksand and quicker both answer `quick*` in document 3, and one
+    // document is one answer. Its frequency is the sum, so it outranks a
+    // document reached by one word.
+    let mut s = with_docs(&[(1, "quicksand"), (2, "quicksand quicker quickly")]);
+    let ids = match s
+        .execute("get docs { id } where body match \"quick*\"")
+        .expect("prefix")
+    {
+        Output::Rows { rows, .. } => rows
+            .into_iter()
+            .map(|r| match r[0] {
+                Value::Int(n) => n,
+                _ => unreachable!(),
+            })
+            .collect::<Vec<i64>>(),
+        other => panic!("expected rows, got {other:?}"),
+    };
+    assert_eq!(ids, [2, 1], "counted twice, lost, or ranked the wrong way");
+}
+
+#[test]
+fn a_star_only_counts_at_the_end_of_a_word() {
+    // Anywhere else it is a separator like any other punctuation, which
+    // is what the tokenizer has always done with it. Document 3 is what
+    // makes this test say anything: reading `qu*ick` as `qu` and `ick*`
+    // would match it, because icky starts with ick, and reading the star
+    // as a separator does not.
+    //
+    // Proved to catch: marking a chunk as a prefix when it merely
+    // contains a star returns 2 and 3 here instead of 2.
+    let mut s = with_docs(&[(1, "quick brown"), (2, "qu ick"), (3, "qu icky")]);
+    assert_eq!(
+        rows_of(&mut s, "get docs { id } where body match \"qu*ick\""),
+        [2]
+    );
+    assert_eq!(
+        rows_of(&mut s, "get docs { id } where body match \"quick*\""),
+        [1]
+    );
+}
+
+#[test]
+fn a_star_alone_asks_for_nothing_and_so_matches_everything() {
+    let mut s = with_docs(&[(1, "alpha"), (2, "beta")]);
+    assert_eq!(
+        rows_of(&mut s, "get docs { id } where body match \"*\""),
+        [1, 2]
+    );
+}
+
+#[test]
+fn a_phrase_refuses_a_prefix_rather_than_ignoring_it() {
+    // Treating the star as punctuation would answer `phrase "quick
+    // brown*"` with the exact phrase, which is a wrong answer nobody
+    // asked for. Both paths refuse, so the index and the scan agree about
+    // the refusal too.
+    let mut s = with_docs(&[(1, "quick brown fox")]);
+    let err = s
+        .execute("get docs { id } where body phrase \"quick brown*\"")
+        .expect_err("a phrase with a star");
+    assert!(err.to_string().contains("no prefix terms"), "{err}");
+
+    let db = Db::in_memory().expect("open");
+    let mut plain = Session::new(db);
+    plain
+        .execute("table docs { id: int @key, body: text }")
+        .expect("table");
+    plain
+        .execute("put docs { id: 1, body: \"quick brown fox\" }")
+        .expect("put");
+    let err = plain
+        .execute("get docs { id } where body phrase \"quick brown*\"")
+        .expect_err("the scan refuses too");
+    assert!(err.to_string().contains("no prefix terms"), "{err}");
+}
+
+#[test]
+fn a_prefix_works_inside_a_union_too() {
+    let mut s = with_docs(&[(1, "quicksand"), (2, "gamma"), (3, "quiet"), (4, "delta")]);
+    assert_eq!(
+        rows_of(
+            &mut s,
+            "get docs { id } where body match \"quick*\" or body match \"gamma\""
+        ),
+        [1, 2]
+    );
+}

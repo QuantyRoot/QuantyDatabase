@@ -96,10 +96,17 @@ Comparisons `=`, `!=`, `<`, `<=`, `>`, `>=`; logic `and`, `or`, `not`;
 full text `match`, as in `where body match "quick brown"`, true when the
 column contains every word on the right, and `phrase`, as in
 `where body phrase "quick brown"`, true when those words appear back to
-back in that order. Both sides go through the same
-tokenizer, so it matches words rather than substrings: `cat` does not
-find `category`, and case does not matter. A query with no words matches
-everything.
+back in that order.
+
+A word ending in `*` matches every word starting with it, so
+`match "quick*"` finds `quicksand`. The star only counts at the end of a
+word: in `qu*ick` it is a separator like any other punctuation, and
+`match "*"` asks for nothing and so matches everything. A phrase has no
+prefix terms and says so rather than reading the star as punctuation.
+
+Both sides go through the same tokenizer, so they match words rather than
+substrings: `cat` does not find `category`, and case does not matter. A
+query with no words matches everything.
 
 A `phrase` is scored as a term of its own: how often the phrase occurs
 is its frequency, and how many documents hold it is its document

@@ -1564,6 +1564,25 @@ classic answer to what `or` should rank higher, and a document holding
 both terms outranks one holding either. A lone `phrase` keeps its own
 rule, since it is one term of its own.
 
+**A prefix term is a range of the same index.** Postings sort by term, so
+every word starting with `quick` sits between `quick` and the first word
+that does not, and `match "quick*"` is one scan rather than a lookup per
+expansion. A document reached through several of those words is still one
+answer: the postings are merged, frequencies add and positions join, so
+it is scored once and ranked above a document reached through one.
+
+The star is read before tokenizing, because the tokenizer sees it as
+punctuation. The query is cut on whitespace, a chunk ending in a star
+marks its last word as a prefix, and a star anywhere else stays a
+separator: `qu*ick` is two words. That rule needed a test that could tell
+the two readings apart, and the first one could not, because both
+readings answered the same on the documents it had.
+
+**A phrase refuses a prefix rather than ignoring it.** Reading the star
+as punctuation would answer `phrase "quick brown*"` with the exact
+phrase, which is a wrong answer nobody asked for. Both the index and the
+scan refuse, so they agree about the refusal too.
+
 **A limit travels into the access, but only when nothing after it can
 drop a row.** A residual predicate can, and truncating before it runs
 answers `limit 10` with fewer than ten, so the limit is not pushed down

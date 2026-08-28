@@ -555,12 +555,12 @@ fn text_match<V: View>(
 ) -> Result<(Fetched, Vec<f64>), ExecError> {
     // Every distinct term across every group, read once. A term named by
     // two groups costs one walk, not two.
-    let mut terms: Vec<&str> = Vec::new();
+    let mut terms: Vec<&text::QueryTerm> = Vec::new();
     let mut in_group: Vec<Vec<usize>> = Vec::with_capacity(groups.len());
     for group in groups {
         let mut idx = Vec::with_capacity(group.terms.len());
         for term in &group.terms {
-            let at = match terms.iter().position(|t| *t == term.as_str()) {
+            let at = match terms.iter().position(|t| *t == term) {
                 Some(at) => at,
                 None => {
                     terms.push(term);
@@ -575,13 +575,24 @@ fn text_match<V: View>(
 
     let mut lists: Vec<Vec<Posting>> = Vec::with_capacity(terms.len());
     for term in &terms {
-        let prefix = encode_key(&[
-            Value::Int(index_id as i64),
-            Value::Text((*term).to_string()),
-        ]);
-        let end = key_successor(&prefix);
-        let mut hits = Vec::new();
-        for (entry_key, posting) in view.view_scan(Some(&prefix), end.as_deref())? {
+        // An exact term is one key's worth of postings. A prefix is a
+        // range of them, which the tree gives for nothing: postings sort
+        // by term, so every word starting with `quick` sits between
+        // `quick` and the first word that does not.
+        let start = encode_key(&[Value::Int(index_id as i64), Value::Text(term.term.clone())]);
+        let end = if term.prefix {
+            encode_key(&[
+                Value::Int(index_id as i64),
+                Value::Text(term_successor(&term.term)),
+            ])
+        } else {
+            key_successor(&start).unwrap_or_else(|| start.clone())
+        };
+
+        // A prefix can meet one document through several words, so the
+        // postings are merged: frequencies add up and positions join.
+        let mut merged: Vec<Posting> = Vec::new();
+        for (entry_key, posting) in view.view_scan(Some(&start), Some(&end))? {
             let decoded =
                 decode_key(&entry_key).map_err(|_| ExecError::exec("posting does not decode"))?;
             if decoded.len() < 3 {
@@ -589,14 +600,19 @@ fn text_match<V: View>(
             }
             let (length, at) = text::decode_posting(&posting)
                 .ok_or_else(|| ExecError::exec("posting does not decode"))?;
-            hits.push((
-                row_key(table, &decoded[2..]),
-                at.len() as u32,
-                length,
-                if want_positions { at } else { Vec::new() },
-            ));
+            let key = row_key(table, &decoded[2..]);
+            let tf = at.len() as u32;
+            let positions = if want_positions { at } else { Vec::new() };
+            match merged.binary_search_by(|(k, _, _, _)| k.cmp(&key)) {
+                Ok(existing) => {
+                    merged[existing].1 += tf;
+                    merged[existing].3.extend(positions);
+                    merged[existing].3.sort_unstable();
+                }
+                Err(at) => merged.insert(at, (key, tf, length, positions)),
+            }
         }
-        lists.push(hits);
+        lists.push(merged);
     }
 
     // Document frequency is a list's length, taken before anything
@@ -716,6 +732,18 @@ fn text_match<V: View>(
         scores.push(score);
     }
     Ok((fetched, scores))
+}
+
+/// The first term that does not start with `prefix`.
+///
+/// Terms are ASCII letters and digits, so raising the last byte cannot
+/// overflow and cannot collide with the encoding's escape.
+fn term_successor(prefix: &str) -> String {
+    let mut bytes = prefix.as_bytes().to_vec();
+    if let Some(last) = bytes.last_mut() {
+        *last += 1;
+    }
+    String::from_utf8(bytes).unwrap_or_else(|_| prefix.to_string())
 }
 
 /// One term's contribution to a document's score.

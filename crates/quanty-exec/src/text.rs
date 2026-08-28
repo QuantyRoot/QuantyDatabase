@@ -86,17 +86,61 @@ pub fn length(text: &str) -> u32 {
 /// rather than on substrings: `cat` does not find `category`. An empty
 /// query matches everything, which is what asking for nothing means.
 pub fn contains_all(haystack: &str, needle: &str) -> bool {
-    let wanted = terms_of(needle);
+    let wanted = query_terms(needle);
     if wanted.is_empty() {
         return true;
     }
     let have = terms_of(haystack);
-    wanted.iter().all(|w| have.contains(w))
+    wanted.iter().all(|w| {
+        if w.prefix {
+            have.iter().any(|h| h.starts_with(&w.term))
+        } else {
+            have.contains(&w.term)
+        }
+    })
 }
 
 /// The distinct terms of `text`, sorted, without their positions.
 pub fn terms_of(text: &str) -> Vec<String> {
     postings(text).into_iter().map(|(t, _)| t).collect()
+}
+
+/// One word of a query.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QueryTerm {
+    pub term: String,
+    /// Whether a trailing star asked for every word starting with it.
+    pub prefix: bool,
+}
+
+/// Split a query into words, honouring a trailing star.
+///
+/// The star has to be read before tokenizing, because the tokenizer sees
+/// it as a separator like any other punctuation. So the query is cut on
+/// whitespace first, a chunk ending in one or more stars marks its last
+/// word as a prefix, and everything else is tokenized as usual. A star
+/// anywhere but at the end of a chunk stays what it was: a separator.
+/// `qu*ick` is two words, not one prefix.
+pub fn query_terms(query: &str) -> Vec<QueryTerm> {
+    let mut out = Vec::new();
+    for chunk in query.split_whitespace() {
+        let starred = chunk.ends_with('*');
+        let body = chunk.trim_end_matches('*');
+        let words: Vec<String> = tokenize(body).into_iter().map(|t| t.term).collect();
+        let last = words.len().saturating_sub(1);
+        for (i, term) in words.into_iter().enumerate() {
+            out.push(QueryTerm {
+                term,
+                prefix: starred && i == last,
+            });
+        }
+    }
+    out
+}
+
+/// Whether a query asks for a prefix anywhere.
+pub fn has_prefix(query: &str) -> bool {
+    query_terms(query).iter().any(|t| t.prefix)
 }
 
 /// How often the words of `needle` appear in `haystack` back to back.

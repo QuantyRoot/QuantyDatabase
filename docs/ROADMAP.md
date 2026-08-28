@@ -203,8 +203,11 @@ through the same maintenance an insert goes through, so a backfilled
 index is byte identical to one kept in step from the start and a test
 compares them.
 
-Not built: prefix or wildcard terms, and dropping an index. The tokenizer
-is ASCII, which ADR-036 states with its price.
+A word ending in `*` matches every word starting with it, which the tree
+answers as a range over the postings rather than a lookup per expansion.
+
+Not built: wildcards anywhere but at the end of a word, and dropping an
+index. The tokenizer is ASCII, which ADR-036 states with its price.
 
 Acceptance:
 - [x] indexed search returns identical results to a brute force scan on a

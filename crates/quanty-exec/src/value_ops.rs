@@ -81,6 +81,16 @@ fn eval_binary(
         // Brute force by design: this is what a row without a text index
         // falls back to, and what the index has to agree with (ADR-036).
         BinaryOp::Match | BinaryOp::Phrase => match (&l, &r) {
+            // A star in a phrase is refused rather than quietly treated as
+            // punctuation: `phrase "quick brown*"` reading as the exact
+            // phrase would be a wrong answer nobody asked for.
+            (_, Value::Text(needle))
+                if op == BinaryOp::Phrase && crate::text::has_prefix(needle) =>
+            {
+                Err(ExecError::exec(
+                    "a phrase has no prefix terms; drop the '*' or use match",
+                ))
+            }
             (Value::Null, _) | (_, Value::Null) => Ok(Value::Bool(false)),
             (Value::Text(haystack), Value::Text(needle)) => {
                 Ok(Value::Bool(if op == BinaryOp::Phrase {

@@ -53,7 +53,7 @@ pub struct TextGroup {
     /// order they were written in, repeats and all, because it does.
     /// Never empty: a query with no words matches everything and so is
     /// never planned as a text access.
-    pub terms: Vec<String>,
+    pub terms: Vec<crate::text::QueryTerm>,
 }
 
 #[derive(Debug, Clone)]
@@ -232,6 +232,16 @@ pub fn plan_access(table: &Table, filter: Option<&Expr>) -> Result<AccessPlan, E
                     // are checked against that order. A match sorts and
                     // dedups, because holding every word is a question
                     // that does not care in what order it is asked.
+                    // A phrase has no prefix terms, and one is an error
+                    // rather than a fallback: the scan would refuse it
+                    // too, so planning around it would only change which
+                    // message arrives.
+                    if queries
+                        .iter()
+                        .any(|(q, phrase)| *phrase && crate::text::has_prefix(q))
+                    {
+                        break;
+                    }
                     let groups: Vec<TextGroup> = queries
                         .into_iter()
                         .map(|(query, phrase)| TextGroup {
@@ -239,10 +249,16 @@ pub fn plan_access(table: &Table, filter: Option<&Expr>) -> Result<AccessPlan, E
                             terms: if phrase {
                                 crate::text::tokenize(&query)
                                     .into_iter()
-                                    .map(|t| t.term)
+                                    .map(|t| crate::text::QueryTerm {
+                                        term: t.term,
+                                        prefix: false,
+                                    })
                                     .collect()
                             } else {
-                                crate::text::terms_of(&query)
+                                let mut terms = crate::text::query_terms(&query);
+                                terms.sort_by(|a, b| a.term.cmp(&b.term));
+                                terms.dedup();
+                                terms
                             },
                         })
                         .collect();
@@ -339,7 +355,20 @@ pub fn explain_access(table: &Table, plan: &AccessPlan) -> ExplainNode {
             table.columns[*column].name,
             groups
                 .iter()
-                .map(|g| format!("[{}]", g.terms.join(", ")))
+                .map(|g| {
+                    format!(
+                        "[{}]",
+                        g.terms
+                            .iter()
+                            .map(|t| if t.prefix {
+                                format!("{}*", t.term)
+                            } else {
+                                t.term.clone()
+                            })
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
+                })
                 .collect::<Vec<_>>()
                 .join(" or ")
         )),
