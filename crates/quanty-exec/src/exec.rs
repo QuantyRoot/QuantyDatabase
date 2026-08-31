@@ -530,6 +530,11 @@ fn run_get<V: View>(view: &V, get: &Get) -> Result<Output, ExecError> {
     Ok(Output::Rows { columns, rows })
 }
 
+/// A document that answered at least one group: its row key, how long it
+/// is, how often the phrase occurs in it if one was asked for, and the
+/// term frequencies the walk already found.
+type Winner = (Vec<u8>, u32, u32, Vec<(usize, u32)>);
+
 /// One document that has a term: its row key, how often the term occurs
 /// in it, how long the document is, and where the term sits, which only a
 /// phrase query needs.
@@ -639,7 +644,7 @@ fn text_match<V: View>(
     // again: the walk that decides a document is in already knows how
     // often each of that group's terms occurs in it. Scoring only has to
     // search for terms from the other groups.
-    let mut winners: Vec<(Vec<u8>, u32, u32, Vec<(usize, u32)>)> = Vec::new();
+    let mut winners: Vec<Winner> = Vec::new();
     for (group, idx) in groups.iter().zip(&in_group) {
         if idx.iter().any(|&i| lists[i].is_empty()) {
             continue;
