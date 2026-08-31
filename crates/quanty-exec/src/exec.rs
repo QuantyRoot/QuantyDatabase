@@ -1248,6 +1248,11 @@ impl<S: Storage> Run<'_, S> {
                 column,
                 text,
             } => self.create_index(table, column, *text),
+            Statement::DropIndex {
+                table,
+                column,
+                text,
+            } => self.drop_index(table, column, *text),
             Statement::ShowTables => self.show_tables(),
             Statement::GcBlobs => self.gc_blobs(),
             Statement::Explain(inner) => self.explain(inner),
@@ -1377,6 +1382,46 @@ impl<S: Storage> Run<'_, S> {
         }
         self.tx.catalog_delete(&catalog::table_key(name))?;
         self.mutated = true;
+        Ok(Output::Ok)
+    }
+
+    /// Take an index away, entries first.
+    ///
+    /// One range covers everything a text index holds: postings, and the
+    /// corpus counters that sit under the same object id ahead of every
+    /// term. The catalog entry goes last, so a kill in between leaves an
+    /// index the schema still knows about and nothing that points at
+    /// rows which are gone.
+    fn drop_index(
+        &mut self,
+        table_name: &str,
+        column: &str,
+        text: bool,
+    ) -> Result<Output, ExecError> {
+        let mut table = self.load_table(table_name)?;
+        let pos = table.column_position(column).ok_or_else(|| {
+            ExecError::plan(format!("table '{table_name}' has no column '{column}'"))
+        })?;
+        let index_id = if text {
+            table.columns[pos].text_index_id
+        } else {
+            table.columns[pos].index_id
+        };
+        let Some(index_id) = index_id else {
+            return Err(ExecError::plan(if text {
+                format!("'{table_name}.{column}' has no text index")
+            } else {
+                format!("'{table_name}.{column}' is not indexed")
+            }));
+        };
+
+        self.delete_range(&index_prefix(index_id))?;
+        if text {
+            table.columns[pos].text_index_id = None;
+        } else {
+            table.columns[pos].index_id = None;
+        }
+        self.store_table(&table)?;
         Ok(Output::Ok)
     }
 

@@ -361,3 +361,112 @@ fn backfilling_an_empty_table_leaves_an_empty_index() {
         "counters without documents"
     );
 }
+
+// ---------------------------------------------------------------------------
+// taking one away again
+// ---------------------------------------------------------------------------
+
+#[test]
+fn dropping_a_text_index_takes_its_entries_with_it() {
+    let mut s = session();
+    put(&mut s, 1, "alpha beta");
+    put(&mut s, 2, "beta gamma");
+    ok(&s);
+    assert!(!entries(&s, TEXT_ID).is_empty());
+
+    s.execute("drop index docs.body text").expect("drop");
+    ok(&s);
+    assert!(
+        entries(&s, TEXT_ID).is_empty(),
+        "postings or counters outlived the index"
+    );
+
+    // the rows are untouched and the query still answers, by scanning
+    assert_eq!(
+        match s
+            .execute("get docs { id } where body match \"beta\"")
+            .unwrap()
+        {
+            Output::Rows { rows, .. } => rows.len(),
+            other => panic!("unexpected {other:?}"),
+        },
+        2
+    );
+    match s
+        .execute("explain get docs { id } where body match \"beta\"")
+        .unwrap()
+    {
+        Output::Lines(lines) => {
+            let text = lines.join("\n");
+            assert!(text.contains("SeqScan"), "still using the index: {text}");
+        }
+        other => panic!("unexpected {other:?}"),
+    }
+}
+
+#[test]
+fn dropping_and_building_again_gives_back_what_was_there() {
+    // The strongest check available: the index after a round trip has to
+    // be byte identical to the one before it.
+    let mut s = session();
+    for (id, body) in [(1, "the quick brown fox"), (2, "quick quick"), (3, "fox")] {
+        put(&mut s, id, body);
+    }
+    let before = entries(&s, TEXT_ID);
+    assert!(!before.is_empty());
+
+    s.execute("drop index docs.body text").expect("drop");
+    s.execute("index docs.body text").expect("build again");
+    ok(&s);
+
+    // the rebuilt index has a new object id, so the entries are compared
+    // by what follows it rather than by the whole key
+    let after = entries(&s, TEXT_ID + 1);
+    assert_eq!(after.len(), before.len(), "a different number of entries");
+    for ((kb, vb), (ka, va)) in before.iter().zip(&after) {
+        assert_eq!(kb[1..], ka[1..], "an entry moved");
+        assert_eq!(vb, va, "an entry's value changed");
+    }
+}
+
+#[test]
+fn dropping_an_index_that_is_not_there_says_so() {
+    let mut s = session();
+    let err = s
+        .execute("drop index docs.body")
+        .expect_err("no equality index");
+    assert!(err.to_string().contains("not indexed"), "{err}");
+
+    s.execute("drop index docs.body text")
+        .expect("the text one");
+    let err = s
+        .execute("drop index docs.body text")
+        .expect_err("gone already");
+    assert!(err.to_string().contains("no text index"), "{err}");
+
+    let err = s
+        .execute("drop index docs.nosuch text")
+        .expect_err("no such column");
+    assert!(err.to_string().contains("no column"), "{err}");
+}
+
+#[test]
+fn the_two_kinds_of_index_are_dropped_separately() {
+    let mut s = session();
+    s.execute("index docs.body").expect("equality index");
+    put(&mut s, 1, "alpha");
+    ok(&s);
+
+    s.execute("drop index docs.body")
+        .expect("drop the equality one");
+    ok(&s);
+    assert!(
+        !entries(&s, TEXT_ID).is_empty(),
+        "the text index went with it"
+    );
+
+    s.execute("drop index docs.body text")
+        .expect("drop the text one");
+    ok(&s);
+    assert!(entries(&s, TEXT_ID).is_empty());
+}

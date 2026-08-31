@@ -23,6 +23,8 @@ set users where id = 1 { score += 5 }
 del users where score < 0
 index users.score
 index docs.body text                          # inverted, for match
+drop index users.score
+drop index docs.body text
 drop table users
 show tables
 explain get users where name = "elchi"
@@ -64,7 +66,9 @@ Every column is `name: type` with optional attributes and default:
 - `@null` allows null; key columns cannot be `@null`
 - `@text` keeps an inverted index over the column's words, for search.
   Only on a `text` column. `index docs.body text` adds one to a table
-  that already exists and builds it from the rows that are there
+  that already exists and builds it from the rows that are there, and
+  `drop index docs.body text` takes it away again. The two kinds of index
+  on one column are separate: dropping either leaves the other
 - `= literal` sets a default used when `put` omits the column
 
 A `put` that omits a column uses the default, then null if the column is
@@ -299,6 +303,7 @@ set        = "set" ident ("where" expr)? "{" assign ("," assign)* "}"
 assign     = ident ("=" | "+=" | "-=" | "*=" | "/=") expr
 del        = "del" ident ("where" expr)?
 index      = "index" ident "." ident [ "text" ]
+dropindex  = "drop" "index" ident "." ident [ "text" ]
 show       = "show" ("tables" | "branches")
 branch     = "branch" ident ("at" int)?
 switch     = "switch" ident

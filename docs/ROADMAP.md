@@ -206,8 +206,12 @@ compares them.
 A word ending in `*` matches every word starting with it, which the tree
 answers as a range over the postings rather than a lookup per expansion.
 
-Not built: wildcards anywhere but at the end of a word, and dropping an
-index. The tokenizer is ASCII, which ADR-036 states with its price.
+`drop index docs.body text` takes one away, entries before catalog entry,
+so a kill in between leaves an index the schema knows about rather than
+one that points at rows which are gone.
+
+Not built: wildcards anywhere but at the end of a word. The tokenizer is
+ASCII, which ADR-036 states with its price.
 
 Acceptance:
 - [x] indexed search returns identical results to a brute force scan on a

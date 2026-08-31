@@ -153,14 +153,25 @@ impl Parser {
             "table" => self.table_def(),
             "drop" => {
                 let what_at = self.at();
-                match self.ident("'table' or 'branch' after drop")?.as_str() {
+                match self.ident("'table', 'index' or 'branch' after drop")?.as_str() {
                     "table" => Ok(Statement::DropTable { name: self.name("a table name")? }),
+                    "index" => {
+                        let table = self.name("a table name")?;
+                        self.expect(Token::Dot, "'.' as in drop index users.name")?;
+                        let column = self.name("a column name")?;
+                        let text = self.eat_kw("text");
+                        Ok(Statement::DropIndex {
+                            table,
+                            column,
+                            text,
+                        })
+                    }
                     "branch" => {
                         Ok(Statement::DropBranch { name: self.ident("a branch name")? })
                     }
                     other => Err(ParseError::at(
                         what_at,
-                        format!("drop works on 'table' or 'branch', not '{other}'"),
+                        format!("drop works on 'table', 'index' or 'branch', not '{other}'"),
                     )),
                 }
             }
@@ -713,7 +724,7 @@ mod tests {
             ("gc", "keep"),
             ("gc keep", "retain"),
             ("branch b at -1", "non-negative"),
-            ("drop users", "'table' or 'branch'"),
+            ("drop users", "'table', 'index' or 'branch'"),
             ("show everything", "branches"),
         ] {
             let err = parse(q).unwrap_err().to_string();

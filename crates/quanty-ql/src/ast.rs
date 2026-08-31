@@ -26,6 +26,12 @@ pub enum Statement {
     /// `del users where id = 1`
     Del { table: String, filter: Option<Expr> },
     /// `index users.name`
+    /// `drop index docs.body`, or `drop index docs.body text`
+    DropIndex {
+        table: String,
+        column: String,
+        text: bool,
+    },
     IndexDef {
         table: String,
         column: String,
@@ -251,6 +257,7 @@ impl Statement {
             | Statement::Set { .. }
             | Statement::Del { .. }
             | Statement::IndexDef { .. }
+            | Statement::DropIndex { .. }
             | Statement::Branch { .. }
             | Statement::Switch { .. }
             | Statement::Merge { .. }
