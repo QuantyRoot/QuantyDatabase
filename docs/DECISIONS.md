@@ -1573,6 +1573,13 @@ classic answer to what `or` should rank higher, and a document holding
 both terms outranks one holding either. A lone `phrase` keeps its own
 rule, since it is one term of its own.
 
+Generalising the access cost something at first and the measurement found
+it: scoring looked every frequency up again, where the single group it
+replaced had collected them during the intersection. A query matching
+eighty thousand documents went from 479ms to 568. The walk carries what
+it already knows now, and scoring searches only for terms from the other
+groups, which took it back to 502.
+
 **A prefix term is a range of the same index.** Postings sort by term, so
 every word starting with `quick` sits between `quick` and the first word
 that does not, and `match "quick*"` is one scan rather than a lookup per

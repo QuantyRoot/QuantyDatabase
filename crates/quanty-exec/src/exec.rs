@@ -635,7 +635,11 @@ fn text_match<V: View>(
     // One group at a time: intersect its terms, then check the positions
     // if it is a phrase. Holding every word is not holding the phrase,
     // and only the positions can tell them apart.
-    let mut winners: Vec<(Vec<u8>, u32, u32)> = Vec::new();
+    // Frequencies found on the way are carried rather than looked up
+    // again: the walk that decides a document is in already knows how
+    // often each of that group's terms occurs in it. Scoring only has to
+    // search for terms from the other groups.
+    let mut winners: Vec<(Vec<u8>, u32, u32, Vec<(usize, u32)>)> = Vec::new();
     for (group, idx) in groups.iter().zip(&in_group) {
         if idx.iter().any(|&i| lists[i].is_empty()) {
             continue;
@@ -664,7 +668,11 @@ fn text_match<V: View>(
                     continue 'row;
                 }
             }
-            winners.push((key.clone(), *length, phrase_count));
+            let known: Vec<(usize, u32)> = at_in
+                .iter()
+                .map(|&(slot, at)| (idx[slot], lists[idx[slot]][at].1))
+                .collect();
+            winners.push((key.clone(), *length, phrase_count, known));
         }
     }
 
@@ -674,6 +682,12 @@ fn text_match<V: View>(
     winners.dedup_by(|a, b| {
         if a.0 == b.0 {
             b.2 = b.2.max(a.2);
+            let known = std::mem::take(&mut a.3);
+            for (term, tf) in known {
+                if !b.3.iter().any(|&(t, _)| t == term) {
+                    b.3.push((term, tf));
+                }
+            }
             true
         } else {
             false
@@ -689,25 +703,27 @@ fn text_match<V: View>(
     let lone_phrase = groups.len() == 1 && groups[0].phrase;
     let phrase_df = winners.len();
     let mut candidates: Vec<(Vec<u8>, f64)> = Vec::with_capacity(winners.len());
-    for (key, length, phrase_count) in winners {
+    for (key, length, phrase_count, known) in winners {
         let length = length as f64;
         let score = if lone_phrase {
             bm25(phrase_count, phrase_df, docs, length, average_length)
         } else {
             (0..terms.len())
                 .filter_map(|i| {
-                    lists[i]
-                        .binary_search_by(|(k, _, _, _)| k.cmp(&key))
-                        .ok()
-                        .map(|at| {
-                            bm25(
-                                lists[i][at].1,
-                                document_frequency[i],
-                                docs,
-                                length,
-                                average_length,
-                            )
-                        })
+                    let tf = match known.iter().find(|&&(term, _)| term == i) {
+                        Some(&(_, tf)) => Some(tf),
+                        None => lists[i]
+                            .binary_search_by(|(k, _, _, _)| k.cmp(&key))
+                            .ok()
+                            .map(|at| lists[i][at].1),
+                    }?;
+                    Some(bm25(
+                        tf,
+                        document_frequency[i],
+                        docs,
+                        length,
+                        average_length,
+                    ))
                 })
                 .sum()
         };
