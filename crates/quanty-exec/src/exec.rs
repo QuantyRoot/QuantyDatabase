@@ -581,10 +581,14 @@ fn text_match<V: View>(
         // `quick` and the first word that does not.
         let start = encode_key(&[Value::Int(index_id as i64), Value::Text(term.term.clone())]);
         let end = if term.prefix {
-            encode_key(&[
-                Value::Int(index_id as i64),
-                Value::Text(term_successor(&term.term)),
-            ])
+            match term_successor(&term.term) {
+                Some(after) => encode_key(&[Value::Int(index_id as i64), Value::Text(after)]),
+                // No character sorts after this prefix, so the scan runs
+                // to the end of the index.
+                None => {
+                    key_successor(&index_prefix(index_id)).unwrap_or_else(|| index_prefix(index_id))
+                }
+            }
         } else {
             key_successor(&start).unwrap_or_else(|| start.clone())
         };
@@ -734,16 +738,31 @@ fn text_match<V: View>(
     Ok((fetched, scores))
 }
 
-/// The first term that does not start with `prefix`.
+/// The first term that does not start with `prefix`, or None when there
+/// is none and the scan has to run to the end of the index.
 ///
-/// Terms are ASCII letters and digits, so raising the last byte cannot
-/// overflow and cannot collide with the encoding's escape.
-fn term_successor(prefix: &str) -> String {
-    let mut bytes = prefix.as_bytes().to_vec();
-    if let Some(last) = bytes.last_mut() {
-        *last += 1;
+/// Raising the last byte was wrong once the tokenizer learned Unicode:
+/// the last byte of a character can be 0xBF, and raising that yields
+/// bytes that are not UTF-8, so the range collapsed and a prefix ending
+/// in such a character answered nothing. This raises the last character
+/// instead. UTF-8 sorts in code point order, so the result is greater
+/// than every term starting with the prefix and less than anything that
+/// does not.
+fn term_successor(prefix: &str) -> Option<String> {
+    let mut chars: Vec<char> = prefix.chars().collect();
+    while let Some(last) = chars.pop() {
+        let mut next = last as u32 + 1;
+        // The surrogate range holds no characters.
+        if (0xD800..=0xDFFF).contains(&next) {
+            next = 0xE000;
+        }
+        if let Some(next) = char::from_u32(next) {
+            chars.push(next);
+            return Some(chars.into_iter().collect());
+        }
+        // The last character was the highest there is, so it carries.
     }
-    String::from_utf8(bytes).unwrap_or_else(|_| prefix.to_string())
+    None
 }
 
 /// One term's contribution to a document's score.

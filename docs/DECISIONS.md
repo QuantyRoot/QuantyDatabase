@@ -1476,16 +1476,25 @@ drift from the first and buys nothing. What cannot be derived from one
 term's postings is the corpus size and the average document length, and
 those are what the counters at `(index_id, 1)` are for.
 
-**The tokenizer is ASCII and says so.** It lowercases ASCII letters,
-splits on anything that is not a letter or a digit, and does nothing
-else. No stemming, no stop words, no Unicode case folding, no
-segmentation for languages that do not put spaces between words. Each of
-those is a table or an algorithm, and the dependency rule means writing
-it rather than taking it; none of them earns that before there is a
-corpus to measure against. What this costs is real and worth naming:
-a German word split by an umlaut tokenizes into two pieces around it,
-and Japanese does not tokenize at all. The tokenizer is one function behind one call, so
-replacing it is a change to one file and a reindex.
+**A word is a run of letters and digits, and Unicode decides which those
+are.** The first version of this was ASCII, on the reasoning that
+anything more is a table nobody had written. That was wrong twice over.
+The standard library already carries the tables, so `is_alphanumeric` and
+`to_lowercase` cost no dependency at all; and what ASCII did was not
+merely unhelpful but destructive, since a German corpus came out as
+fragments. A word with an umlaut tokenized into the pieces around it, so
+searching such a corpus found nothing and looked like it worked.
+
+What is still not done, and each for the reason the old paragraph gave:
+stemming, stop words, folding accents away, and segmenting languages that
+put no spaces between words. Case is Unicode's business and the library
+knows it; folding an accent away is a judgement about a language that
+somebody has to write down and keep. A word written with an accent is a
+different word from the same one without.
+
+The tokenizer is one function behind one call, so replacing it is a
+change to one file and a reindex, which `drop index` and `index ... text`
+now make an ordinary thing to do rather than a migration.
 
 **Ranking is BM25 with the usual constants**, k1 = 1.2 and b = 0.75,
 because a phase that has to beat a brute force scan by a hundredfold

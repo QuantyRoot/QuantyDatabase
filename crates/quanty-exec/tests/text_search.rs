@@ -1009,3 +1009,89 @@ fn a_prefix_works_inside_a_union_too() {
         [1, 2]
     );
 }
+
+#[test]
+fn a_prefix_ending_in_a_multibyte_character_still_finds_things() {
+    // Raising the last byte of the prefix was fine while terms were
+    // ASCII. Once the tokenizer learned Unicode it was not: the last byte
+    // of a character can be 0xBF, raising that is not UTF-8, and the
+    // range collapsed so the query answered nothing.
+    //
+    // Proved to catch: computing the successor on bytes returns nothing
+    // for the first two of these.
+    let mut s = with_docs(&[
+        (1, "cr\u{ff}ptic"),
+        (2, "cr\u{ff}stal"),
+        (3, "fl\u{fc}ssig"),
+        (4, "andere"),
+    ]);
+    assert_eq!(
+        rows_of(&mut s, "get docs { id } where body match \"cr\u{ff}*\""),
+        [1, 2]
+    );
+    assert_eq!(
+        rows_of(&mut s, "get docs { id } where body match \"fl\u{fc}*\""),
+        [3]
+    );
+    assert_eq!(
+        rows_of(&mut s, "get docs { id } where body match \"cr*\""),
+        [1, 2]
+    );
+}
+
+#[test]
+fn unicode_words_survive_the_round_trip_through_the_index() {
+    // The index and the scan have to agree about words the old tokenizer
+    // used to shred: "Häuser" was "h" and "user" before.
+    let db = Db::in_memory().expect("open");
+    let mut s = Session::new(db);
+    s.execute("table indexed { id: int @key, body: text @text }")
+        .expect("indexed");
+    s.execute("table plain { id: int @key, body: text }")
+        .expect("plain");
+    for (id, body) in [
+        (1, "H\u{e4}user am Flu\u{df}"),
+        (2, "caf\u{e9} r\u{e9}sum\u{e9}"),
+        (3, "\u{c4}NGSTR\u{d6}M"),
+        (4, "plain words"),
+    ] {
+        for table in ["indexed", "plain"] {
+            s.execute(&format!("put {table} {{ id: {id}, body: \"{body}\" }}"))
+                .expect("put");
+        }
+    }
+
+    for query in [
+        "h\u{e4}user",
+        "H\u{c4}USER",
+        "flu\u{df}",
+        "r\u{e9}sum\u{e9}",
+        "\u{e5}ngstr\u{f6}m",
+        "resume",
+        "haus",
+    ] {
+        let fast = rows_of(
+            &mut s,
+            &format!("get indexed {{ id }} where body match \"{query}\""),
+        );
+        let slow = rows_of(
+            &mut s,
+            &format!("get plain {{ id }} where body match \"{query}\""),
+        );
+        assert_eq!(fast, slow, "query {query:?} disagreed");
+    }
+
+    // and the two that say what the tokenizer does and does not do
+    assert_eq!(
+        rows_of(
+            &mut s,
+            "get indexed { id } where body match \"H\u{c4}USER\""
+        ),
+        [1],
+        "case should not matter"
+    );
+    assert!(
+        rows_of(&mut s, "get indexed { id } where body match \"resume\"").is_empty(),
+        "an accent should still be a different word"
+    );
+}

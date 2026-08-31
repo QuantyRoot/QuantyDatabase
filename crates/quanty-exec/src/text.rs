@@ -1,9 +1,13 @@
 //! Turning text into terms.
 //!
-//! ASCII, and deliberately so (ADR-036): lowercase ASCII letters, split on
-//! anything that is not a letter or a digit, do nothing else. No stemming,
-//! no stop words, no Unicode case folding, no segmentation for languages
-//! that do not put spaces between words.
+//! A word is a run of letters and digits, lowercased. Letters are
+//! whatever Unicode says they are, and lowercasing is whatever Unicode
+//! says it is, both of which the standard library already knows, so this
+//! needs no table and no dependency (ADR-036).
+//!
+//! What it still does not do: stemming, stop words, folding accents away,
+//! or segmenting languages that do not put spaces between words. Those
+//! are tables or algorithms, and none has earned one yet.
 //!
 //! Everything upstream goes through [`tokenize`], so replacing it is a
 //! change to this file and a reindex.
@@ -28,18 +32,20 @@ pub const MAX_TERM_LEN: usize = 128;
 
 /// Split `text` into terms.
 ///
-/// A byte is part of a term if it is an ASCII letter or digit; everything
-/// else separates. Non-ASCII bytes separate too, which is the limitation
-/// ADR-036 names rather than hides.
+/// A character is part of a term if Unicode calls it a letter or a digit;
+/// everything else separates. Lowercasing is Unicode's too, so `STRASSE`
+/// and `Straße` do not become the same word but `ÜBER` and `über` do.
 pub fn tokenize(text: &str) -> Vec<Token> {
     let mut out = Vec::new();
     let mut current = String::new();
     let mut position = 0u32;
 
     for ch in text.chars() {
-        if ch.is_ascii_alphanumeric() {
-            if current.len() < MAX_TERM_LEN {
-                current.push(ch.to_ascii_lowercase());
+        if ch.is_alphanumeric() {
+            // The cut counts bytes and never splits a character, so a
+            // term may end a few bytes over rather than a few under.
+            if current.len() + ch.len_utf8() <= MAX_TERM_LEN {
+                current.extend(ch.to_lowercase());
             }
         } else if !current.is_empty() {
             out.push(Token {
@@ -385,15 +391,33 @@ mod tests {
     }
 
     #[test]
-    fn non_ascii_separates_which_is_the_documented_limitation() {
-        // ADR-036 names this rather than hiding it: a word split by a byte
-        // this tokenizer cannot fold becomes two terms.
-        let terms = terms("caf\u{e9} au lait");
-        assert_eq!(terms, ["caf", "au", "lait"]);
+    fn a_letter_is_whatever_unicode_says_it_is() {
+        // Before this, "H\u{e4}user" came out as "h" and "user", and
+        // "Stra\u{df}e" as "stra" and "e": a German corpus was shredded
+        // rather than merely left unstemmed.
+        assert_eq!(
+            terms("H\u{e4}user am Flu\u{df}"),
+            ["h\u{e4}user", "am", "flu\u{df}"]
+        );
+        assert_eq!(
+            terms("caf\u{e9} r\u{e9}sum\u{e9}"),
+            ["caf\u{e9}", "r\u{e9}sum\u{e9}"]
+        );
+        assert_eq!(terms("\u{c5}NGSTR\u{d6}M"), ["\u{e5}ngstr\u{f6}m"]);
 
-        // and text with no ASCII at all produces nothing, rather than one
-        // enormous term or a panic
-        assert!(tokenize("\u{3053}\u{3093}\u{306b}\u{3061}\u{306f}").is_empty());
+        // A script without spaces still does not segment, which is a
+        // different problem and an honest one: the run becomes one term
+        // rather than nothing at all.
+        assert_eq!(terms("\u{3053}\u{3093}\u{306b}\u{3061}\u{306f}").len(), 1);
+    }
+
+    #[test]
+    fn accents_are_not_folded_away_and_the_record_says_so() {
+        // ADR-036 draws the line here: case is Unicode's business and the
+        // standard library knows it, while folding an accent away is a
+        // table somebody has to write and keep.
+        assert_ne!(terms("r\u{e9}sum\u{e9}"), terms("resume"));
+        assert_eq!(terms("R\u{c9}SUM\u{c9}"), terms("r\u{e9}sum\u{e9}"));
     }
 
     /// Deterministic junk: bytes that are letters, digits, punctuation,
@@ -435,13 +459,13 @@ mod tests {
                     "over the cut, seed {seed}"
                 );
                 assert!(
-                    token.term.chars().all(|c| c.is_ascii_alphanumeric()),
+                    token.term.chars().all(|c| c.is_alphanumeric()),
                     "a separator got into a term, seed {seed}: {:?}",
                     token.term
                 );
                 assert_eq!(
                     token.term,
-                    token.term.to_ascii_lowercase(),
+                    token.term.to_lowercase(),
                     "not folded, seed {seed}"
                 );
             }
