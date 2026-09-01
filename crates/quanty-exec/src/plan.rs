@@ -64,6 +64,36 @@ pub struct AccessPlan {
 }
 
 /// Split an expression into its top-level `and` conjuncts.
+/// The columns a condition narrows on that have no index to narrow with.
+///
+/// Read off the same condition the planner reads, and only ever consulted
+/// when the plan came out a scan, so what it names is exactly what the
+/// planner would have used had it been there. Returns the column position
+/// and whether the index it wants is the text kind.
+pub fn missed_indexes(table: &Table, filter: Option<&Expr>) -> Vec<(usize, bool)> {
+    let Some(filter) = filter else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for part in conjuncts(filter) {
+        if let Some((col, _)) = as_column_eq_literal(part) {
+            if let Some(pos) = position_for_plan(table, col) {
+                if table.columns[pos].index_id.is_none() && !out.contains(&(pos, false)) {
+                    out.push((pos, false));
+                }
+            }
+        }
+        if let Some((col, _)) = as_text_search(part) {
+            if let Some(pos) = position_for_plan(table, col) {
+                if table.columns[pos].text_index_id.is_none() && !out.contains(&(pos, true)) {
+                    out.push((pos, true));
+                }
+            }
+        }
+    }
+    out
+}
+
 fn conjuncts(expr: &Expr) -> Vec<&Expr> {
     match expr {
         Expr::Binary(l, BinaryOp::And, r) => {

@@ -57,8 +57,56 @@ impl Parked {
     }
 }
 
+/// What this handle has watched itself do.
+///
+/// Kept in memory and per handle rather than written down, because a
+/// suggestion is about a workload and a workload is something a running
+/// process has seen. Writing it would also mean a read that writes, which
+/// the reader path exists to avoid (ADR-035).
+#[derive(Debug, Default)]
+struct Workload {
+    /// One entry per (table, column, kind) a scan narrowed on without an
+    /// index: how often, and how many rows were walked to answer it.
+    misses: Vec<Miss>,
+}
+
+#[derive(Debug)]
+struct Miss {
+    table: String,
+    column: String,
+    text: bool,
+    queries: u64,
+    rows_scanned: u64,
+}
+
+/// One index this handle would have used if it existed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Suggestion {
+    pub table: String,
+    pub column: String,
+    /// Whether the statement that would build it needs `text`.
+    pub text: bool,
+    /// How many queries scanned rather than narrowing.
+    pub queries: u64,
+    /// Rows those queries walked in total.
+    pub rows_scanned: u64,
+}
+
+impl Suggestion {
+    /// The statement that would build it.
+    pub fn statement(&self) -> String {
+        format!(
+            "index {}.{}{}",
+            self.table,
+            self.column,
+            if self.text { " text" } else { "" }
+        )
+    }
+}
+
 pub struct Session<S: Storage> {
     db: Db<S>,
+    workload: Workload,
     /// The open `begin` transaction, suspended between statements, or
     /// `None` in autocommit mode. It holds the writes made so far in
     /// memory and has touched nothing on disk, so a process killed with one
@@ -108,7 +156,63 @@ impl Output {
 
 impl<S: Storage> Session<S> {
     pub fn new(db: Db<S>) -> Self {
-        Session { db, txn: None }
+        Session {
+            db,
+            workload: Workload::default(),
+            txn: None,
+        }
+    }
+
+    /// Indexes this handle would have used, worst first.
+    ///
+    /// Worst is by rows walked rather than by how often, because a
+    /// thousand scans of ten rows cost less than one scan of a million
+    /// and an index should be suggested for the one that hurts.
+    pub fn suggestions(&self) -> Vec<Suggestion> {
+        let mut out: Vec<Suggestion> = self
+            .workload
+            .misses
+            .iter()
+            .map(|m| Suggestion {
+                table: m.table.clone(),
+                column: m.column.clone(),
+                text: m.text,
+                queries: m.queries,
+                rows_scanned: m.rows_scanned,
+            })
+            .collect();
+        out.sort_by(|a, b| {
+            b.rows_scanned
+                .cmp(&a.rows_scanned)
+                .then_with(|| a.table.cmp(&b.table))
+                .then_with(|| a.column.cmp(&b.column))
+        });
+        out
+    }
+
+    /// Note that a query scanned where an index would have narrowed.
+    fn note_scan(&mut self, table: &Table, filter: Option<&Expr>, rows_scanned: u64) {
+        for (pos, text) in plan::missed_indexes(table, filter) {
+            let column = &table.columns[pos].name;
+            match self
+                .workload
+                .misses
+                .iter_mut()
+                .find(|m| m.table == table.name && m.column == *column && m.text == text)
+            {
+                Some(m) => {
+                    m.queries += 1;
+                    m.rows_scanned += rows_scanned;
+                }
+                None => self.workload.misses.push(Miss {
+                    table: table.name.clone(),
+                    column: column.clone(),
+                    text,
+                    queries: 1,
+                    rows_scanned,
+                }),
+            }
+        }
     }
 
     pub fn db(&self) -> &Db<S> {
@@ -227,6 +331,22 @@ impl<S: Storage> Session<S> {
                 self.db.drop_branch(name)?;
                 Ok(Output::Ok)
             }
+            Statement::ShowSuggestions => {
+                let lines: Vec<String> = self
+                    .suggestions()
+                    .into_iter()
+                    .map(|s| {
+                        format!(
+                            "{}  -- {} quer{}, {} rows scanned",
+                            s.statement(),
+                            s.queries,
+                            if s.queries == 1 { "y" } else { "ies" },
+                            s.rows_scanned
+                        )
+                    })
+                    .collect();
+                Ok(Output::Lines(lines))
+            }
             Statement::ShowStats => {
                 let stats = self.db.stats()?;
                 let page_size = self.db.page_size() as u64;
@@ -270,11 +390,24 @@ impl<S: Storage> Session<S> {
             // reads from history resolve a snapshot and never open a tx
             Statement::Get(get) if get.as_of.is_some() => self.read_as_of(get),
             _ => {
-                let tx = self.db.begin();
-                let mut run = Run { tx, mutated: false };
-                let output = run.statement(stmt)?;
-                if run.mutated {
-                    run.tx.commit()?;
+                // The run borrows the database, so it has to be finished
+                // with before the workload note, which needs the session.
+                let (output, scanned) = {
+                    let tx = self.db.begin();
+                    let mut run = Run {
+                        tx,
+                        mutated: false,
+                        scanned: None,
+                    };
+                    let output = run.statement(stmt)?;
+                    let scanned = run.scanned.take();
+                    if run.mutated {
+                        run.tx.commit()?;
+                    }
+                    (output, scanned)
+                };
+                if let Some((table, filter, walked)) = scanned {
+                    self.note_scan(&table, filter.as_ref(), walked);
                 }
                 Ok(output)
             }
@@ -313,6 +446,7 @@ impl<S: Storage> Session<S> {
             | Statement::DropBranch { .. }
             | Statement::ShowBranches
             | Statement::ShowStats
+            | Statement::ShowSuggestions
             | Statement::Log
             | Statement::Gc { .. } => Err(ExecError::exec(NOT_IN_TXN)),
             // history reads are independent of the pending writes
@@ -350,10 +484,19 @@ impl<S: Storage> Session<S> {
         let roots = tx.roots();
         tx.savepoint();
 
-        let mut run = Run { tx, mutated: false };
-        let result = run.statement(stmt);
-        let mut tx = run.tx;
-        let wrote = run.mutated;
+        // Scoped so the run, and with it the borrow of the database, is
+        // over before the workload note needs the session.
+        let (result, scanned, mut tx, wrote) = {
+            let mut run = Run {
+                tx,
+                mutated: false,
+                scanned: None,
+            };
+            let result = run.statement(stmt);
+            let scanned = run.scanned.take();
+            let wrote = run.mutated;
+            (result, scanned, run.tx, wrote)
+        };
 
         match &result {
             Ok(_) => tx.release_savepoint(),
@@ -363,6 +506,9 @@ impl<S: Storage> Session<S> {
             tx: tx.suspend(),
             mutated: open.mutated || (result.is_ok() && mutating && wrote),
         });
+        if let Some((table, filter, walked)) = scanned {
+            self.note_scan(&table, filter.as_ref(), walked);
+        }
         result
     }
 }
@@ -422,14 +568,26 @@ fn load_table_from<V: View>(view: &V, name: &str) -> Result<Table, ExecError> {
 
 /// The whole read pipeline: plan, fetch, filter, order, limit, project.
 fn run_get<V: View>(view: &V, get: &Get) -> Result<Output, ExecError> {
+    run_get_counted(view, get).map(|(out, _)| out)
+}
+
+/// A `get`, and what it cost: the table it read, the condition it read it
+/// with, and how many rows the access walked. `None` when there was
+/// nothing to learn, which is every plan that already narrowed.
+#[allow(clippy::type_complexity)]
+fn run_get_counted<V: View>(
+    view: &V,
+    get: &Get,
+) -> Result<(Output, Option<(Table, u64)>), ExecError> {
     if !get.joins.is_empty() {
-        return run_join_get(view, get);
+        return run_join_get(view, get).map(|out| (out, None));
     }
     let table = load_table_from(view, &get.table)?;
     if let Some(filter) = &get.filter {
         validate_columns(&table, filter)?;
     }
     let plan = plan::plan_access(&table, get.filter.as_ref())?;
+    let mut walked: Option<u64> = None;
 
     // A search returns its answers best first unless asked otherwise.
     // Nothing else here has an opinion about order, but a match does: the
@@ -487,10 +645,11 @@ fn run_get<V: View>(view: &V, get: &Get) -> Result<Output, ExecError> {
             });
             ranked.into_iter().map(|(_, v)| v).collect()
         }
-        _ => fetch_rows(view, &table, &plan)?
-            .into_iter()
-            .map(|(_, v)| v)
-            .collect(),
+        _ => {
+            let (rows, count) = fetch_counted(view, &table, &plan)?;
+            walked = Some(count);
+            rows.into_iter().map(|(_, v)| v).collect()
+        }
     };
 
     if let Some((col, dir)) = &get.order {
@@ -527,7 +686,13 @@ fn run_get<V: View>(view: &V, get: &Get) -> Result<Output, ExecError> {
             .collect();
         columns = positions.iter().map(|&p| columns[p].clone()).collect();
     }
-    Ok(Output::Rows { columns, rows })
+    // Only a scan is worth reporting: every other access narrowed, so
+    // there is no index missing.
+    let cost = match (walked, &plan.access) {
+        (Some(n), Access::SeqScan) => Some((table, n)),
+        _ => None,
+    };
+    Ok((Output::Rows { columns, rows }, cost))
 }
 
 /// A document that answered at least one group: its row key, how long it
@@ -801,7 +966,45 @@ fn bm25(tf: u32, document_frequency: usize, docs: u64, length: f64, average_leng
     idf * (tf * (K1 + 1.0)) / (tf + K1 * (1.0 - B + B * length / average_length))
 }
 
+/// Rows the access produced, and how many it produced before the residual
+/// filter thinned them, which is what a scan cost.
+fn fetch_counted<V: View>(
+    view: &V,
+    table: &Table,
+    plan: &AccessPlan,
+) -> Result<(Fetched, u64), ExecError> {
+    let out = fetch_rows_inner(view, table, plan)?;
+    let walked = out.len() as u64;
+    Ok((apply_residual(table, plan, out)?, walked))
+}
+
 fn fetch_rows<V: View>(view: &V, table: &Table, plan: &AccessPlan) -> Result<Fetched, ExecError> {
+    let out = fetch_rows_inner(view, table, plan)?;
+    apply_residual(table, plan, out)
+}
+
+fn apply_residual(table: &Table, plan: &AccessPlan, out: Fetched) -> Result<Fetched, ExecError> {
+    let Some(residual) = &plan.residual else {
+        return Ok(out);
+    };
+    let mut filtered = Vec::with_capacity(out.len());
+    for (key, values) in out {
+        let scope = RowScope {
+            table,
+            values: &values,
+        };
+        if value_ops::as_condition(value_ops::eval(residual, &scope)?)? {
+            filtered.push((key, values));
+        }
+    }
+    Ok(filtered)
+}
+
+fn fetch_rows_inner<V: View>(
+    view: &V,
+    table: &Table,
+    plan: &AccessPlan,
+) -> Result<Fetched, ExecError> {
     let mut out = Vec::new();
     match &plan.access {
         Access::KeyLookup { key_values } => {
@@ -847,19 +1050,6 @@ fn fetch_rows<V: View>(view: &V, table: &Table, plan: &AccessPlan) -> Result<Fet
                 out.push((key, decode_row(table, &bytes)?));
             }
         }
-    }
-    if let Some(residual) = &plan.residual {
-        let mut filtered = Vec::with_capacity(out.len());
-        for (key, values) in out {
-            let scope = RowScope {
-                table,
-                values: &values,
-            };
-            if value_ops::as_condition(value_ops::eval(residual, &scope)?)? {
-                filtered.push((key, values));
-            }
-        }
-        out = filtered;
     }
     Ok(out)
 }
@@ -1186,6 +1376,10 @@ fn join_step<V: View>(
 struct Run<'db, S: Storage> {
     tx: WriteTx<'db, S>,
     mutated: bool,
+    /// What a `get` scanned, for the session to fold into its workload.
+    /// Rides back the same way `mutated` does, because the planner is
+    /// down here and the record of what it planned is up there.
+    scanned: Option<(Table, Option<Expr>, u64)>,
 }
 
 impl<S: Storage> Run<'_, S> {
@@ -1304,6 +1498,7 @@ impl<S: Storage> Run<'_, S> {
             | Statement::DropBranch { .. }
             | Statement::ShowBranches
             | Statement::ShowStats
+            | Statement::ShowSuggestions
             | Statement::Log
             | Statement::Gc { .. }
             | Statement::Begin
@@ -1676,13 +1871,17 @@ impl<S: Storage> Run<'_, S> {
         Ok(out)
     }
 
-    fn get(&self, get: &Get) -> Result<Output, ExecError> {
+    fn get(&mut self, get: &Get) -> Result<Output, ExecError> {
         // as-of reads are handled before a write tx is ever opened, in
         // `Session::execute`; inside a write statement they make no sense
         if get.as_of.is_some() {
             return Err(ExecError::plan("as of cannot run inside a write statement"));
         }
-        run_get(&self.tx, get)
+        let (out, cost) = run_get_counted(&self.tx, get)?;
+        if let Some((table, walked)) = cost {
+            self.scanned = Some((table, get.filter.clone(), walked));
+        }
+        Ok(out)
     }
 
     fn set(

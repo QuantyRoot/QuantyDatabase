@@ -15,7 +15,7 @@ mod verify;
 
 pub use catalog::{Column, Table};
 pub use error::ExecError;
-pub use exec::{Output, Parked, Session};
+pub use exec::{Output, Parked, Session, Suggestion};
 pub use plan::{Access, AccessPlan};
 pub use text::{
     contains_phrase, decode_posting, encode_posting, length as text_length, phrase_hits,

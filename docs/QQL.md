@@ -42,6 +42,7 @@ merge experiment                             # fast-forward merge
 drop branch experiment
 show branches
 show stats                                    # page counts for the file
+show suggestions                              # indexes this handle wanted
 log                                           # current branch history
 gc keep 10                                    # retain 10 commits per branch
 gc blobs                                      # drop chunks no row names

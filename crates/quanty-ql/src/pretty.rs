@@ -105,6 +105,7 @@ pub fn pretty(stmt: &Statement) -> String {
         Statement::DropBranch { name } => format!("drop branch {name}"),
         Statement::ShowBranches => "show branches".to_string(),
         Statement::ShowStats => "show stats".to_string(),
+        Statement::ShowSuggestions => "show suggestions".to_string(),
         Statement::GcBlobs => "gc blobs".to_string(),
         Statement::Log => "log".to_string(),
         Statement::Gc { keep } => format!("gc keep {keep}"),

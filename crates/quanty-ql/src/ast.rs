@@ -53,6 +53,8 @@ pub enum Statement {
     ShowBranches,
     /// `show stats`, page counts for the file as it stands
     ShowStats,
+    /// `show suggestions`, indexes this handle would have used
+    ShowSuggestions,
     /// `log`, the current branch's history
     Log,
     /// `gc keep 10`
@@ -248,6 +250,7 @@ impl Statement {
             | Statement::ShowTables
             | Statement::ShowBranches
             | Statement::ShowStats
+            | Statement::ShowSuggestions
             | Statement::Log => false,
             // `explain` runs the planner, never the plan.
             Statement::Explain(_) => false,
