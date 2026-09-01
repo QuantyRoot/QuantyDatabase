@@ -26,6 +26,9 @@ pub mod worker;
 
 #[cfg(target_os = "linux")]
 pub use dispatch::{ConnId, Dispatch, Idle, Job, Outbox, Reply};
+// An attribute covers one item, and this one used to sit above the line
+// before it, so the crate did not compile off Linux at all.
+#[cfg(target_os = "linux")]
 pub use poll::{Event, Interest, Poller, Token, Waker, WAKE_TOKEN};
 
 pub use conn::{Conn, Step};

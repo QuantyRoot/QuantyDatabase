@@ -36,6 +36,30 @@ jobs:
       - name: tests
         run: cargo test --workspace
 
+  # Runs where it will actually be installed. The macOS and Windows paths
+  # existed for a long time and had never been compiled, so they had rotted:
+  # an attribute above the wrong line took the server crate out entirely,
+  # and the tool's fallback for a machine without epoll was a duplicate
+  # definition. Building is not the same as passing, so these run the
+  # tests too, minus the server, which needs epoll and says so.
+  portable:
+    name: build and test on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.98.0
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: tests
+        run: cargo test --workspace
+
   crash-harness:
     name: crash harness (1000 kills)
     runs-on: ubuntu-latest

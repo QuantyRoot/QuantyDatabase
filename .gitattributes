@@ -1,0 +1,4 @@
+# Checked out byte for byte on every platform. Golden files are compared
+# against what the engine printed, so a checkout that turned LF into CRLF
+# would fail them on Windows and nowhere else.
+* -text

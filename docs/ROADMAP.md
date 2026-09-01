@@ -516,6 +516,23 @@ is a change to the write path, and in a storage engine both can lose data
 in ways a test suite does not notice. Neither should start before the
 allocator work says what is left.
 
+## Where it runs
+
+The library, the tool and the SQLite importer build and test on macOS and
+Windows as well as Linux, and CI now runs them there so it stays true.
+That was checked for the first time in August 2026 and was not true: the
+non-Linux paths had existed for a long time, had never been compiled, and
+had rotted. An attribute above the wrong line took the server crate out
+of every non-Linux build entirely, another left the tool with two
+definitions of `serve`, and the token minter and the wire codec were
+declared Linux-only dependencies although neither has a line of platform
+code in it.
+
+`quanty serve` is Linux only and says so when asked elsewhere. Its event
+loop is epoll, hand written, and kqueue and IOCP are each a second and a
+third one of those. `quanty connect` is a plain TCP client and runs
+everywhere, so a database served from Linux can be used from anywhere.
+
 ## Later / unscheduled
 
 Live query subscriptions, Postgres wire protocol, vector index, real merge

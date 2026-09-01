@@ -134,8 +134,8 @@ fn about_never_claims_more_decisions_than_exist() {
 /// The numbers `about` prints, mirrored here because an integration test
 /// cannot reach into a binary crate.
 mod quanty_cli_claims {
-    pub const CRATES: usize = 11;
-    pub const TESTS: usize = 373;
-    pub const DECISIONS: usize = 29;
+    pub const CRATES: usize = 13;
+    pub const TESTS: usize = 500;
+    pub const DECISIONS: usize = 36;
     pub const FOREIGN_DEPENDENCIES: usize = 0;
 }

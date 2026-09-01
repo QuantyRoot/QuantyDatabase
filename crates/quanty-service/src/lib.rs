@@ -32,6 +32,9 @@
 #![deny(unsafe_code)]
 #![deny(missing_docs)]
 
+// Only the executor speaks it, and the executor needs epoll, so off
+// Linux this crate compiles to nothing rather than to dead code.
+#[cfg(target_os = "linux")]
 mod answer;
 
 #[cfg(target_os = "linux")]

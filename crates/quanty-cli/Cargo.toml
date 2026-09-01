@@ -17,9 +17,11 @@ quanty-exec = { path = "../quanty-exec" }
 quanty-import = { path = "../quanty-import" }
 quanty-ql = { path = "../quanty-ql" }
 quanty-sqlite = { path = "../quanty-sqlite" }
+# Minting a token and speaking the wire protocol are portable. Only the
+# server needs epoll, so only the server is behind a target.
+quanty-auth = { path = "../quanty-auth" }
+quanty-proto = { path = "../quanty-proto" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 quanty-service = { path = "../quanty-service" }
-quanty-auth = { path = "../quanty-auth" }
 quanty-server = { path = "../quanty-server" }
-quanty-proto = { path = "../quanty-proto" }

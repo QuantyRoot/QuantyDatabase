@@ -77,7 +77,6 @@ serve    --listen   address to bind, default 127.0.0.1:7878
                     requires no authentication and belongs on loopback
 ";
 
-#[cfg(target_os = "linux")]
 mod client;
 
 fn main() -> ExitCode {
@@ -526,17 +525,16 @@ fn is_terminal() -> bool {
     std::io::stdin().is_terminal()
 }
 
-#[cfg(target_os = "linux")]
 /// Counts that `about` prints, and that a test holds to reality.
 ///
 /// Each is a floor rather than a snapshot: the test checks that the real
 /// number is at least this, so the tool can fall behind but can never
 /// overclaim, and nobody has to update it on every commit.
-pub const CRATES: usize = 11;
+pub const CRATES: usize = 13;
 /// At least this many test functions exist.
-pub const TESTS: usize = 373;
+pub const TESTS: usize = 500;
 /// At least this many decision records exist.
-pub const DECISIONS: usize = 29;
+pub const DECISIONS: usize = 36;
 /// Exactly this many packages that are not this workspace.
 pub const FOREIGN_DEPENDENCIES: usize = 0;
 
@@ -587,6 +585,7 @@ fn token(label: &str) -> Result<(), Failure> {
     emit("the token is not stored anywhere; losing it means minting another.")
 }
 
+#[cfg(target_os = "linux")]
 fn serve(database: &Path, flags: &Flags) -> Result<(), Failure> {
     use std::net::TcpListener;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
