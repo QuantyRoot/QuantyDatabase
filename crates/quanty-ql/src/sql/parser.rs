@@ -32,10 +32,6 @@ pub fn parse_sql(source: &str) -> Result<Statement, ParseError> {
 /// named order is written "order". The list is longer than the supported
 /// grammar on purpose, so unsupported SQL fails on the keyword with a clear
 /// message instead of misparsing it as a name.
-/// Operators in the canonical language; see the QQL parser. Names that
-/// collide with them cannot round trip, so both front ends refuse them.
-const OPERATOR_WORDS: [&str; 3] = ["not", "and", "or"];
-
 const RESERVED: &[&str] = &[
     "all",
     "and",
@@ -199,15 +195,12 @@ impl Parser {
     fn ident(&mut self, what: &str) -> Result<String, ParseError> {
         let at = self.at();
         let name = self.raw_ident(what)?;
-        // these three are operators in the canonical language, so a name
-        // spelled exactly like one could not be rendered back into QQL
-        // (ADR-017). unquoted they are reserved anyway; quoting is what
-        // would otherwise smuggle them through.
-        if OPERATOR_WORDS.contains(&name.as_str()) {
-            return Err(ParseError::at(
-                at,
-                format!("'{name}' is an operator and cannot name a table or column"),
-            ));
+        // a handful of words are operators or literals in the canonical
+        // language, so a name spelled exactly like one could not be
+        // rendered back into QQL (ADR-017). unquoted they are reserved
+        // anyway; quoting is what would otherwise smuggle them through.
+        if let Some(message) = crate::names::refuse_as_name(&name) {
+            return Err(ParseError::at(at, message));
         }
         Ok(name)
     }

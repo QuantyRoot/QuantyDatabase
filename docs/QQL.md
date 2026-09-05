@@ -51,9 +51,10 @@ gc blobs                                      # drop chunks no row names
 One statement per string. `#` starts a comment that runs to the end of the
 line. Keywords are lowercase, always. Context decides almost everything, so
 a column can be called `limit` or `order` if you insist. The exceptions are
-`not`, `and` and `or`: they are operators inside expressions, and a column
-named after one could not be referenced unambiguously, so they cannot name
-a table or a column (ADR-017).
+`not`, `and`, `or`, `true`, `false` and `null`: the first three are
+operators inside expressions and the last three are literals, and a column
+named after any of them could not be referenced unambiguously, so they
+cannot name a table or a column (ADR-017).
 
 ## Tables
 

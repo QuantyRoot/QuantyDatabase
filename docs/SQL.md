@@ -114,8 +114,9 @@ Value behavior is the engine's: int literals widen into float columns,
   reserved words. Quoted or not, a name must have identifier shape
   (letters, digits, underscores, starting with a letter or underscore),
   because every name in the catalog renders back into QQL, the canonical
-  language. For the same reason the lowercase words `not`, `and` and `or`
-  cannot be names even when quoted: they are operators in QQL (ADR-017).
+  language. For the same reason the lowercase words `not`, `and`, `or`,
+  `true`, `false` and `null` cannot be names even when quoted: the first
+  three are operators in QQL and the last three are literals (ADR-017).
   `"NOT"` is fine, since QQL keywords are lowercase.
 - Strings are single quoted; the only escape is a doubled quote
   (`'it''s'`). Backslashes are ordinary bytes.

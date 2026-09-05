@@ -8,11 +8,6 @@ use crate::error::ParseError;
 use crate::lexer::{lex, Spanned, Token};
 
 /// Parse exactly one statement. Trailing input is an error.
-/// The words that are operators inside an expression, and therefore
-/// cannot be table or column names. Everything else stays unreserved:
-/// a column may still be called `limit` or `order`.
-const OPERATOR_WORDS: [&str; 3] = ["not", "and", "or"];
-
 pub fn parse(source: &str) -> Result<Statement, ParseError> {
     let tokens = lex(source)?;
     let mut p = Parser { tokens, pos: 0 };
@@ -96,11 +91,8 @@ impl Parser {
     fn name(&mut self, what: &str) -> Result<String, ParseError> {
         let at = self.at();
         let w = self.ident(what)?;
-        if OPERATOR_WORDS.contains(&w.as_str()) {
-            return Err(ParseError::at(
-                at,
-                format!("'{w}' is an operator and cannot name a table or column"),
-            ));
+        if let Some(message) = crate::names::refuse_as_name(&w) {
+            return Err(ParseError::at(at, message));
         }
         Ok(w)
     }
@@ -630,8 +622,9 @@ impl Parser {
         }
     }
 
-    /// Literal if the next token is one; `true`, `false` and `null` are
-    /// contextual words, not reserved.
+    /// Literal if the next token is one. `true`, `false` and `null` are
+    /// read here and refused as names in `names.rs`, because a column
+    /// spelled like one prints back as the literal (ADR-017).
     fn literal_value(&mut self) -> Result<Option<Value>, ParseError> {
         let v = match self.peek().clone() {
             Token::Int(i) => Value::Int(i),

@@ -9,6 +9,7 @@
 pub mod ast;
 mod error;
 mod lexer;
+mod names;
 mod parser;
 pub mod pretty;
 pub mod sql;

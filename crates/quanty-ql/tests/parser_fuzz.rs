@@ -165,6 +165,15 @@ const CORPUS: &[&str] = &[
     "del users where not (score % 2 = 0)",
     "get t where a = 1 and not (b = 2 or c = 3)",
     "explain explain del t",
+    // the same shape a second time, found by the fuzzer on 2026-09-05.
+    // `false` deep in an expression is a name, and the canonical form
+    // prints it as the literal, so the roundtrip changed the AST. The
+    // compound assignment is what surfaced it: `false *= limit` desugars
+    // to `false = false * limit`, where the left side is a column and the
+    // right side is not. Refused at the source now, like `not`.
+    "set int { false *= limit }",
+    "get t where false = 1",
+    "set t { null = 2 }",
 ];
 
 fn check(input: &str) {
