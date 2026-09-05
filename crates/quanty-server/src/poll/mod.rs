@@ -116,6 +116,12 @@ impl Event {
     }
 
     /// Whether the peer closed its writing half.
+    ///
+    /// Promised for registrations that include `READABLE`, which is every
+    /// registration the worker makes. A write-only registration hears
+    /// about a close on epoll and not on kqueue, where the read filter is
+    /// the only one that watches for it, so nothing above this layer may
+    /// rely on that. ADR-038.
     pub fn is_read_closed(&self) -> bool {
         self.flags & flag::READ_CLOSED != 0
     }

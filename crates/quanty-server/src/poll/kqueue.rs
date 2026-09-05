@@ -16,6 +16,15 @@
 //! writable in the same instant, so the events are passed through and the
 //! worker loop, which is idempotent per token, absorbs it. ADR-038.
 //!
+//! *A close is heard on the read filter and nowhere else.* epoll adds
+//! `EPOLLRDHUP` to every registration, so even a write-only one learns
+//! that the peer went away. kqueue has no equivalent: a peer's FIN sets
+//! `SS_CANTRCVMORE` and the write filter watches `SS_CANTSENDMORE`, so
+//! the only way to hear it is to register the read filter, whose data
+//! readiness would then have to be swallowed on every poll of a caller
+//! that did not ask for it. The promise is narrowed to registrations
+//! that include readable, which is every one the worker makes. ADR-038.
+//!
 //! *The waker is a filter rather than a descriptor.* `EVFILT_USER` with
 //! `NOTE_TRIGGER` needs no eventfd and no read to drain it: `EV_CLEAR`
 //! makes the kernel reset it as it is delivered, so a trigger that

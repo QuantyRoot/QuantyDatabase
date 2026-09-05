@@ -1761,8 +1761,10 @@ flags of this crate's own and each backend translates both ways. Nothing
 above `poll.rs` changed, which is the claim ADR-037 made about the blast
 radius, now checked rather than estimated.
 
-Three things do not map, and each is decided here rather than left to be
-rediscovered.
+Four things do not map, and each is decided here rather than left to be
+rediscovered. Three were visible from the manual pages; the fourth was
+found by the macOS CI job running a test that had only ever run on
+Linux, which is the argument for running them there at all.
 
 **Interest is two registrations, not one bitmask.** `EVFILT_READ` and
 `EVFILT_WRITE` are separate entries under the same descriptor, so
@@ -1781,6 +1783,28 @@ is readable and writable in the same instant. The worker loop is
 idempotent per token, so the events are passed through and the surface
 gains a documented difference instead of the hot path gaining a loop.
 This is a deliberate asymmetry and the first one in this interface.
+
+**A close is heard on the read filter and nowhere else.** epoll adds
+`EPOLLRDHUP` to every registration, so a socket watched only for writing
+still learns that its peer went away. kqueue cannot do that. A peer's FIN
+sets `SS_CANTRCVMORE`; the write filter reports `EV_EOF` from
+`SS_CANTSENDMORE`, which is this end shutting down or the connection
+being reset, not the peer closing. Hearing a close therefore means
+registering the read filter, and a caller that did not ask for readable
+would then have data readiness reported to it on every poll, level
+triggered, for ever. Swallowing it inside the poller is worse: the wait
+returns, nothing is delivered, the loop turns again, and the worker spins
+at full speed on a socket with unread bytes in it.
+
+So the promise is narrowed rather than faked: a close is reported for
+registrations that include readable. That is every registration the
+worker makes, since `drive` asks for readable or for both and never for
+write alone. The test that covered this registered write only, passed on
+Linux for two years, and had never been run anywhere else; it now
+registers for reading and asserts the close flag rather than mere
+readability, because a closed peer is readable either way and the old
+assertion would have passed with the flag missing entirely. Removing the
+translation makes it fail, which was checked rather than assumed.
 
 **`EPOLLEXCLUSIVE` has no counterpart, and neither does the thing that
 replaced it.** ADR-025 measured that a shared listener under

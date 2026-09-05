@@ -8,7 +8,7 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use quanty_server::{Interest, Poller, Token};
+use quanty_server::{Event, Interest, Poller, Token};
 
 /// Count this process's open descriptors.
 fn connected_pair() -> (TcpStream, TcpStream) {
@@ -22,12 +22,9 @@ fn connected_pair() -> (TcpStream, TcpStream) {
 }
 
 /// Collect one poll's worth of events.
-fn drain_once(p: &mut Poller, timeout_ms: i32) -> Vec<(Token, bool, bool, bool)> {
+fn drain_once(p: &mut Poller, timeout_ms: i32) -> Vec<Event> {
     let mut out = Vec::new();
-    p.poll(timeout_ms, |e| {
-        out.push((e.token, e.is_readable(), e.is_writable(), e.is_error()));
-    })
-    .expect("poll");
+    p.poll(timeout_ms, |e| out.push(e)).expect("poll");
     out
 }
 
@@ -52,7 +49,7 @@ fn layout_matches_the_kernel() {
     let evs = drain_once(&mut p, 1000);
     assert_eq!(evs.len(), 1, "a fresh socket should be writable");
     assert_eq!(
-        evs[0].0, token,
+        evs[0].token, token,
         "token came back wrong, which means the event struct layout is \
          wrong for this platform (expected {expected})"
     );
@@ -74,7 +71,7 @@ fn readable_only_when_there_is_something_to_read() {
     client.write_all(b"ping").expect("write");
     let evs = drain_once(&mut p, 1000);
     assert_eq!(evs.len(), 1);
-    assert!(evs[0].1, "should be readable");
+    assert!(evs[0].is_readable(), "should be readable");
 }
 
 /// Level-triggered, pinned. ADR-023 chose it because the failure mode of
@@ -101,23 +98,44 @@ fn unread_data_is_reported_again() {
     );
 }
 
+/// A closed peer is reported as closed, not merely as readable.
+///
+/// Nothing here asks about hangup: the registration is for reading. On
+/// epoll the answer is `EPOLLRDHUP`, added to every registration; on
+/// kqueue it is `EV_EOF` on the read filter. Asserting readable alone
+/// would pass with the close flag translated wrongly or not translated
+/// at all, since a closed peer is readable either way, so the assertion
+/// is the flag itself.
+///
+/// What this deliberately no longer checks is a write-only registration.
+/// epoll can carry `EPOLLRDHUP` on one and kqueue cannot: a peer's FIN
+/// sets `SS_CANTRCVMORE`, the write filter watches `SS_CANTSENDMORE`,
+/// and the only way to hear about the first is to register the read
+/// filter, whose data readiness would then have to be swallowed on every
+/// poll. So the promise is narrowed to what both kernels keep, which is
+/// also the only shape the worker ever registers. ADR-038.
 #[test]
 fn hangup_is_reported_without_being_requested() {
     let mut p = Poller::new(8).expect("poller");
     let (client, server) = connected_pair();
-    p.register(&server, Token(3), Interest::WRITABLE)
+    p.register(&server, Token(3), Interest::READABLE)
         .expect("reg");
 
     drop(client);
 
     let deadline = Instant::now() + Duration::from_secs(2);
-    let mut saw = false;
-    while Instant::now() < deadline && !saw {
-        for (_, readable, _, error) in drain_once(&mut p, 100) {
-            saw |= readable || error;
-        }
+    let mut saw = None;
+    while Instant::now() < deadline && saw.is_none() {
+        saw = drain_once(&mut p, 100).first().copied();
     }
-    assert!(saw, "a closed peer was never reported");
+    let event = saw.expect("a closed peer was never reported");
+    assert!(
+        event.is_read_closed(),
+        "reported, but not as a close: readable {}, writable {}, error {}",
+        event.is_readable(),
+        event.is_writable(),
+        event.is_error()
+    );
 }
 
 #[test]
@@ -174,7 +192,7 @@ fn a_parked_worker_can_be_woken_from_another_thread() {
     assert!(waited < Duration::from_secs(5), "wakeup did not arrive");
     assert_eq!(evs.len(), 1, "expected exactly the wakeup: {evs:?}");
     assert_eq!(
-        evs[0].0,
+        evs[0].token,
         quanty_server::WAKE_TOKEN,
         "the wakeup must not look like a connection"
     );
@@ -214,8 +232,8 @@ fn more_ready_than_the_buffer_holds_is_not_lost() {
     let mut seen = std::collections::BTreeSet::new();
     let deadline = Instant::now() + Duration::from_secs(3);
     while seen.len() < 6 && Instant::now() < deadline {
-        for (t, _, _, _) in drain_once(&mut p, 200) {
-            seen.insert(t.0);
+        for e in drain_once(&mut p, 200) {
+            seen.insert(e.token.0);
         }
     }
     assert_eq!(seen.len(), 6, "lost events: saw {seen:?}");

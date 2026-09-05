@@ -52,6 +52,12 @@ wrapped.
   to hold epoll's bits, which meant the interface was epoll wearing a
   Rust name and a second backend could not fit under it. The public
   methods are unchanged.
+- `Event::is_read_closed` is promised for registrations that include
+  readable, rather than for every registration. epoll carries
+  `EPOLLRDHUP` on a write-only registration and kqueue cannot, and
+  faking it would mean reporting data readiness to a caller that did not
+  ask for it, on every poll (ADR-038). The worker never registered for
+  writing alone, so nothing in the server changes.
 - The tokenizer treats a word as a run of whatever Unicode calls letters
   and digits, lowercased the same way. It was ASCII, which did not merely
   fail to stem but shredded any text with an accent in it. An index built

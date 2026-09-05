@@ -59,6 +59,14 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: tests
         run: cargo test --workspace
+      # Printed rather than asserted. Linux spreads accepts across
+      # SO_REUSEPORT listeners by hashing the four-tuple and the test
+      # asserts that; no other kernel promises it, so this job reports
+      # what its kernel actually did and ADR-038 waits for the number
+      # instead of guessing at it. Filters that match nothing pass, which
+      # is what happens on Windows, where there is no reactor.
+      - name: how accepts spread on this kernel
+        run: cargo test -p quanty-server --test accept reuseport_spreads -- --nocapture
 
   crash-harness:
     name: crash harness (1000 kills)
