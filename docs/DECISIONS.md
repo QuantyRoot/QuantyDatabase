@@ -1691,6 +1691,26 @@ that the interface is not epoll wearing another name. If kqueue fits
 without bending it, IOCP probably fits too; if I start with the hardest
 backend I will shape the interface around it and never find out.
 
+**Amended after reading the worker loop, which changed the layering.**
+The completion interface does not replace `Poller`, it sits above it.
+Readiness is the right shape for epoll and for kqueue, and forcing them
+through a completion layer would cost every unix build an indirection to
+serve Windows. So there are two seams rather than one: `Poller` stays the
+platform abstraction for readiness systems and gains a kqueue backend,
+and the completion interface is what the worker loop talks to, built on
+`Poller` on unix and on IOCP directly on Windows.
+
+That also means kqueue is not written twice, which the first version of
+this record would have required, and macOS stops being blocked on a
+refactor it does not need. The order is now kqueue behind the existing
+`Poller`, then the completion layer, then IOCP behind it.
+
+Reading the loop is what settled it. `conn.rs` takes `&mut impl Read` and
+`&mut impl Write`, so a slice and a vector satisfy it without a line
+changing; the socket is touched in exactly two places in `worker.rs`.
+The refactor is smaller than the record first assumed and it is still
+only Windows that needs it.
+
 **Acceptance is the acceptance that already exists.** The soak, the crash
 harness and the connection ceiling run per platform, on the platform. A
 backend that has not run them is experimental and the documentation says
