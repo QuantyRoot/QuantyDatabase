@@ -530,7 +530,7 @@ fn is_terminal() -> bool {
 /// Each is a floor rather than a snapshot: the test checks that the real
 /// number is at least this, so the tool can fall behind but can never
 /// overclaim, and nobody has to update it on every commit.
-pub const CRATES: usize = 13;
+pub const CRATES: usize = 14;
 /// At least this many test functions exist.
 pub const TESTS: usize = 500;
 /// At least this many decision records exist.

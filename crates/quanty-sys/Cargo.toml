@@ -1,0 +1,10 @@
+[package]
+name = "quanty-sys"
+description = "The syscall boundary for QuantyDB: the only unsafe code here"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]

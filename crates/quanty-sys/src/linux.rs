@@ -1,4 +1,9 @@
-//! The syscall boundary. The only unsafe code in this workspace.
+//! Linux: epoll, sockets and eventfd.
+//!
+//! Declared rather than depended on, and unsafe only where the kernel is
+//! actually entered.
+
+#![allow(unsafe_code)]
 
 use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};

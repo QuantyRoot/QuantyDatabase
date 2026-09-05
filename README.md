@@ -237,8 +237,8 @@ run between them, and a soak
 that runs many connections against the server at once and checks the
 promises that have to hold whichever way a race went.
 
-No dependencies. Not "few": the lock file holds thirteen packages and all
-thirteen are this workspace, so `cargo build` fetches nothing, there is
+No dependencies. Not "few": the lock file holds fourteen packages and all
+fourteen are this workspace, so `cargo build` fetches nothing, there is
 no supply chain to audit, and the minimum supported toolchain is only as
 new as the one feature that needed it (ADR-035).
 What that costs is measured and written down in
@@ -248,13 +248,13 @@ What that costs is measured and written down in
 
 | | |
 |---|---|
-| Rust, source | 24628 lines across 13 crates |
-| Rust, tests | 15377 lines, 513 test functions |
-| Design notes | 3947 lines, 36 decision records |
+| Rust, source | 25347 lines across 14 crates |
+| Rust, tests | 16226 lines, 551 test functions |
+| Design notes | 4061 lines, 36 decision records |
 | Dependencies | 0 |
 | People | 1 |
 | Funding | none |
-| CI per push | 12 jobs, 4 fuzzers, 2300 kill -9s, a 10 minute server soak |
+| CI per push | 14 jobs on 3 operating systems, 4 fuzzers, 2300 kill -9s |
 
 More than one line of test for every two lines of code, and every one of
 them runs on every push.

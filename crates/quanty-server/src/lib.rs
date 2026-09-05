@@ -3,9 +3,11 @@
 #![deny(unsafe_code)]
 #![deny(missing_docs)]
 
+/// The syscall boundary moved out to a crate of its own, so the unsafe
+/// lines live in one place for every platform rather than one per
+/// reactor.
 #[cfg(target_os = "linux")]
-#[allow(unsafe_code)]
-mod sys;
+use quanty_sys::linux as sys;
 
 pub mod conn;
 

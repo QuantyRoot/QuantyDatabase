@@ -8,4 +8,5 @@ repository.workspace = true
 description = "Reactor and connection handling for QuantyDB"
 
 [dependencies]
+quanty-sys = { path = "../quanty-sys" }
 quanty-proto = { path = "../quanty-proto" }

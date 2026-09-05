@@ -197,8 +197,8 @@ pub fn mint(label: &str) -> io::Result<(String, String)> {
 }
 
 fn read_random() -> io::Result<[u8; 32]> {
-    use std::io::Read;
-    let mut out = [0u8; 32];
-    fs::File::open("/dev/urandom")?.read_exact(&mut out)?;
-    Ok(out)
+    // The operating system's generator, wherever that is. This crate
+    // forbids unsafe, and asking a platform for randomness is a syscall,
+    // so it lives in quanty-sys with the rest of them.
+    quanty_sys::random::bytes32()
 }

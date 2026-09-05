@@ -54,12 +54,19 @@ wrapped.
   a column's text index. A table definition is written at the lowest
   version that can express it, so a table that gained neither stays
   readable by everything that came before.
+- Every syscall now lives in `quanty-sys`, which is the only crate
+  allowed unsafe code. It was one module inside the Linux-only server,
+  which left nowhere for a Windows random source to go and nowhere for a
+  second reactor to live.
 - SHA-256 moved from `quanty-auth` into `quanty-core`, since a hash used
   for content addressing belongs with the storage and two copies of one
   would be two databases.
 
 ### Fixed
 
+- `quanty token` on Windows. Minting read `/dev/urandom`, which is not a
+  path there, so no token could be made. The random source is the
+  operating system's on every platform now.
 - Two writers on one file could each believe they were alone, and the
   second silently replaced a commit that had been acknowledged. Opening
   for writing now takes an exclusive advisory lock, and `commit` refuses
