@@ -76,6 +76,11 @@ wrapped.
   layout. The BSDs spend the first byte on the structure's own length and
   leave one byte for the family, and `AF_INET6` is 30 there rather than
   10. It compiled, which is why it survived this long.
+- `true`, `false` and `null` as table or column names. They parsed, and
+  the canonical form printed them back as the literals, so a statement no
+  longer read as the tree it came from. Refused now in both front ends,
+  like `not`, `and` and `or` before them (ADR-017). A column called
+  `false` has to be renamed; quoting does not help, in either language.
 - The writer lock on Windows, where a whole-file lock is mandatory rather
   than advisory and made the database unreadable by anything else. It
   locks a byte past the data now.

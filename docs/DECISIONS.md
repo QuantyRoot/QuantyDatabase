@@ -321,6 +321,31 @@ worth recording anyway, because it is the fuzz invariant earning its keep:
 the property that looked like plumbing (a canonical form that survives a
 round trip) is exactly what caught a real ambiguity in the grammar.
 
+**Amended on 2026-09-05: the literals are the same case.** The fuzzer
+found the second class after a little under eight minutes:
+
+```
+input:     set int { false *= limit }
+canonical: set int { false = (false * limit) }
+```
+
+`false` deep in an expression is a name, the compound assignment desugars
+to `false = false * limit`, and the printer has no way to say that the
+left `false` is a column while the right one is the boolean. It is the
+argument above with a literal in place of an operator, so it gets the
+same answer: `true`, `false` and `null` are refused as table and column
+names, in both front ends, with a message that says literal rather than
+operator.
+
+Two things are worth carrying forward from the second find. The list of
+refused words lived in two files, one per front end, and adding a word to
+one of them would have left the other accepting it; there is one list now
+and both front ends read it. And the first record said the exceptions
+were the words that are *operators*, which was true of the words but not
+of the reason: the rule is that a name cannot be spelled like anything
+the expression grammar reads as a token. Whether a third class exists is
+a question for the fuzzer rather than for this paragraph.
+
 ## ADR-018: Extensions are Rust code linked at build time
 
 An outside developer asked about building on QuantyDB, which is the first

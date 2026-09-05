@@ -209,9 +209,29 @@ fn reuseport_spreads_where_a_shared_listener_does_not() {
         })
         .collect();
 
-    let clients: Vec<TcpStream> = (0..200)
-        .map(|_| TcpStream::connect(addr).expect("connect"))
-        .collect();
+    // Connect in chunks and let the workers drain between them.
+    //
+    // Connecting all two hundred first and accepting afterwards asks the
+    // kernel to queue two hundred pending connections. Linux honours the
+    // backlog this listener asked for; Darwin clamps `listen` to
+    // `kern.ipc.somaxconn`, 128 by default, and drops the rest, which the
+    // client sees as a connect that times out rather than as a refusal.
+    // The macOS CI job is what found that, after the test had implied a
+    // deep backlog for as long as it had existed.
+    //
+    // The measurement is unchanged: the kernel picks the listening socket
+    // when the SYN arrives, so accepting sooner does not move a
+    // connection to a different worker.
+    const CHUNK: usize = 50;
+    let mut clients: Vec<TcpStream> = Vec::with_capacity(200);
+    for _ in 0..4 {
+        for _ in 0..CHUNK {
+            clients.push(TcpStream::connect(addr).expect("connect"));
+        }
+        for w in workers.iter_mut() {
+            w.turn(20, &Idle).expect("turn");
+        }
+    }
 
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
