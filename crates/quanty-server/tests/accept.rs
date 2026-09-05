@@ -115,7 +115,13 @@ fn several_workers_share_one_listener() {
     let counts: Vec<usize> = workers.iter().map(|w| w.len()).collect();
     let total: usize = counts.iter().sum();
     assert_eq!(total, 64, "accepted {total} of 64, spread {counts:?}");
-    println!("spread across workers: {counts:?}");
+    // Printed, and not a measurement of anything the kernel did. The
+    // workers are turned in order on this thread and `accept_all` drains
+    // until it would block, so whichever one runs first takes everything
+    // queued, whoever the kernel meant to wake. Linux prints [64, 0, 0, 0]
+    // here. Answering how a shared listener really spreads needs workers
+    // on their own threads, which this test is not.
+    println!("counts after a sequential drain: {counts:?}");
 
     drop(clients);
     for w in workers.iter_mut() {

@@ -52,9 +52,16 @@ fn encode(addr: SocketAddr) -> Vec<u8> {
 
 /// Bind a listener that shares its port with its siblings.
 ///
-/// The kernel spreads incoming connections across every socket bound this
-/// way by hashing the four-tuple, which is what a shared listener plus
-/// EPOLLEXCLUSIVE does not do. See ADR-025.
+/// **On Linux.** The kernel spreads incoming connections across every
+/// socket bound this way by hashing the four-tuple, which is what a
+/// shared listener plus EPOLLEXCLUSIVE does not do. See ADR-025.
+///
+/// **Not on Darwin.** The call succeeds and the sockets bind, and then
+/// the listener that bound last receives every connection: two hundred
+/// connections across four listeners measured 0 / 0 / 0 / 200. A server
+/// built on this shape there has one worker wearing four coats. Use the
+/// shared listener instead, which kqueue watches without complaint. See
+/// ADR-038.
 pub fn bind_reuseport(addr: SocketAddr) -> io::Result<TcpListener> {
     let family = match addr {
         SocketAddr::V4(_) => sys::AF_INET,

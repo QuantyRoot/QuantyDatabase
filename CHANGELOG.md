@@ -45,6 +45,13 @@ wrapped.
   readiness tests run on macOS as well as Linux. The waker is an
   `EVFILT_USER` filter rather than an eventfd, and interest is two
   registrations rather than one bitmask (ADR-038).
+- A CI step that prints how accepts spread across workers on each
+  platform, since the assertion only holds where a kernel promised it and
+  a passing test says nothing on its own. It reported what `SO_REUSEPORT`
+  does on macOS on the first run: nothing, everything to the listener that
+  bound last, 0 / 0 / 0 / 200 against Linux's 47 / 58 / 44 / 51. That is
+  now a documented reason `quanty serve` stays on Linux rather than a
+  `cfg` waiting to be deleted (ADR-038).
 
 ### Changed
 

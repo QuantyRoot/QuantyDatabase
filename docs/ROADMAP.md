@@ -535,9 +535,15 @@ everywhere, so a database served from Linux can be used from anywhere.
 
 The readiness layer now has a kqueue backend, and the reactor's own tests
 run on macOS in CI rather than only compiling there (ADR-038). That is
-not the same as the server running there: `quanty serve` is still gated
-to Linux, and the soak, the crash harness and the connection ceiling have
-never run on macOS. Until they have, the word for the macOS reactor is
+not the same as the server running there, and the reason is now measured
+rather than assumed. `quanty serve` gives each worker its own listener
+bound with `SO_REUSEPORT`, because that is what spreads accepts on Linux
+(ADR-025). On macOS it does not spread at all: two hundred connections
+across four listeners went 0 / 0 / 0 / 200, all to the one that bound
+last. Widening `quanty serve` past Linux therefore means changing the
+accept shape as well as the `cfg`, to the shared listener every worker
+watches. That, the soak, the crash harness and the connection ceiling are
+what the macOS server needs before the word for it stops being
 experimental.
 
 ## Later / unscheduled

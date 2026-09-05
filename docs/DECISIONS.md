@@ -1822,13 +1822,38 @@ handles. That is correct and wasteful. The alternative, one thread that
 accepts and hands the descriptor on, is a second design and would be
 bought before anything asked for it, which ADR-016 says not to do.
 
-**The number is not in this record yet.** Whether Darwin's
-`SO_REUSEPORT` favours one listener or spreads across them is a
-measurement, and this container cannot run macOS. So the acceptance test
-now asserts the spread only where a kernel promised it and prints the
-counts on both, and the macOS CI job answers the question. When it does,
-this record gets the number and the decision that follows from it. Until
-then the macOS server is experimental for a reason that is written down.
+**The number, measured on 2026-09-05.** Two hundred connections across
+four listeners bound to one port with `SO_REUSEPORT`:
+
+```
+Linux    47 / 58 / 44 / 51
+Darwin    0 /  0 /  0 / 200
+```
+
+Darwin does not spread. The listener that bound last takes everything,
+which is the BSD behaviour the name `SO_REUSEPORT_LB` exists to
+distinguish itself from on FreeBSD, and Darwin has no such name at all.
+
+That decides the shape of the macOS server rather than merely describing
+it. `quanty serve` binds one listener per worker with `SO_REUSEPORT` and
+gives each worker its own, because ADR-025 measured that this is what
+spreads on Linux. On Darwin the same code is a four worker server that
+runs on one worker, which is the failure ADR-025 rejected, complete
+instead of merely lopsided. So widening `quanty serve` past Linux is not
+a matter of removing a `cfg`: the accept shape has to change with it, to
+the shared listener every worker watches, which kqueue does support and
+which no longer has `EPOLLEXCLUSIVE` to make tidy.
+
+**And the second number is not a number.** The shared listener test
+prints its counts too, and they say [64, 0, 0, 0] on Linux, which looks
+like the same finding and is not one. That test turns its workers in
+order on one thread and `accept_all` drains until it would block, so
+whichever worker runs first takes the whole queue whoever the kernel
+woke. It measures the harness. Whether a shared listener spreads across
+workers that are actually running at the same time is still open on both
+kernels, and answering it needs a test with threads in it. The counts are
+labelled in the output so the next reader does not mistake them for the
+answer.
 
 **The price.** A second backend to keep, about 300 lines of `unsafe` at
 the boundary and 180 of safe Rust above it. The Linux path gained two
