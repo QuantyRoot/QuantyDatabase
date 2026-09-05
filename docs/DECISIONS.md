@@ -35,6 +35,14 @@ project.)
 - [ADR-027](#adr-027-one-executor-thread-owns-the-session-transactions-park) One executor thread owns the session, transactions park
 - [ADR-028](#adr-028-group-commit-is-worth-building-and-not-for-the-fsync) Group commit is worth building, and not for the fsync
 - [ADR-029](#adr-029-reads-go-past-an-open-transaction) Reads go past an open transaction
+- [ADR-030](#adr-030-the-embedded-crate-owns-the-database-and-speaks-statements) The embedded crate owns the database and speaks statements
+- [ADR-031](#adr-031-the-derive-maps-a-struct-to-a-row-and-writes-go-through-the-ast) The derive maps a struct to a row, and writes go through the AST
+- [ADR-032](#adr-032-branch-verbs-on-the-tool-and-no---branch-on-run) Branch verbs on the tool, and no `--branch` on `run`
+- [ADR-033](#adr-033-blobs-are-content-addressed-chunks-in-the-catalog-tree) Blobs are content addressed chunks in the catalog tree
+- [ADR-034](#adr-034-a-blob-is-a-column-type-not-a-value-that-appears-everywhere) A blob is a column type, not a value that appears everywhere
+- [ADR-035](#adr-035-one-writer-is-a-claim-this-file-could-not-back) One writer is a claim this file could not back
+- [ADR-036](#adr-036-a-text-index-is-a-secondary-index-whose-value-is-a-term) A text index is a secondary index whose value is a term
+- [ADR-037](#adr-037-one-reactor-interface-shaped-like-completion-three-backends) One reactor interface, shaped like completion, three backends
 
 ## ADR-001: Rust
 
@@ -1632,3 +1640,68 @@ distinct term in it, so an insert into an indexed table is no longer a
 fixed amount of work; a thousand word document is a thousand entries.
 Deleting is symmetric and pays the same. Reindexing is the only migration
 path for a tokenizer change, and nothing automates it yet.
+
+## ADR-037: One reactor interface, shaped like completion, three backends
+
+The server is epoll and therefore Linux. Running it anywhere else means a
+second reactor, and the shape of the interface decides whether that is one
+more file or one more design.
+
+**Two models, not three.** epoll and kqueue both report readiness: the
+kernel says a socket can be read, and the program does the reading.
+Windows offers three answers and only one of them is both documented and
+able to hold the connection counts this server is measured against.
+
+`WSAPoll` is readiness and would drop straight into the interface that
+exists, and it scans its whole array on every call. The phase 5 criterion
+is ten thousand idle connections; an O(n) poll answers that by walking ten
+thousand entries to find the one that moved. It is the easy one and it
+fails the number this server was accepted on.
+
+`\Device\Afd` is what `mio` reaches for, and it gives epoll semantics on
+Windows. It is also undocumented NT internals whose structures Microsoft
+does not promise to keep. This project explains every line it has, and a
+reactor built on things nobody will write down is the opposite of that.
+
+`IOCP` is the native answer, holds the numbers, and is documented. It is
+completion rather than readiness: the program says "read into this
+buffer", and the kernel says "that read finished" later.
+
+**So the interface is completion shaped, because completion can be built
+on readiness and readiness cannot be built on completion.** On Linux a
+read completion means epoll reported readable and the backend then did
+the `read` itself. On Windows it means what it says. One interface, one
+worker loop, no `cfg` above the boundary, which is the same rule that
+keeps a feature from getting its own storage path.
+
+The reverse would have meant faking readiness on Windows, which is what
+AFD is for, and inventing readiness out of completions costs a buffer and
+a lie in every case.
+
+**The blast radius, counted rather than feared.** `RawFd` appears in two
+files, `poll.rs` and `listener.rs`, 280 lines between them. `conn.rs`
+takes `&mut impl Read` and `&mut impl Write` rather than a socket, so it
+does not care where its bytes came from, and `worker.rs`, `dispatch.rs`
+and `registry.rs` never touch a descriptor. What moves is the buffers:
+they belong to the reactor once a read is something that is posted rather
+than something that is done.
+
+**kqueue first, and not because macOS is more urgent.** It is the proof
+that the interface is not epoll wearing another name. If kqueue fits
+without bending it, IOCP probably fits too; if I start with the hardest
+backend I will shape the interface around it and never find out.
+
+**Acceptance is the acceptance that already exists.** The soak, the crash
+harness and the connection ceiling run per platform, on the platform. A
+backend that has not run them is experimental and the documentation says
+so rather than implying otherwise.
+
+**The price.** Three backends to keep, and the two new ones cannot be run
+in CI beyond building and testing: the ten thousand connection soak wants
+a real machine, so macOS and Windows servers stay experimental until
+somebody runs it there. Buffer ownership moves out of the connection,
+which is a change to code that is currently correct and under a crash
+harness. And the Linux backend gains a layer it did not need, paying for
+portability with one more indirection on the hot path, which will be
+measured against the numbers phase 5 recorded rather than assumed to be
+free.
