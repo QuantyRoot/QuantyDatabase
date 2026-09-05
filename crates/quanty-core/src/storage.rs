@@ -102,14 +102,14 @@ impl FileStorage {
     /// for exactly that, and costs a page read per commit to turn a lost
     /// commit into a refused one where this cannot help.
     fn claim(file: File) -> Result<Self> {
-        match file.try_lock() {
+        match quanty_sys::lock::try_write_lock(&file) {
             Ok(()) => Ok(FileStorage { file, locked: true }),
-            Err(std::fs::TryLockError::WouldBlock) => Err(Error::AlreadyOpen),
+            Err(quanty_sys::lock::LockError::Held) => Err(Error::AlreadyOpen),
             // Locking is unsupported here, or the filesystem refused. That
             // is not a reason to refuse the database; it is a reason to
             // rely on the commit guard, which does not need the kernel's
             // help.
-            Err(std::fs::TryLockError::Error(_)) => Ok(FileStorage {
+            Err(quanty_sys::lock::LockError::Unsupported(_)) => Ok(FileStorage {
                 file,
                 locked: false,
             }),

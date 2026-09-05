@@ -10,4 +10,5 @@ repository.workspace = true
 # Dependency budget for this crate is deliberately tiny (see docs/DECISIONS.md,
 # ADR-008). Think twice, then write an ADR, before adding anything here.
 [dependencies]
+quanty-sys = { path = "../quanty-sys" }
 

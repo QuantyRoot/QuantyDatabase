@@ -1421,8 +1421,21 @@ answered that four times. Raw syscalls mean unsafe in the storage core,
 in the one crate where that is least welcome.
 
 **Resolved: the MSRV moved to 1.89 and the lock exists.**
-`FileStorage::open` takes an exclusive advisory lock and a second writer
-is refused with `AlreadyOpen`. The operating system drops it when the
+`FileStorage::open` takes an exclusive lock and a second writer is
+refused with `AlreadyOpen`.
+
+**It is not one call to the standard library, because a lock does not
+mean the same thing on both platforms.** On unix `flock` is advisory:
+it keeps two writers apart and a reader never notices. On Windows a byte
+range lock is mandatory, so `File::try_lock`, which covers the whole
+file, stopped anybody else reading the database at all. A second handle
+answered `not a quanty database`, because its reads came back refused,
+and "many readers alongside one writer" had quietly become "one process".
+Windows locks a single byte far past anything a database grows into
+instead: nothing reads or writes there, a second writer asking for the
+same byte still conflicts, and readers are untouched. SQLite does the
+same thing for the same reason. Found by the Windows CI job, which is
+the third thing it has caught. The operating system drops it when the
 process ends, killed or not, so a crash leaves no database unopenable.
 
 Readers take no lock, because many readers alongside one writer is the

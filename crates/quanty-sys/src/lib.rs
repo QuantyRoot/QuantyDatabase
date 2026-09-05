@@ -12,6 +12,7 @@
 #![deny(missing_docs)]
 #![deny(unsafe_code)]
 
+pub mod lock;
 pub mod random;
 
 #[cfg(target_os = "linux")]

@@ -64,6 +64,9 @@ wrapped.
 
 ### Fixed
 
+- The writer lock on Windows, where a whole-file lock is mandatory rather
+  than advisory and made the database unreadable by anything else. It
+  locks a byte past the data now.
 - `quanty token` on Windows. Minting read `/dev/urandom`, which is not a
   path there, so no token could be made. The random source is the
   operating system's on every platform now.

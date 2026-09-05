@@ -271,6 +271,42 @@ fn a_second_writer_is_turned_away_at_the_door() {
 }
 
 #[test]
+fn the_writer_lock_does_not_make_the_file_unreadable() {
+    // The property Windows broke, and the reason the lock is not one call
+    // to the standard library. A byte range lock is mandatory there, so
+    // locking the file a database lives in stopped anybody reading that
+    // database at all: a second handle answered `not a quanty database`,
+    // because its reads came back refused. The lock is a byte far past
+    // the data now, which conflicts with a second writer and nothing
+    // else.
+    let dir = TestDir::new();
+    let path = dir.path().join("readable.qdb");
+
+    let writer = Db::create_file(&path).unwrap();
+    let mut tx = writer.begin();
+    tx.put(&encode_key(&[Value::Int(1)]), b"written").unwrap();
+    tx.commit().unwrap();
+
+    // Plain file reads, not through the database at all: what a lock that
+    // covered the data would refuse.
+    let mut raw = std::fs::File::open(&path).expect("the file cannot be opened");
+    let mut head = [0u8; 64];
+    std::io::Read::read_exact(&mut raw, &mut head).expect("the file cannot be read");
+    assert!(head.iter().any(|&b| b != 0), "the header read back empty");
+
+    // and the database agrees while the writer still holds it
+    let reader = Db::open_file_unlocked(&path).expect("a reader was refused");
+    assert_eq!(
+        reader
+            .snapshot()
+            .get(&encode_key(&[Value::Int(1)]))
+            .unwrap()
+            .as_deref(),
+        Some(&b"written"[..])
+    );
+}
+
+#[test]
 fn a_reader_does_not_need_the_writer_to_stand_aside() {
     // Many readers alongside one writer is the model, so a reader takes
     // no lock at all. A shared one would conflict with the writer's.

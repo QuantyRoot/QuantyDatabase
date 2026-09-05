@@ -47,6 +47,9 @@ dependencies = [
 [[package]]
 name = "quanty-core"
 version = "0.3.0"
+dependencies = [
+ "quanty-sys",
+]
 
 [[package]]
 name = "quanty-derive"
