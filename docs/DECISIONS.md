@@ -1070,9 +1070,8 @@ extension surface unstable before 1.0. This one makes the opposite
 promise, because a surface that promises nothing gives no reason to
 prefer it over depending on `quanty-exec` directly, which is the state
 this crate exists to end. Every item `quanty` exports is semver-stable
-from 0.4: breaking it needs a minor bump and a line in the annotated tag
-for that release, which is where this project keeps release notes. A
-CHANGELOG belongs with publishing to crates.io and neither exists yet. Not
+from 0.4: breaking it needs a minor bump and a line in CHANGELOG.md,
+which exists now and did not when this was written. Not
 covered, and said plainly in the crate docs: nothing from `quanty-core`
 or `quanty-exec` is re-exported, so no internal type leaks into an
 embedder's signatures; `Value` and `Outcome` are non-exhaustive and may

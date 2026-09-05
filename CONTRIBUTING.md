@@ -72,6 +72,17 @@ the first line, and check it stays byte identical to the core copy.
 **English and plain ASCII** in code, comments, commit messages and
 documentation, wrapped at 79 columns in the docs.
 
+## The changelog
+
+Anything a user would notice goes in `CHANGELOG.md` under `Unreleased`,
+in the same commit that changes it. Added, Changed, Fixed, Removed, in
+the Keep a Changelog shape. Refactors, tests and internal tidying do not,
+unless they changed what someone using this would see.
+
+Write what it does for them, not what it does to the code, and put the
+number in if there is one: "a gigabyte streams in holding 16 MiB" rather
+than "improved blob memory usage".
+
 ## The gates
 
 Every one of these has to pass before a commit, no exceptions:
