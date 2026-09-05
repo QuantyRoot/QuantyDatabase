@@ -42,6 +42,10 @@ mod imp {
     /// needed and the system's own generator answers.
     const USE_SYSTEM_PREFERRED_RNG: u32 = 0x0000_0002;
 
+    // bcrypt.lib is not among the libraries the standard library links,
+    // so the symbol has to be asked for by name or the linker will not
+    // find it. That was a red Windows job, not a guess.
+    #[link(name = "bcrypt")]
     extern "system" {
         fn BCryptGenRandom(
             algorithm: *mut core::ffi::c_void,
