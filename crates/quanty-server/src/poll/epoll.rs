@@ -1,89 +1,48 @@
-//! The reactor's readiness layer, in safe Rust.
+//! The readiness layer on epoll.
 
 use std::io;
 use std::os::fd::{AsRawFd, OwnedFd, RawFd};
 
+use super::{flag, Event, Interest, Token, Waker, WAKE_TOKEN};
 use crate::sys;
-
-/// What a caller wants to hear about.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Interest(u32);
 
 /// Added to every registration, whatever the caller asked for.
 const ALWAYS: u32 = sys::EPOLLRDHUP;
 
-impl Interest {
-    /// There is something to read, or a connection to accept.
-    pub const READABLE: Interest = Interest(sys::EPOLLIN);
-    /// There is room to write.
-    pub const WRITABLE: Interest = Interest(sys::EPOLLOUT);
-
-    /// Both.
-    pub fn both() -> Interest {
-        Interest(Interest::READABLE.0 | Interest::WRITABLE.0)
+/// Turn an interest into the kernel's bits.
+fn wanted(interest: Interest) -> u32 {
+    let mut bits = ALWAYS;
+    if interest.wants_read() {
+        bits |= sys::EPOLLIN;
     }
-
-    /// Add another interest.
-    pub fn and(self, other: Interest) -> Interest {
-        Interest(self.0 | other.0)
+    if interest.wants_write() {
+        bits |= sys::EPOLLOUT;
     }
+    bits
 }
 
-/// Identifies a registration when its descriptor becomes ready.
+/// Turn the kernel's bits into this crate's.
 ///
-/// Low 32 bits are a slot index, high 32 a generation. A slot reused after
-/// a close would otherwise receive events queued for its predecessor.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Token(pub u64);
-
-impl Token {
-    /// Build a token from a slot and its generation.
-    pub fn new(index: u32, generation: u32) -> Token {
-        Token(((generation as u64) << 32) | index as u64)
+/// `EPOLLHUP` is both halves at once: the peer is gone for reading and the
+/// connection is finished, which is why it sets two flags here.
+fn reported(events: u32) -> u32 {
+    let mut bits = 0;
+    if events & sys::EPOLLIN != 0 {
+        bits |= flag::READABLE;
     }
-
-    /// The slot this refers to.
-    pub fn index(self) -> u32 {
-        self.0 as u32
+    if events & sys::EPOLLOUT != 0 {
+        bits |= flag::WRITABLE;
     }
-
-    /// How many times that slot had been handed out.
-    pub fn generation(self) -> u32 {
-        (self.0 >> 32) as u32
+    if events & sys::EPOLLRDHUP != 0 {
+        bits |= flag::READ_CLOSED;
     }
-}
-
-/// Reserved for the eventfd that wakes a parked worker.
-pub const WAKE_TOKEN: Token = Token(u64::MAX);
-
-/// One descriptor that is ready, and why.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Event {
-    /// Whose registration this was.
-    pub token: Token,
-    flags: u32,
-}
-
-impl Event {
-    /// Whether there is data, a pending connection, or a clean close.
-    pub fn is_readable(&self) -> bool {
-        self.flags & (sys::EPOLLIN | sys::EPOLLRDHUP) != 0
+    if events & sys::EPOLLHUP != 0 {
+        bits |= flag::READ_CLOSED | flag::ERROR;
     }
-
-    /// Whether there is room to write.
-    pub fn is_writable(&self) -> bool {
-        self.flags & sys::EPOLLOUT != 0
+    if events & sys::EPOLLERR != 0 {
+        bits |= flag::ERROR;
     }
-
-    /// Whether the peer closed its writing half.
-    pub fn is_read_closed(&self) -> bool {
-        self.flags & (sys::EPOLLRDHUP | sys::EPOLLHUP) != 0
-    }
-
-    /// Whether the connection failed or hung up.
-    pub fn is_error(&self) -> bool {
-        self.flags & (sys::EPOLLERR | sys::EPOLLHUP) != 0
-    }
+    bits
 }
 
 /// Watches descriptors for one worker thread.
@@ -91,6 +50,7 @@ pub struct Poller {
     epoll: OwnedFd,
     wake: OwnedFd,
     /// Reused across calls. Allocating a wait buffer per iteration would be
+    /// a page fault per turn of the loop for nothing.
     buf: Vec<sys::EpollEvent>,
 }
 
@@ -109,7 +69,7 @@ impl Poller {
             sys::EPOLL_CTL_ADD,
             poller.wake.as_raw_fd(),
             sys::EpollEvent {
-                events: Interest::READABLE.0,
+                events: sys::EPOLLIN,
                 data: WAKE_TOKEN.0,
             },
         )?;
@@ -123,7 +83,7 @@ impl Poller {
             sys::EPOLL_CTL_ADD,
             fd.as_raw_fd(),
             sys::EpollEvent {
-                events: interest.0 | ALWAYS,
+                events: wanted(interest),
                 data: token.0,
             },
         )
@@ -163,7 +123,7 @@ impl Poller {
             sys::EPOLL_CTL_MOD,
             fd.as_raw_fd(),
             sys::EpollEvent {
-                events: interest.0 | ALWAYS,
+                events: wanted(interest),
                 data: token.0,
             },
         )
@@ -181,9 +141,7 @@ impl Poller {
 
     /// Wake this poller from another thread.
     pub fn waker(&self) -> Waker {
-        Waker {
-            fd: self.wake.as_raw_fd(),
-        }
+        Waker::from_raw(self.wake.as_raw_fd())
     }
 
     /// Block until something is ready, then call `f` for each event.
@@ -196,33 +154,19 @@ impl Poller {
                 woken = true;
                 continue;
             }
-            f(Event {
-                token,
-                flags: e.events(),
-            });
+            f(Event::new(token, reported(e.events())));
         }
         if woken {
             // Drain first, then report: a reply posted after the drain
             // leaves the eventfd readable and earns another turn.
             sys::drain(self.wake.as_raw_fd())?;
-            f(Event {
-                token: WAKE_TOKEN,
-                flags: Interest::READABLE.0,
-            });
+            f(Event::new(WAKE_TOKEN, flag::READABLE));
         }
         Ok(n)
     }
 }
 
-/// A handle another thread can use to wake a parked worker.
-#[derive(Debug, Clone, Copy)]
-pub struct Waker {
-    fd: RawFd,
-}
-
-impl Waker {
-    /// Wake the worker.
-    pub fn wake(&self) -> io::Result<()> {
-        sys::notify(self.fd)
-    }
+/// Post a wakeup to the eventfd a poller is watching.
+pub(super) fn wake(fd: RawFd) -> io::Result<()> {
+    sys::notify(fd)
 }

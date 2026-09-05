@@ -1,6 +1,6 @@
 //! What the readiness layer promises, checked rather than claimed.
 
-#![cfg(target_os = "linux")]
+#![cfg(any(target_os = "linux", target_os = "macos"))]
 
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -31,10 +31,20 @@ fn drain_once(p: &mut Poller, timeout_ms: i32) -> Vec<(Token, bool, bool, bool)>
     out
 }
 
-/// The kernel's struct is packed on x86_64 and not elsewhere. Getting it
+/// The event struct is different on every one of these, and getting it
+/// wrong compiles: the token comes back as rubbish rather than the value
+/// that went in, which is what this reads. epoll's is packed on x86_64
+/// and not elsewhere; kqueue's is a different struct that happens to hold
+/// the token in a different field.
 #[test]
 fn layout_matches_the_kernel() {
-    let expected = if cfg!(target_arch = "x86_64") { 12 } else { 16 };
+    let expected = if cfg!(target_os = "macos") {
+        "kevent, 32 bytes, token in udata"
+    } else if cfg!(target_arch = "x86_64") {
+        "epoll_event, packed, 12 bytes"
+    } else {
+        "epoll_event, 16 bytes"
+    };
     let mut p = Poller::new(8).expect("poller");
     let (_client, server) = connected_pair();
     let token = Token(0x0123_4567_89ab_cdef);
@@ -44,7 +54,7 @@ fn layout_matches_the_kernel() {
     assert_eq!(
         evs[0].0, token,
         "token came back wrong, which means the event struct layout is \
-         wrong for this architecture (expected {expected} bytes)"
+         wrong for this platform (expected {expected})"
     );
 }
 

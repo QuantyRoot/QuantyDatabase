@@ -1,6 +1,6 @@
 //! Accept path: distribution across workers, stale tokens, descriptor accounting.
 
-#![cfg(target_os = "linux")]
+#![cfg(any(target_os = "linux", target_os = "macos"))]
 
 use std::io::Write;
 use std::net::{TcpListener, TcpStream};
@@ -81,8 +81,13 @@ fn a_closed_peer_is_dropped_not_held() {
     assert_eq!(w.len(), 0, "still holding {} dead connections", w.len());
 }
 
-/// EPOLLEXCLUSIVE wakes one worker per connection. Every worker must still
-/// be able to accept, or the listener is effectively single threaded.
+/// Every worker must be able to accept from a shared listener, or the
+/// listener is effectively single threaded.
+///
+/// How it gets there differs. `EPOLLEXCLUSIVE` wakes one worker per
+/// connection; kqueue has no such thing and wakes all of them, so all but
+/// one find nothing and get `WouldBlock`. What is asserted here is what
+/// both promise: every connection is accepted exactly once, by somebody.
 #[test]
 fn several_workers_share_one_listener() {
     let (listener, addr) = shared_listener();
@@ -224,11 +229,18 @@ fn reuseport_spreads_where_a_shared_listener_does_not() {
     assert_eq!(total, 200, "accepted {total} of 200, spread {counts:?}");
     println!("reuseport spread: {counts:?}");
 
+    // The spread is a Linux promise, not a POSIX one. Darwin has the
+    // option and gives it different delivery, so asserting the Linux
+    // property there would be asserting something no kernel promised.
+    // The count is printed on every platform so the macOS job answers the
+    // question instead of this comment guessing at it. ADR-038.
     let worst = counts.iter().copied().max().expect("counts");
-    assert!(
-        worst * 2 <= total,
-        "one worker took {worst} of {total}, which is not a spread: {counts:?}"
-    );
+    if cfg!(target_os = "linux") {
+        assert!(
+            worst * 2 <= total,
+            "one worker took {worst} of {total}, which is not a spread: {counts:?}"
+        );
+    }
 
     drop(clients);
     for w in workers.iter_mut() {

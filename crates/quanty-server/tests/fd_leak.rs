@@ -1,7 +1,7 @@
 //! Descriptor accounting. One test in its own binary, because a process-wide
 //! count is meaningless while other tests open sockets on other threads.
 
-#![cfg(target_os = "linux")]
+#![cfg(any(target_os = "linux", target_os = "macos"))]
 
 use std::io::Write;
 use std::net::{TcpListener, TcpStream};
@@ -11,8 +11,21 @@ use std::time::{Duration, Instant};
 
 use quanty_server::{Idle, Interest, Poller, Token, Worker};
 
+/// Count this process's open descriptors.
+///
+/// Both kernels expose the same thing under different names, and neither
+/// name exists on the other: Linux has procfs, Darwin has the fdesc
+/// filesystem. The count includes the directory handle this call opens,
+/// which cancels out because every measurement here is a difference.
+#[cfg(target_os = "linux")]
 fn open_fds() -> usize {
     std::fs::read_dir("/proc/self/fd").expect("procfs").count()
+}
+
+/// See the Linux version.
+#[cfg(target_os = "macos")]
+fn open_fds() -> usize {
+    std::fs::read_dir("/dev/fd").expect("fdescfs").count()
 }
 
 fn listener() -> (Arc<TcpListener>, std::net::SocketAddr) {

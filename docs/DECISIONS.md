@@ -43,6 +43,7 @@ project.)
 - [ADR-035](#adr-035-one-writer-is-a-claim-this-file-could-not-back) One writer is a claim this file could not back
 - [ADR-036](#adr-036-a-text-index-is-a-secondary-index-whose-value-is-a-term) A text index is a secondary index whose value is a term
 - [ADR-037](#adr-037-one-reactor-interface-shaped-like-completion-three-backends) One reactor interface, shaped like completion, three backends
+- [ADR-038](#adr-038-kqueue-behind-the-same-interface-minus-the-exclusive-wakeup) kqueue behind the same interface, minus the exclusive wakeup
 
 ## ADR-001: Rust
 
@@ -1725,3 +1726,66 @@ harness. And the Linux backend gains a layer it did not need, paying for
 portability with one more indirection on the hot path, which will be
 measured against the numbers phase 5 recorded rather than assumed to be
 free.
+
+## ADR-038: kqueue behind the same interface, minus the exclusive wakeup
+
+`Poller` was written against epoll and its bits leaked through the
+interface: `Interest` held `EPOLLIN`, `Event` tested `EPOLLRDHUP`. A
+second backend cannot be added under that, so the shared types now carry
+flags of this crate's own and each backend translates both ways. Nothing
+above `poll.rs` changed, which is the claim ADR-037 made about the blast
+radius, now checked rather than estimated.
+
+Three things do not map, and each is decided here rather than left to be
+rediscovered.
+
+**Interest is two registrations, not one bitmask.** `EVFILT_READ` and
+`EVFILT_WRITE` are separate entries under the same descriptor, so
+`register` and `reregister` collapse into one operation: add the filters
+that are wanted, delete the ones that are not, and treat `ENOENT` on the
+delete as success. The caller passes the set it wants and the kernel is
+made to agree with it, which is why there is no `EPOLL_CTL_ADD` versus
+`EPOLL_CTL_MOD` distinction on this side and no state to keep about which
+half is currently registered.
+
+**One descriptor can report twice in one wait.** `epoll_wait` returns a
+descriptor once with its bits merged; `kevent` returns one event per
+filter. Collapsing them would cost a scan of the whole result on every
+turn of every worker, to tidy a case that only arises when a connection
+is readable and writable in the same instant. The worker loop is
+idempotent per token, so the events are passed through and the surface
+gains a documented difference instead of the hot path gaining a loop.
+This is a deliberate asymmetry and the first one in this interface.
+
+**`EPOLLEXCLUSIVE` has no counterpart, and neither does the thing that
+replaced it.** ADR-025 measured that a shared listener under
+`EPOLLEXCLUSIVE` favours one worker, and moved the production path to
+`SO_REUSEPORT`, which spreads because Linux hashes the four-tuple. Darwin
+has `SO_REUSEPORT` and does not promise that hashing; FreeBSD spells the
+balancing variant `SO_REUSEPORT_LB` and Darwin has no equivalent name at
+all. So on macOS *both* mechanisms for spreading accepts are missing, not
+just the one the handover named.
+
+What is built is the honest version: `register_listener` takes `shared`
+and cannot honour it, every worker watching a shared listener wakes, and
+all but one get `WouldBlock` from `accept`, which `accept_all` already
+handles. That is correct and wasteful. The alternative, one thread that
+accepts and hands the descriptor on, is a second design and would be
+bought before anything asked for it, which ADR-016 says not to do.
+
+**The number is not in this record yet.** Whether Darwin's
+`SO_REUSEPORT` favours one listener or spreads across them is a
+measurement, and this container cannot run macOS. So the acceptance test
+now asserts the spread only where a kernel promised it and prints the
+counts on both, and the macOS CI job answers the question. When it does,
+this record gets the number and the decision that follows from it. Until
+then the macOS server is experimental for a reason that is written down.
+
+**The price.** A second backend to keep, about 300 lines of `unsafe` at
+the boundary and 180 of safe Rust above it. The Linux path gained two
+translation functions on the way in and out of every event, which are
+branches on constants and will be measured against phase 5's numbers
+rather than assumed free. And `bsd.rs` is Apple's kqueue only: FreeBSD
+widened `struct kevent` with a `uint64_t ext[4]` and numbers `EVFILT_USER`
+differently, so a module claiming both would be two layouts wearing one
+name. Nothing builds FreeBSD here, so nothing here claims it.

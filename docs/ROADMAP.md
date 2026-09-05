@@ -533,6 +533,13 @@ loop is epoll, hand written, and kqueue and IOCP are each a second and a
 third one of those. `quanty connect` is a plain TCP client and runs
 everywhere, so a database served from Linux can be used from anywhere.
 
+The readiness layer now has a kqueue backend, and the reactor's own tests
+run on macOS in CI rather than only compiling there (ADR-038). That is
+not the same as the server running there: `quanty serve` is still gated
+to Linux, and the soak, the crash harness and the connection ceiling have
+never run on macOS. Until they have, the word for the macOS reactor is
+experimental.
+
 ## Later / unscheduled
 
 Live query subscriptions, Postgres wire protocol, vector index, real merge

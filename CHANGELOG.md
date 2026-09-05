@@ -41,9 +41,17 @@ wrapped.
 - Index suggestions: the columns a scan narrowed on without an index,
   worst first by rows walked. Following one took a benchmark from 7.6s to
   45ms.
+- A kqueue backend for the reactor, so the server builds and its
+  readiness tests run on macOS as well as Linux. The waker is an
+  `EVFILT_USER` filter rather than an eventfd, and interest is two
+  registrations rather than one bitmask (ADR-038).
 
 ### Changed
 
+- `Interest` and `Event` carry this crate's own readiness flags. They used
+  to hold epoll's bits, which meant the interface was epoll wearing a
+  Rust name and a second backend could not fit under it. The public
+  methods are unchanged.
 - The tokenizer treats a word as a run of whatever Unicode calls letters
   and digits, lowercased the same way. It was ASCII, which did not merely
   fail to stem but shredded any text with an accent in it. An index built
@@ -64,6 +72,10 @@ wrapped.
 
 ### Fixed
 
+- The encoded socket address on macOS, which was written in Linux's
+  layout. The BSDs spend the first byte on the structure's own length and
+  leave one byte for the family, and `AF_INET6` is 30 there rather than
+  10. It compiled, which is why it survived this long.
 - The writer lock on Windows, where a whole-file lock is mandatory rather
   than advisory and made the database unreadable by anything else. It
   locks a byte past the data now.

@@ -17,3 +17,8 @@ pub mod random;
 
 #[cfg(target_os = "linux")]
 pub mod linux;
+
+// One attribute, one item. The Windows job found three places where this
+// was written above the wrong line, so it is worth saying again.
+#[cfg(target_os = "macos")]
+pub mod bsd;
