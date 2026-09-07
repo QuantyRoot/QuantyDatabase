@@ -3,9 +3,35 @@
 One file, no runtime, no service to configure. Download it, make it
 executable, put it somewhere on your `PATH`.
 
-There is no package in apt, AUR, homebrew or winget yet, and no install
-script that pipes into a shell. Those come after the binaries have been
-out long enough to be worth packaging.
+The fastest way, on Linux or macOS:
+
+```
+curl -fsSL https://quantyroot.github.io/QuantyDatabase/install.sh | sh
+```
+
+It works out which file it wants, checks it against the release's own
+`SHA256SUMS`, runs it once before installing it, and puts it in
+`/usr/local/bin`. Set `PREFIX` to install somewhere you own and `VERSION`
+to pin one. It writes nothing else.
+
+Homebrew, on macOS or Linux:
+
+```
+brew tap quantyroot/quantydb https://github.com/QuantyRoot/QuantyDatabase
+brew install quantydb
+```
+
+Debian, Ubuntu and anything else with apt:
+
+```
+sudo apt install ./quantydb_0.4.0_amd64.deb
+```
+
+Fedora, RHEL and anything else with dnf:
+
+```
+sudo dnf install ./quantydb-0.4.0.x86_64.rpm
+```
 
 The AUR one is written and cannot be submitted: registration on
 aur.archlinux.org has been paused since September 2026 while they deal

@@ -17,6 +17,12 @@ wrapped.
 
 ### Added
 
+- `install.sh`, which works out which build it wants, checks it against
+  the release's own `SHA256SUMS`, runs it once before installing it, and
+  puts it on the PATH. A file that matches its checksum and still does not
+  start is caught by the second check rather than installed.
+- A Homebrew formula, in this repository rather than a tap of its own, and
+  a `.deb` built around the released binary.
 - `docs/USING.md`, the tour from an empty file to a running server: tables,
   writing, reading, search, history, branches, the SQL front end, the
   embedded crate and the server. Every example in it was run and carries
