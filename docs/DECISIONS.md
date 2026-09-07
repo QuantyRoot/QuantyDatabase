@@ -47,6 +47,7 @@ project.)
 - [ADR-039](#adr-039-spreading-accepts-is-the-servers-job-not-the-reactors) Spreading accepts is the server's job, not the reactor's
 - [ADR-040](#adr-040-a-release-is-five-binaries-and-the-linux-one-is-not-static) A release is five binaries, and the Linux one is not static
 - [ADR-041](#adr-041-a-signal-sets-a-flag-and-every-shutdown-stops-being-a-crash) A signal sets a flag, and every shutdown stops being a crash
+- [ADR-042](#adr-042-the-updater-installs-a-file-and-proves-it-before-it-does) The updater installs a file, and proves it before it does
 
 ## ADR-001: Rust
 
@@ -829,9 +830,9 @@ two core test; it is a one core test with two idle helpers, and it would
 fail for a reason that has nothing to do with the reactor.
 
 So `SO_REUSEPORT` is now justified by a measurement rather than by
-preference. It landed in the same session: five hundred connections across
-the same three workers went 155 / 173 / 172, because the kernel hashes the
-four-tuple instead of waking whoever was first in the queue.
+preference. It landed with that measurement: five hundred connections
+across the same three workers went 155 / 173 / 172, because the kernel
+hashes the four-tuple instead of waking whoever was first in the queue.
 
 The price is four more functions at the boundary ADR-023 opened, `socket`,
 `setsockopt`, `bind` and `listen`, plus a `sockaddr` encoded by hand. That
@@ -2092,3 +2093,66 @@ already sleeping.
 it is `SetConsoleCtrlHandler`, which is a different shape and a handler on
 its own thread. `quanty serve` does not run on Windows yet, so the module
 is `cfg(unix)` and the question waits for IOCP (ADR-037).
+
+## ADR-042: The updater installs a file, and proves it before it does
+
+`quanty update` is two problems wearing one name. Getting a release is a
+network problem: HTTPS, and under ADR-020 that means TLS written here, so
+it waits. Installing one is a file problem and it does not have to wait.
+
+So the command lands as `update --file`, taking a binary that is already
+on the machine. When TLS exists, fetching produces a file and hands it to
+this same code: the download is new, the install is not. Splitting it the
+other way round, waiting for both, would have meant shipping a release
+people update by moving files with `mv` and hoping.
+
+**Running the candidate does not prove it is whole, which is a thing the
+test found rather than the design.** The first version checked the file by
+executing it and requiring it to answer `about` with a version. That
+catches an error page saved under the right name, a binary for another
+architecture, and the wrong program entirely. Then a test cut a binary to
+a third of its length and it answered `about` quite happily: the header
+and the pages the `about` path touches were still there, and the missing
+tail would have surfaced later as a crash in whichever command reached it
+first.
+
+So the length is checked against what the file says about itself. Every
+format ships this: ELF has section and program headers, Mach-O has segment
+commands, PE has a section table, and each records where its own last byte
+belongs. The file must be at least that long. A binary one byte short is
+refused, which is the test that proves the length being read is the whole
+file and not merely something smaller than it.
+
+Longer than the headers describe is accepted. That is padding, a
+signature, or something appended, and none of those is damage.
+
+An unknown format is not refused. Not being able to check is not the same
+as having found something wrong, and refusing everything unrecognised
+would make the updater useless the first time a platform is added.
+
+**The order is: check, stage, run, ask, replace.** Nothing touches the
+installed binary until a copy of the candidate is sitting next to it, has
+been made executable, and has said which version it is. The copy is
+staged in the same directory rather than a temporary one, because the
+last step has to be a rename and a rename does not cross filesystems. The
+old binary is kept as `.old`, since the fastest way back from a bad update
+should not involve a download.
+
+**What it will not do.** It will not ask for privileges. A binary in
+`/usr/local/bin` belongs to root, and an updater that reaches for `sudo`
+on its own is a way to be surprised; it says which directory it cannot
+write and stops. It does not refuse a downgrade either, because going back
+a version deliberately is a real thing to want, and it says out loud when
+the candidate is older or the same.
+
+**The price.** Header readers for three executable formats, about ninety
+lines, which is three formats' worth of layout that has to stay right. The
+defence is that each is only asked one question, the fields involved have
+not moved in decades, and the test that cuts one byte off runs on all
+three platforms in CI, so a wrong offset fails on the runner that uses
+that format.
+
+A checksum is still the only thing that proves a file is *the* file rather
+than merely a whole one. `--sha256` takes one, and without it the digest
+is printed with a note saying it describes what arrived rather than what
+was published.

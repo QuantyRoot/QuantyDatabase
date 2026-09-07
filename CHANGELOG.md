@@ -17,6 +17,11 @@ wrapped.
 
 ### Added
 
+- `quanty update --file <binary>` installs a binary you already have over
+  the running one, keeping the old one as `.old`. It refuses a file that
+  is shorter than its own headers describe, which is what half a download
+  looks like, and refuses one that will not run and report a version.
+  Fetching a release itself needs TLS and waits for it (ADR-042).
 - `quanty serve` says that the wire is not encrypted, every time. On a
   loopback address that is one line; on any other it is a block that says
   tokens cross in the clear, and says so more loudly still when no token

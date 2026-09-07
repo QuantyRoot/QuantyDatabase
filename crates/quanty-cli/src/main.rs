@@ -43,6 +43,7 @@ usage:
   quanty token <label>
   quanty connect <addr> [statement] [--token <t>] [--sql]
   quanty about
+  quanty update --file <binary> [--sha256 <hex>] [--yes]
 
   create   make an empty database
   import   read a sqlite file and write it into a new quanty database
@@ -64,12 +65,18 @@ usage:
   connect  talk to a running server; with a statement it runs that one,
              without it reads statements from stdin, as shell does
   about    what this is, who made it, and what it does not depend on
+  update   replace this binary with another one you already have
 
   --sql    read the statement in sql rather than qql
 
   deleting a branch is `quanty run <db> \"drop branch <name>\"`
 
 connect  --token    the token to show, if the server requires one
+
+update   --file     the binary to install. Fetching a release needs TLS,
+                    which is not written yet, so this is the way in
+         --sha256   refuse the file unless it hashes to this
+         --yes      do not ask first
 
 serve    --listen   address to bind, default 127.0.0.1:7878
          --workers  event loop threads, default one per core
@@ -78,6 +85,7 @@ serve    --listen   address to bind, default 127.0.0.1:7878
 ";
 
 mod client;
+mod update;
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -143,6 +151,9 @@ struct Flags {
     workers: Option<usize>,
     tokens: Option<String>,
     token: Option<String>,
+    file: Option<String>,
+    sha256: Option<String>,
+    yes: bool,
     elchi: bool,
 }
 
@@ -156,6 +167,8 @@ fn split_flags(args: &[String]) -> Result<(Vec<&str>, Flags), Failure> {
                 "--listen" => flags.listen = Some(arg.clone()),
                 "--tokens" => flags.tokens = Some(arg.clone()),
                 "--token" => flags.token = Some(arg.clone()),
+                "--file" => flags.file = Some(arg.clone()),
+                "--sha256" => flags.sha256 = Some(arg.clone()),
                 "--workers" => {
                     let n = arg
                         .parse::<usize>()
@@ -176,12 +189,14 @@ fn split_flags(args: &[String]) -> Result<(Vec<&str>, Flags), Failure> {
             continue;
         }
         match arg.as_str() {
-            "--listen" | "--workers" | "--tokens" | "--token" | "--at" => {
+            "--listen" | "--workers" | "--tokens" | "--token" | "--at" | "--file" | "--sha256" => {
                 expect = Some(match arg.as_str() {
                     "--listen" => "--listen",
                     "--tokens" => "--tokens",
                     "--token" => "--token",
                     "--at" => "--at",
+                    "--file" => "--file",
+                    "--sha256" => "--sha256",
                     _ => "--workers",
                 })
             }
@@ -196,6 +211,7 @@ fn split_flags(args: &[String]) -> Result<(Vec<&str>, Flags), Failure> {
                 ))
             }
             "--elchi" => flags.elchi = true,
+            "--yes" | "-y" => flags.yes = true,
             "--dry-run" => flags.dry_run = true,
             "--strict" => flags.strict = true,
             "--sql" => flags.sql = true,
@@ -250,6 +266,10 @@ fn run(args: &[String]) -> Result<(), Failure> {
         "about" => match rest {
             [] => about(),
             _ => Err(usage("about takes nothing")),
+        },
+        "update" => match rest {
+            [] => update::update(flags.file.as_deref(), flags.sha256.as_deref(), flags.yes),
+            _ => Err(usage("update takes no positional arguments; use --file")),
         },
         "connect" => match rest {
             [addr] => client::connect(addr, None, flags.token.as_deref(), flags.sql),

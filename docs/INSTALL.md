@@ -76,14 +76,30 @@ The binary lands in `target/release/quanty`.
 
 ## Updating
 
-`quanty update --file <binary>` replaces the running tool with one you
-already have on the machine, after checking that it is a working quanty
-and telling you which version it is about to become.
+Download the new binary and point the tool at it:
+
+```
+curl -LO https://github.com/QuantyRoot/QuantyDatabase/releases/latest/download/quanty-linux-x86_64
+quanty update --file quanty-linux-x86_64
+```
+
+It checks the file before it replaces anything: that the file is as long
+as its own headers say it should be, so half a download is caught rather
+than installed, and that it runs and reports a version. It prints that
+version and the checksum and asks before going ahead. The binary it
+replaces is kept next to the new one as `quanty.old`.
+
+Pass `--sha256 <hex>` from the release's `SHA256SUMS` to require a
+particular file rather than merely a whole one, and `--yes` to skip the
+question.
 
 It does not fetch anything yet. Pulling a release off GitHub needs HTTPS,
 and this project writes what it depends on (ADR-020), so the network path
-arrives with TLS. Until then: download the new file, point `update` at
-it, or let a package manager do it once there are packages.
+arrives with TLS (ADR-042).
+
+If the tool lives somewhere this user cannot write, such as
+`/usr/local/bin`, run the update with the rights to change it. It will not
+reach for `sudo` on its own.
 
 ## What runs where
 
