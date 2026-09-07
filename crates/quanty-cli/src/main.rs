@@ -532,9 +532,9 @@ fn is_terminal() -> bool {
 /// overclaim, and nobody has to update it on every commit.
 pub const CRATES: usize = 14;
 /// At least this many test functions exist.
-pub const TESTS: usize = 500;
+pub const TESTS: usize = 550;
 /// At least this many decision records exist.
-pub const DECISIONS: usize = 36;
+pub const DECISIONS: usize = 39;
 /// Exactly this many packages that are not this workspace.
 pub const FOREIGN_DEPENDENCIES: usize = 0;
 
@@ -558,7 +558,7 @@ fn about() -> Result<(), Failure> {
         "  decisions      {DECISIONS}+ written down, with their costs"
     ))?;
     emit("")?;
-    emit("The checksum, the locks, the epoll layer, sha256 and the wire")?;
+    emit("The checksum, the locks, the reactor, sha256 and the wire")?;
     emit("protocol are written out here rather than pulled in. Every one of")?;
     emit("those choices is argued in docs/DECISIONS.md, cost included.")?;
     emit("")?;

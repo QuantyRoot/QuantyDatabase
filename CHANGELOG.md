@@ -57,11 +57,19 @@ wrapped.
   one turned them in order on a single thread, where whoever ran first
   drained the queue whoever the kernel woke, so it measured the loop.
   Nothing had driven the accept path concurrently until now.
+- A release workflow. A tag builds five binaries, each tested on the
+  runner that produced it, with checksums, and attaches them. CI does not
+  run on tags, so the release runs the tests itself rather than trusting
+  that somebody did. `docs/INSTALL.md` says which file to take.
 - ADR-039, which records the acceptor thread a macOS server would need,
   where it belongs and what it costs, and does not build it. The finding
   worth keeping is that spreading accepts is the server's job rather than
   the reactor's: no kernel picks a worker, so that policy cannot live
   under an interface meant to hide which kernel answered.
+- ADR-040, on what a release contains. The Linux binary links against
+  glibc rather than being static, because musl measured about 2.2x slower
+  on the read path, twice, with the printing ruled out. The static build
+  ships beside it for machines whose glibc is too old.
 
 ### Changed
 

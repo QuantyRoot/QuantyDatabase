@@ -45,6 +45,7 @@ project.)
 - [ADR-037](#adr-037-one-reactor-interface-shaped-like-completion-three-backends) One reactor interface, shaped like completion, three backends
 - [ADR-038](#adr-038-kqueue-behind-the-same-interface-minus-the-exclusive-wakeup) kqueue behind the same interface, minus the exclusive wakeup
 - [ADR-039](#adr-039-spreading-accepts-is-the-servers-job-not-the-reactors) Spreading accepts is the server's job, not the reactor's
+- [ADR-040](#adr-040-a-release-is-five-binaries-and-the-linux-one-is-not-static) A release is five binaries, and the Linux one is not static
 
 ## ADR-001: Rust
 
@@ -1955,3 +1956,72 @@ run rather than a paragraph someone can argue with.
   one, on a code base whose rule is that a feature does not get its own
   path. The defence is that the other two stay exactly as they are and
   this one is only reached where the kernel leaves no choice.
+
+## ADR-040: A release is five binaries, and the Linux one is not static
+
+Elchi wants binaries people can download, then packages: apt, AUR,
+homebrew, winget. The packages come later; this is the part underneath
+them, and it settles two things that would otherwise be settled by
+whoever cut the first tag at midnight.
+
+**The release tests before it builds.** CI runs on pushes to `main` and
+on pull requests, and not on tags, so a tag arrives at the release
+workflow untested. Every build job therefore runs the workspace tests on
+its own runner before it builds anything. What you download was tested on
+the machine that produced it, and a tag whose number disagrees with the
+workspace version fails before either happens.
+
+**Five files, named for platforms rather than target triples.** Linux
+x86_64, the same again static, macOS on both architectures, Windows
+x86_64. The triple is precise and means nothing to someone who wants to
+try a database, and the file that lands in a downloads folder should say
+what machine it is for.
+
+**The Linux binary links against glibc, and that was measured.** The
+tempting answer is musl: one static file that starts on any distribution,
+with no version floor to explain. It builds here without a C toolchain,
+because there is no C to compile, and it is 1.9 MB.
+
+Then it was timed against the same source built for glibc, alternating
+runs on one container, 20000 rows loaded once and read back:
+
+```
+300 scans, no output           glibc  3.25 / 3.41 s
+                               musl   7.04 / 7.26 s
+300 queries, 6000 rows out     glibc  3.16 / 3.23 / 3.30 s
+                               musl   7.38 / 7.42 / 7.51 s
+```
+
+About 2.2x, on both shapes, with no overlap between the two sets. The
+second shape was run first and the output was suspected, since musl's
+stdio is slower than glibc's; the first shape prints nothing at all and
+the gap did not move, so it is the work and not the printing.
+
+The write path, 20000 inserts each in its own commit, showed nothing:
+5.39 / 5.61 against 6.61 / 5.50. It writes 305 MB and the disk decides
+it, which is a good reminder that a benchmark that touches a disk will
+tell you about the disk.
+
+So the default is glibc, built on the oldest runner GitHub still offers,
+and the static build ships beside it for machines older than that. Two
+files, one sentence each, and the sentence has a number in it.
+
+**What that costs.** A glibc floor: a binary built against 2.35 refuses
+to start on anything older and says `GLIBC_2.35` and nothing helpful.
+That is what the second file is for, and the install page says which
+message means which file. Shipping two Linux binaries also means a person
+has to choose, which is the thing a single static file would have
+avoided. A 2.2x read penalty is too much to pay for not asking.
+
+**Unmeasured, and named as such.** The allocator case where musl is
+supposed to hurt most is many threads allocating at once, which is
+`quanty serve` and not the tool. That was not measured, because measuring
+it means a machine with cores to spare, and it does not change the
+decision: the single threaded path already argues for glibc. If the
+server is ever measured on both, this record gets the second number.
+
+**No self-update.** `quanty update` was on the list and is not built. A
+database that rewrites its own binary is a way to lose an afternoon, and
+once packages exist, the package manager should be doing it. The install
+page says to download the new file over the old one, which is the whole
+procedure.

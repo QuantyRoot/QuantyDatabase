@@ -46,7 +46,7 @@ to the job instead of making you migrate between databases.
 **Written by one person, funded by nobody, and it depends on nothing.** The
 lock file holds this workspace and not one package besides. No company
 behind it, no sponsors, no roadmap written by someone else. If that sounds
-like a constraint, it is: the checksum, the locks, the epoll layer, the
+like a constraint, it is: the checksum, the locks, the reactor, the
 SHA-256 and the wire protocol are all written out here rather than pulled
 in, and each of those choices is argued and costed in
 [DECISIONS.md](docs/DECISIONS.md).
@@ -142,6 +142,28 @@ the rest of that argument.
 
 ---
 
+## Install
+
+One file, no runtime, nothing to configure. Every release attaches a
+binary per platform, each built and tested on the platform it names.
+
+```
+curl -LO https://github.com/QuantyRoot/QuantyDatabase/releases/latest/download/quanty-linux-x86_64
+chmod +x quanty-linux-x86_64
+sudo mv quanty-linux-x86_64 /usr/local/bin/quanty
+quanty about
+```
+
+From source needs Rust 1.89 and nothing else: `cargo build --release -p
+quanty-cli`. There is no C toolchain to install and no system library to
+find.
+
+macOS and Windows binaries are there too, and there is no package in apt,
+AUR, homebrew or winget yet. Checksums, Gatekeeper, and which of the two
+Linux builds to take are in [INSTALL.md](docs/INSTALL.md).
+
+---
+
 ## Planned features
 
 ### Core
@@ -152,7 +174,7 @@ the rest of that argument.
 
 ### Server
 - `quanty serve` turns any db file into a network database
-- An event loop written on epoll directly, no async runtime
+- An event loop written on epoll and kqueue directly, no async runtime
 - Small versioned binary protocol, token auth, `quanty connect` to speak it
 
 ### SQLite compatibility
@@ -218,11 +240,11 @@ quanty serve app.qdb --tokens tokens.txt
 quanty connect 127.0.0.1:7878 "get users { name }" --token <token>
 ```
 
-The server is one event loop per worker on epoll, with the connection
-parked rather than blocked while a statement runs, and statements that
-arrive together share one commit and one fsync. Readers do not queue behind
-someone else's open transaction. What that costs and what it buys is
-measured in [ADR-028](docs/DECISIONS.md), not asserted.
+The server is one event loop per worker, on epoll or kqueue, with the
+connection parked rather than blocked while a statement runs, and
+statements that arrive together share one commit and one fsync. Readers do
+not queue behind someone else's open transaction. What that costs and what
+it buys is measured in [ADR-028](docs/DECISIONS.md), not asserted.
 
 The importer reads what SQLite writes, including tables without rowids,
 uncheckpointed write-ahead logs, text in utf-16 and columns added by a

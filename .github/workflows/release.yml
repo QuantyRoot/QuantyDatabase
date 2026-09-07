@@ -1,0 +1,145 @@
+name: release
+
+# CI runs on pushes to main and on pull requests, and not on tags. A tag
+# therefore arrives here untested, so every build job runs the same tests
+# the portable CI job runs before it builds anything. What you download was
+# tested on the machine it was built on.
+#
+# `workflow_dispatch` does everything except publish, so this file can be
+# exercised without spending a version number on it.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # glibc, and the oldest runner GitHub still offers, because a
+          # binary linked against a newer glibc refuses to start on an
+          # older one and says almost nothing about why.
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            name: quanty-linux-x86_64
+          # Static, for anything older than that runner. It costs about
+          # 2.2x on the read path, measured, which is why it is the second
+          # file and not the first. See ADR-040.
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-musl
+            name: quanty-linux-x86_64-static
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            name: quanty-macos-arm64
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            name: quanty-macos-x86_64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            name: quanty-windows-x86_64
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@1.98.0
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+
+      # A tag that does not match the version in the workspace produces a
+      # release whose binaries report a different number than its name.
+      - name: the tag is the version
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          tag="${GITHUB_REF#refs/tags/v}"
+          version=$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)
+          if [ "$tag" != "$version" ]; then
+            echo "tag v$tag does not match workspace version $version"
+            exit 1
+          fi
+          echo "v$tag matches the workspace"
+
+      - name: tests
+        run: cargo test --workspace --locked
+
+      - name: build
+        run: cargo build --release --locked -p quanty-cli --target ${{ matrix.target }}
+
+      # Named for the platform rather than the target triple, and carrying
+      # its own checksum, so a downloaded file can be checked without
+      # fetching a second one.
+      - name: name it and check it
+        shell: bash
+        run: |
+          mkdir -p dist
+          if [ "${{ matrix.os }}" = "windows-latest" ]; then
+            cp "target/${{ matrix.target }}/release/quanty.exe" "dist/${{ matrix.name }}.exe"
+            cd dist && sha256sum "${{ matrix.name }}.exe" > "${{ matrix.name }}.exe.sha256"
+          else
+            cp "target/${{ matrix.target }}/release/quanty" "dist/${{ matrix.name }}"
+            cd dist
+            if command -v sha256sum > /dev/null; then
+              sha256sum "${{ matrix.name }}" > "${{ matrix.name }}.sha256"
+            else
+              shasum -a 256 "${{ matrix.name }}" > "${{ matrix.name }}.sha256"
+            fi
+          fi
+          ls -l
+
+      - name: it runs and says who it is
+        shell: bash
+        run: |
+          if [ "${{ matrix.os }}" = "windows-latest" ]; then
+            ./dist/${{ matrix.name }}.exe about
+          elif [ "${{ matrix.target }}" = "x86_64-apple-darwin" ]; then
+            echo "cross built on arm64, not run here"
+          else
+            ./dist/${{ matrix.name }} about
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: dist/*
+
+  publish:
+    name: attach to the release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: one checksum file for all of them
+        run: |
+          cd dist
+          cat *.sha256 > SHA256SUMS
+          rm -f ./*.sha256
+          ls -l
+
+      # gh is on the runner already. A release is rare enough that another
+      # action is a dependency bought for five minutes a month.
+      - name: create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${GITHUB_REF#refs/tags/}"
+          gh release create "$tag" \
+            --title "$tag" \
+            --notes "See CHANGELOG.md for what changed, and docs/INSTALL.md for how to install this. The server runs on Linux; the macOS and Windows binaries build and test there but have not carried a soak (ADR-038)." \
+            dist/*
