@@ -246,6 +246,13 @@ mod whole {
     }
 
     /// 64-bit Mach-O: the extent of every `LC_SEGMENT_64`.
+    ///
+    /// `struct segment_command_64` counts from the start of the command:
+    /// `cmd` 0, `cmdsize` 4, `segname[16]` 8, `vmaddr` 24, `vmsize` 32,
+    /// `fileoff` 40, `filesize` 48. Reading 32 and 40 instead picks up
+    /// `vmsize` and `fileoff`, which on `__PAGEZERO` is four gibibytes of
+    /// address space that is in no file, and every macOS binary then looks
+    /// truncated. The macOS runner is what caught that.
     fn macho(bytes: &[u8]) -> Option<u64> {
         const LC_SEGMENT_64: u64 = 0x19;
         let ncmds = u32_at(bytes, 0x10)?;
@@ -258,9 +265,9 @@ mod whole {
                 return None;
             }
             if kind == LC_SEGMENT_64 {
-                let offset = u64_at(bytes, at + 32)?;
-                let filesize = u64_at(bytes, at + 40)?;
-                end = end.max(offset.checked_add(filesize)?);
+                let fileoff = u64_at(bytes, at + 40)?;
+                let filesize = u64_at(bytes, at + 48)?;
+                end = end.max(fileoff.checked_add(filesize)?);
             }
             at = at.checked_add(usize::try_from(size).ok()?)?;
         }
