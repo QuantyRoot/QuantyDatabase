@@ -1,0 +1,472 @@
+//! The `@text` index: postings kept in step with the rows (ADR-036).
+//!
+//! Every case ends at `verify_indexes`, which rebuilds the expected
+//! postings from the rows and compares keys and values. That is the same
+//! tool phase 2 used for secondary indexes, which is the point: search
+//! did not get a consistency story of its own.
+
+use quantydb_core::{Db, MemStorage, Value};
+use quantydb_exec::{verify_indexes, Output, Session};
+
+fn session() -> Session<MemStorage> {
+    let db = Db::in_memory().expect("open");
+    let mut s = Session::new(db);
+    s.execute("table docs { id: int @key, body: text @text }")
+        .expect("define");
+    s
+}
+
+fn put(s: &mut Session<MemStorage>, id: i64, body: &str) {
+    s.execute(&format!("put docs {{ id: {id}, body: \"{body}\" }}"))
+        .unwrap_or_else(|e| panic!("put {id}: {e}"));
+}
+
+fn ok(s: &Session<MemStorage>) {
+    verify_indexes(s).unwrap_or_else(|e| panic!("{e}"));
+}
+
+/// Every entry under the text index, as key and value.
+fn entries(s: &Session<MemStorage>, index_id: i64) -> Vec<(Vec<Value>, Vec<u8>)> {
+    let db = s.db();
+    let tx = db.begin();
+    let prefix = quantydb_core::encode_key(&[Value::Int(index_id)]);
+    let mut end = prefix.clone();
+    *end.last_mut().unwrap() += 1;
+    let mut out = Vec::new();
+    for item in tx.scan(Some(&prefix), Some(&end)).expect("scan") {
+        let (key, value) = item.expect("entry");
+        out.push((quantydb_core::decode_key(&key).expect("key"), value));
+    }
+    out
+}
+
+/// The text index gets the id after the table's, since ids are handed out
+/// in declaration order and this table has one text column.
+const TEXT_ID: i64 = 2;
+
+#[test]
+fn a_document_becomes_postings_a_length_and_a_count() {
+    let mut s = session();
+    put(&mut s, 1, "the quick brown fox");
+    ok(&s);
+
+    let all = entries(&s, TEXT_ID);
+    let terms: Vec<String> = all
+        .iter()
+        .filter_map(|(k, _)| match &k[1] {
+            Value::Text(t) => Some(t.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(terms, ["brown", "fox", "quick", "the"], "postings wrong");
+
+    // the integer namespace holds the length and the corpus counters,
+    // and sorts ahead of every term
+    let ints: Vec<i64> = all
+        .iter()
+        .filter_map(|(k, _)| match k[1] {
+            Value::Int(n) => Some(n),
+            _ => None,
+        })
+        .collect();
+    // Only the corpus counters sit in the integer namespace now; the
+    // per-document length rides in every posting instead.
+    assert_eq!(ints, [1], "the corpus entry is missing or joined");
+}
+
+#[test]
+fn a_repeated_word_keeps_one_posting_with_every_position() {
+    let mut s = session();
+    put(&mut s, 1, "one two one three one");
+    ok(&s);
+
+    let the_one = entries(&s, TEXT_ID)
+        .into_iter()
+        .find(|(k, _)| matches!(&k[1], Value::Text(t) if t == "one"))
+        .expect("posting for 'one'");
+    // The posting carries the document's length in front of the
+    // positions, so scoring never has to read the row (ADR-036).
+    assert_eq!(
+        quantydb_exec::decode_posting(&the_one.1),
+        Some((5, vec![0, 2, 4])),
+        "term frequency, positions or length disagree"
+    );
+}
+
+#[test]
+fn deleting_a_row_takes_its_postings_with_it() {
+    let mut s = session();
+    put(&mut s, 1, "alpha beta");
+    put(&mut s, 2, "beta gamma");
+    ok(&s);
+
+    s.execute("del docs where id = 1").expect("del");
+    ok(&s);
+
+    let terms: Vec<String> = entries(&s, TEXT_ID)
+        .into_iter()
+        .filter_map(|(k, _)| match &k[1] {
+            Value::Text(t) => Some(t.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(terms, ["beta", "gamma"], "alpha outlived its row");
+}
+
+#[test]
+fn overwriting_replaces_the_postings_rather_than_adding_to_them() {
+    let mut s = session();
+    put(&mut s, 1, "before words");
+    ok(&s);
+
+    s.execute("set docs where id = 1 { body = \"after text\" }")
+        .expect("set");
+    ok(&s);
+
+    let terms: Vec<String> = entries(&s, TEXT_ID)
+        .into_iter()
+        .filter_map(|(k, _)| match &k[1] {
+            Value::Text(t) => Some(t.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(terms, ["after", "text"]);
+}
+
+#[test]
+fn the_corpus_counters_track_the_documents() {
+    let mut s = session();
+    let corpus = |s: &Session<MemStorage>| -> Option<(u64, u64)> {
+        entries(s, TEXT_ID)
+            .into_iter()
+            .find(|(k, _)| matches!(k[1], Value::Int(1)))
+            .map(|(_, v)| {
+                (
+                    u64::from_le_bytes(v[..8].try_into().unwrap()),
+                    u64::from_le_bytes(v[8..].try_into().unwrap()),
+                )
+            })
+    };
+
+    assert_eq!(corpus(&s), None, "an empty index should hold no counters");
+
+    put(&mut s, 1, "one two three");
+    put(&mut s, 2, "four five");
+    ok(&s);
+    assert_eq!(corpus(&s), Some((2, 5)), "docs and total length");
+
+    s.execute("del docs where id = 2").expect("del");
+    ok(&s);
+    assert_eq!(corpus(&s), Some((1, 3)));
+
+    s.execute("del docs where id = 1").expect("del");
+    ok(&s);
+    assert_eq!(corpus(&s), None, "the last document left counters behind");
+}
+
+#[test]
+fn a_null_document_is_not_a_document() {
+    let mut s = Session::new(Db::in_memory().unwrap());
+    s.execute("table docs { id: int @key, body: text @text @null }")
+        .expect("define");
+    s.execute("put docs { id: 1, body: null }").expect("put");
+    s.execute("put docs { id: 2, body: \"has words\" }")
+        .expect("put");
+    ok(&s);
+
+    let ints: Vec<i64> = entries(&s, TEXT_ID)
+        .into_iter()
+        .filter_map(|(k, _)| match k[1] {
+            Value::Int(n) => Some(n),
+            _ => None,
+        })
+        .collect();
+    // just the corpus entry: the null row contributed nothing to it, so
+    // the average is over documents that exist
+    assert_eq!(ints, [1]);
+}
+
+#[test]
+fn dropping_the_table_takes_the_whole_index() {
+    let mut s = session();
+    put(&mut s, 1, "some words here");
+    ok(&s);
+
+    s.execute("drop table docs").expect("drop");
+    ok(&s);
+    assert!(
+        entries(&s, TEXT_ID).is_empty(),
+        "the index outlived its table"
+    );
+}
+
+#[test]
+fn text_is_refused_on_a_column_that_is_not_text() {
+    let mut s = Session::new(Db::in_memory().unwrap());
+    let err = s
+        .execute("table t { id: int @key @text }")
+        .expect_err("@text on an int");
+    assert!(err.to_string().contains("@text"), "{err}");
+}
+
+#[test]
+fn a_random_workload_leaves_the_index_verifiable() {
+    // The same shape phase 2 used for secondary indexes: put, overwrite
+    // and delete in a jumble, then rebuild the expected postings from the
+    // rows and compare.
+    let words = ["alpha", "beta", "gamma", "delta", "epsilon", "zeta"];
+    let mut state = 0x2545_f491_4f6c_dd1du64;
+    let mut next = move || {
+        state = state
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        (state >> 33) as usize
+    };
+
+    let mut s = session();
+    for step in 0..300 {
+        let id = (next() % 40) as i64;
+        match next() % 3 {
+            0 => {
+                let body: Vec<&str> = (0..1 + next() % 5).map(|_| words[next() % 6]).collect();
+                let _ = s.execute(&format!(
+                    "put docs {{ id: {id}, body: \"{}\" }}",
+                    body.join(" ")
+                ));
+            }
+            1 => {
+                let body: Vec<&str> = (0..1 + next() % 4).map(|_| words[next() % 6]).collect();
+                let _ = s.execute(&format!(
+                    "set docs where id = {id} {{ body = \"{}\" }}",
+                    body.join(" ")
+                ));
+            }
+            _ => {
+                let _ = s.execute(&format!("del docs where id = {id}"));
+            }
+        }
+        if step % 25 == 0 {
+            verify_indexes(&s).unwrap_or_else(|e| panic!("step {step}: {e}"));
+        }
+    }
+    verify_indexes(&s).unwrap_or_else(|e| panic!("final: {e}"));
+
+    let out = s.execute("get docs { id }").expect("get");
+    assert!(matches!(out, Output::Rows { .. } | Output::Lines(_)));
+}
+
+// ---------------------------------------------------------------------------
+// building one over rows that are already there
+// ---------------------------------------------------------------------------
+
+#[test]
+fn an_index_built_afterwards_holds_what_one_kept_all_along_holds() {
+    // The strongest thing to check: two databases with the same rows, one
+    // indexed from the start and one indexed at the end, have to end up
+    // with byte identical entries. Backfill goes through the same
+    // maintenance an insert does, so this is really asking whether that
+    // is true.
+    let docs = [
+        (1, "the quick brown fox"),
+        (2, "quick quick brown"),
+        (3, "nothing in common"),
+        (4, "fox and quick fox"),
+    ];
+
+    let mut kept = session();
+    for (id, body) in docs {
+        put(&mut kept, id, body);
+    }
+
+    let mut built = Session::new(Db::in_memory().unwrap());
+    built
+        .execute("table docs { id: int @key, body: text }")
+        .expect("table without an index");
+    for (id, body) in docs {
+        built
+            .execute(&format!("put docs {{ id: {id}, body: \"{body}\" }}"))
+            .expect("put");
+    }
+    built.execute("index docs.body text").expect("index");
+
+    ok(&kept);
+    ok(&built);
+    assert_eq!(
+        entries(&kept, TEXT_ID),
+        entries(&built, TEXT_ID),
+        "a backfilled index differs from one kept in step"
+    );
+}
+
+#[test]
+fn a_backfilled_index_is_used_and_keeps_up_afterwards() {
+    let mut s = Session::new(Db::in_memory().unwrap());
+    s.execute("table docs { id: int @key, body: text }")
+        .unwrap();
+    s.execute("put docs { id: 1, body: \"alpha beta\" }")
+        .unwrap();
+    s.execute("index docs.body text").expect("index");
+
+    match s
+        .execute("explain get docs { id } where body match \"alpha\"")
+        .expect("explain")
+    {
+        Output::Lines(lines) => {
+            let text = lines.join("\n");
+            assert!(
+                text.contains("text match"),
+                "the new index is unused: {text}"
+            );
+        }
+        other => panic!("unexpected {other:?}"),
+    }
+
+    // and it is maintained from here on like any other
+    s.execute("put docs { id: 2, body: \"alpha gamma\" }")
+        .unwrap();
+    s.execute("del docs where id = 1").unwrap();
+    ok(&s);
+}
+
+#[test]
+fn a_second_text_index_on_the_same_column_is_refused() {
+    let mut s = session();
+    let err = s
+        .execute("index docs.body text")
+        .expect_err("already has one");
+    assert!(err.to_string().contains("a text index"), "{err}");
+
+    // the equality kind is a different index and is still available
+    s.execute("index docs.body").expect("equality index");
+    let err = s.execute("index docs.body").expect_err("now it has one");
+    assert!(err.to_string().contains("already indexed"), "{err}");
+}
+
+#[test]
+fn a_text_index_is_refused_on_a_column_that_is_not_text() {
+    let mut s = session();
+    let err = s.execute("index docs.id text").expect_err("id is an int");
+    assert!(err.to_string().contains("wants a text column"), "{err}");
+}
+
+#[test]
+fn backfilling_an_empty_table_leaves_an_empty_index() {
+    let mut s = Session::new(Db::in_memory().unwrap());
+    s.execute("table docs { id: int @key, body: text }")
+        .unwrap();
+    s.execute("index docs.body text").expect("index");
+    ok(&s);
+    assert!(
+        entries(&s, TEXT_ID).is_empty(),
+        "counters without documents"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// taking one away again
+// ---------------------------------------------------------------------------
+
+#[test]
+fn dropping_a_text_index_takes_its_entries_with_it() {
+    let mut s = session();
+    put(&mut s, 1, "alpha beta");
+    put(&mut s, 2, "beta gamma");
+    ok(&s);
+    assert!(!entries(&s, TEXT_ID).is_empty());
+
+    s.execute("drop index docs.body text").expect("drop");
+    ok(&s);
+    assert!(
+        entries(&s, TEXT_ID).is_empty(),
+        "postings or counters outlived the index"
+    );
+
+    // the rows are untouched and the query still answers, by scanning
+    assert_eq!(
+        match s
+            .execute("get docs { id } where body match \"beta\"")
+            .unwrap()
+        {
+            Output::Rows { rows, .. } => rows.len(),
+            other => panic!("unexpected {other:?}"),
+        },
+        2
+    );
+    match s
+        .execute("explain get docs { id } where body match \"beta\"")
+        .unwrap()
+    {
+        Output::Lines(lines) => {
+            let text = lines.join("\n");
+            assert!(text.contains("SeqScan"), "still using the index: {text}");
+        }
+        other => panic!("unexpected {other:?}"),
+    }
+}
+
+#[test]
+fn dropping_and_building_again_gives_back_what_was_there() {
+    // The strongest check available: the index after a round trip has to
+    // be byte identical to the one before it.
+    let mut s = session();
+    for (id, body) in [(1, "the quick brown fox"), (2, "quick quick"), (3, "fox")] {
+        put(&mut s, id, body);
+    }
+    let before = entries(&s, TEXT_ID);
+    assert!(!before.is_empty());
+
+    s.execute("drop index docs.body text").expect("drop");
+    s.execute("index docs.body text").expect("build again");
+    ok(&s);
+
+    // the rebuilt index has a new object id, so the entries are compared
+    // by what follows it rather than by the whole key
+    let after = entries(&s, TEXT_ID + 1);
+    assert_eq!(after.len(), before.len(), "a different number of entries");
+    for ((kb, vb), (ka, va)) in before.iter().zip(&after) {
+        assert_eq!(kb[1..], ka[1..], "an entry moved");
+        assert_eq!(vb, va, "an entry's value changed");
+    }
+}
+
+#[test]
+fn dropping_an_index_that_is_not_there_says_so() {
+    let mut s = session();
+    let err = s
+        .execute("drop index docs.body")
+        .expect_err("no equality index");
+    assert!(err.to_string().contains("not indexed"), "{err}");
+
+    s.execute("drop index docs.body text")
+        .expect("the text one");
+    let err = s
+        .execute("drop index docs.body text")
+        .expect_err("gone already");
+    assert!(err.to_string().contains("no text index"), "{err}");
+
+    let err = s
+        .execute("drop index docs.nosuch text")
+        .expect_err("no such column");
+    assert!(err.to_string().contains("no column"), "{err}");
+}
+
+#[test]
+fn the_two_kinds_of_index_are_dropped_separately() {
+    let mut s = session();
+    s.execute("index docs.body").expect("equality index");
+    put(&mut s, 1, "alpha");
+    ok(&s);
+
+    s.execute("drop index docs.body")
+        .expect("drop the equality one");
+    ok(&s);
+    assert!(
+        !entries(&s, TEXT_ID).is_empty(),
+        "the text index went with it"
+    );
+
+    s.execute("drop index docs.body text")
+        .expect("drop the text one");
+    ok(&s);
+    assert!(entries(&s, TEXT_ID).is_empty());
+}

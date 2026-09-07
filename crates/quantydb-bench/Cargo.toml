@@ -1,0 +1,25 @@
+[package]
+name = "quantydb-bench"
+description = "Times QuantyDB against SQLite on the same machine, through both engines' own command line tools"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "quantydb-bench"
+path = "src/main.rs"
+
+[[bin]]
+name = "quantydb-acceptance"
+path = "src/bin/acceptance.rs"
+
+[[bin]]
+name = "quantydb-commit-cost"
+path = "src/bin/commit_cost.rs"
+
+[dependencies]
+quantydb-core.workspace = true
+quantydb-exec.workspace = true
+quantydb-proto.workspace = true

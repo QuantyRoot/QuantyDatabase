@@ -34,7 +34,7 @@ to the job instead of making you migrate between databases.
 
 - Need an embedded, zero-config, single-file db? That's the default.
 - Need a server that handles thousands of connections? Same file, same
-  engine, run `quanty serve`.
+  engine, run `quantydb serve`.
 - Need to store assets, search full text, keep history? Also the same
   engine. No sidecar systems.
 
@@ -63,7 +63,7 @@ That one decision makes the headline features structural instead of
 bolted on:
 
 ```
-                     +------------------ quanty ------------------+
+                     +------------------ quantydb ------------------+
   your app  <-----> |  embedded API  |  server mode  |  sqlite sql |
                      +--------------------+------------------------+
                      |     query layer (QQL + SQL front ends)      |
@@ -87,7 +87,7 @@ bolted on:
 
 ## Quick look
 
-Everything below is built. Run `quanty --help` for the rest.
+Everything below is built. Run `quantydb --help` for the rest.
 
 Schema and queries in QQL, Quanty's native language:
 
@@ -106,7 +106,7 @@ get users as of 42 where name = "elchi"
 Embedded in Rust, with the surface fixed by ADR-030:
 
 ```rust
-use quanty::Database;
+use quantydb::Database;
 
 let mut db = Database::open("app.qdb")?;
 
@@ -124,16 +124,16 @@ for row in &rows {
 Branching from the CLI:
 
 ```sh
-quanty branch app.qdb risky-migration
-quanty switch app.qdb risky-migration
-quanty run app.qdb "set users where id = 1 { score += 5 }"
+quantydb branch app.qdb risky-migration
+quantydb switch app.qdb risky-migration
+quantydb run app.qdb "set users where id = 1 { score += 5 }"
 
-quanty branches app.qdb          # * marks the one you are on
-quanty log app.qdb
+quantydb branches app.qdb          # * marks the one you are on
+quantydb log app.qdb
 
-quanty switch app.qdb main
-quanty merge app.qdb risky-migration
-quanty run app.qdb "drop branch risky-migration"
+quantydb switch app.qdb main
+quantydb merge app.qdb risky-migration
+quantydb run app.qdb "drop branch risky-migration"
 ```
 
 There is no `--branch` flag. A write always lands on the current branch,
@@ -148,14 +148,14 @@ One file, no runtime, nothing to configure. Every release attaches a
 binary per platform, each built and tested on the platform it names.
 
 ```
-curl -LO https://github.com/QuantyRoot/QuantyDatabase/releases/latest/download/quanty-linux-x86_64
-chmod +x quanty-linux-x86_64
-sudo mv quanty-linux-x86_64 /usr/local/bin/quanty
-quanty about
+curl -LO https://github.com/QuantyRoot/QuantyDatabase/releases/latest/download/quantydb-linux-x86_64
+chmod +x quantydb-linux-x86_64
+sudo mv quantydb-linux-x86_64 /usr/local/bin/quantydb
+quantydb about
 ```
 
 From source needs Rust 1.89 and nothing else: `cargo build --release -p
-quanty-cli`. There is no C toolchain to install and no system library to
+quantydb-cli`. There is no C toolchain to install and no system library to
 find.
 
 macOS and Windows binaries are there too, and there is no package in apt,
@@ -176,9 +176,9 @@ server, with every example run and its real output underneath.
 - Order-preserving typed keys, secondary indexes, `explain` from day one
 
 ### Server
-- `quanty serve` turns any db file into a network database
+- `quantydb serve` turns any db file into a network database
 - An event loop written on epoll and kqueue directly, no async runtime
-- Small versioned binary protocol, token auth, `quanty connect` to speak it
+- Small versioned binary protocol, token auth, `quantydb connect` to speak it
 
 ### SQLite compatibility
 - Direct `.sqlite` import, no SQLite dependency, we read the format ourselves
@@ -221,10 +221,10 @@ Pre-alpha, and further along than that sounds. What works today:
   with inner and left joins and multi-statement transactions
 - a `.sqlite` importer that reads the format directly, with no SQLite
   library underneath it, and a command line tool around it
-- a network server: `quanty serve` runs the same engine over a versioned
-  binary protocol, with token authentication, and `quanty connect` is the
+- a network server: `quantydb serve` runs the same engine over a versioned
+  binary protocol, with token authentication, and `quantydb connect` is the
   client for it
-- an embedded crate: `quanty` is what a Rust application depends on, with
+- an embedded crate: `quantydb` is what a Rust application depends on, with
   `#[derive(Row)]` mapping a struct to a table, and neither of them
   written with `syn` or `quote`
 - assets: a content-addressed chunk store with dedup, and a column type
@@ -235,12 +235,12 @@ Pre-alpha, and further along than that sounds. What works today:
   search mix of 100k documents
 
 ```sh
-quanty import app.sqlite app.qdb
-quanty run app.qdb "get users { name } where score > 100"
-quanty run app.qdb 'get docs { title } where body match "copy on write"'
+quantydb import app.sqlite app.qdb
+quantydb run app.qdb "get users { name } where score > 100"
+quantydb run app.qdb 'get docs { title } where body match "copy on write"'
 
-quanty serve app.qdb --tokens tokens.txt
-quanty connect 127.0.0.1:7878 "get users { name }" --token <token>
+quantydb serve app.qdb --tokens tokens.txt
+quantydb connect 127.0.0.1:7878 "get users { name }" --token <token>
 ```
 
 The server is one event loop per worker, on epoll or kqueue, with the
@@ -313,7 +313,7 @@ wrong and gets rewritten, so it is worth knowing it is green.
 Against SQLite, both engines driven through their own command line tool,
 on one development core:
 
-| | quanty vs sqlite |
+| | quantydb vs sqlite |
 |---|---|
 | Open a database | **0.91x**, faster |
 | 5000 lookups by key | **0.94x**, faster |

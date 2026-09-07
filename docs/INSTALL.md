@@ -19,13 +19,13 @@ Every release attaches these, built and tested on the platform they name:
 
 | File | For |
 |---|---|
-| `quanty-linux-x86_64` | Linux, glibc 2.35 or newer |
-| `quanty-linux-x86_64-static` | Linux, anything older or unusual |
-| `quanty-macos-arm64` | macOS on Apple silicon |
-| `quanty-macos-x86_64` | macOS on Intel |
-| `quanty-windows-x86_64.exe` | Windows |
+| `quantydb-linux-x86_64` | Linux, glibc 2.35 or newer |
+| `quantydb-linux-x86_64-static` | Linux, anything older or unusual |
+| `quantydb-macos-arm64` | macOS on Apple silicon |
+| `quantydb-macos-x86_64` | macOS on Intel |
+| `quantydb-windows-x86_64.exe` | Windows |
 
-Take `quanty-linux-x86_64` unless it refuses to start. The static one
+Take `quantydb-linux-x86_64` unless it refuses to start. The static one
 exists for systems whose glibc is older than the one it was built
 against, which announces itself with a message about `GLIBC_2.35` and
 nothing else useful. It costs about 2.2x on the read path, measured, so
@@ -34,10 +34,10 @@ it is the fallback and not the default (ADR-040).
 ## Linux and macOS
 
 ```
-curl -LO https://github.com/QuantyRoot/QuantyDatabase/releases/latest/download/quanty-linux-x86_64
-chmod +x quanty-linux-x86_64
-./quanty-linux-x86_64 about
-sudo mv quanty-linux-x86_64 /usr/local/bin/quanty
+curl -LO https://github.com/QuantyRoot/QuantyDatabase/releases/latest/download/quantydb-linux-x86_64
+chmod +x quantydb-linux-x86_64
+./quantydb-linux-x86_64 about
+sudo mv quantydb-linux-x86_64 /usr/local/bin/quantydb
 ```
 
 Substitute the file name for your platform. On macOS the first run is
@@ -46,12 +46,12 @@ developer account and this project does not have one. Clear the quarantine
 attribute yourself if you want to run it:
 
 ```
-xattr -d com.apple.quarantine quanty-macos-arm64
+xattr -d com.apple.quarantine quantydb-macos-arm64
 ```
 
 ## Windows
 
-Download `quanty-windows-x86_64.exe`, rename it to `quanty.exe`, and put
+Download `quantydb-windows-x86_64.exe`, rename it to `quantydb.exe`, and put
 it in a directory on your `PATH`. SmartScreen will warn about it for the
 same reason Gatekeeper does.
 
@@ -62,7 +62,7 @@ same reason Gatekeeper does.
 ## Setting up a server
 
 ```
-quanty setup
+quantydb setup
 ```
 
 It asks where the database should live, where the token file goes and
@@ -74,11 +74,11 @@ It starts nothing itself.
 Give it the answers up front to skip the questions:
 
 ```
-quanty setup /var/lib/quanty/main.qdb --tokens /etc/quanty/tokens --service --yes
+quantydb setup /var/lib/quantydb/main.qdb --tokens /etc/quantydb/tokens --service --yes
 ```
 
 The token is printed once and stored nowhere: the token file keeps a hash
-of it. Losing it means minting another with `quanty token <label>`.
+of it. Losing it means minting another with `quantydb token <label>`.
 
 ## Checking what you downloaded
 
@@ -99,26 +99,26 @@ workspace and not one package besides.
 ```
 git clone https://github.com/QuantyRoot/QuantyDatabase.git
 cd QuantyDatabase
-cargo build --release -p quanty-cli
-./target/release/quanty about
+cargo build --release -p quantydb-cli
+./target/release/quantydb about
 ```
 
-The binary lands in `target/release/quanty`.
+The binary lands in `target/release/quantydb`.
 
 ## Updating
 
 Download the new binary and point the tool at it:
 
 ```
-curl -LO https://github.com/QuantyRoot/QuantyDatabase/releases/latest/download/quanty-linux-x86_64
-quanty update --file quanty-linux-x86_64
+curl -LO https://github.com/QuantyRoot/QuantyDatabase/releases/latest/download/quantydb-linux-x86_64
+quantydb update --file quantydb-linux-x86_64
 ```
 
 It checks the file before it replaces anything: that the file is as long
 as its own headers say it should be, so half a download is caught rather
 than installed, and that it runs and reports a version. It prints that
 version and the checksum and asks before going ahead. The binary it
-replaces is kept next to the new one as `quanty.old`.
+replaces is kept next to the new one as `quantydb.old`.
 
 Pass `--sha256 <hex>` from the release's `SHA256SUMS` to require a
 particular file rather than merely a whole one, and `--yes` to skip the
@@ -137,17 +137,17 @@ reach for `sudo` on its own.
 The library, the tool and both query front ends build and are tested on
 Linux, macOS and Windows, on every push.
 
-`quanty serve` is Linux only and says so when asked elsewhere. The reactor
+`quantydb serve` is Linux only and says so when asked elsewhere. The reactor
 has a kqueue backend and its tests run on macOS, but no kernel except
 Linux spreads accepted connections across workers, so a macOS server would
-run on one worker whatever shape it took (ADR-038, ADR-039). `quanty
+run on one worker whatever shape it took (ADR-038, ADR-039). `quantydb
 connect` is a plain TCP client and runs everywhere, so a database served
 from Linux can be used from anywhere.
 
 ## Uninstalling
 
 ```
-quanty uninstall
+quantydb uninstall
 ```
 
 It lists what it found, asks, then stops and removes the service unit and
@@ -157,6 +157,6 @@ and it tells you where they are so you can decide.
 It only removes a service unit that runs the binary you are asking, so a
 copy sitting in a downloads folder cannot take out the one you installed.
 
-By hand it is the same short list: the binary, `/etc/systemd/system/quanty.service`
+By hand it is the same short list: the binary, `/etc/systemd/system/quantydb.service`
 if you asked for one, and whatever database and token files you made.
 There is no configuration directory and nothing else on disk.

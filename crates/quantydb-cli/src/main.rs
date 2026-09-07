@@ -1,0 +1,831 @@
+//! The `quantydb` command line tool.
+//!
+//! Four things, which is what "minimal" means here: import a SQLite file,
+//! run a statement, run a session of them, and say what a database holds.
+//!
+//! The argument parsing is written out rather than pulled in. A clap sized
+//! dependency under a command line tool would be the largest thing in the
+//! workspace by some margin, and it would have to build on the MSRV
+//! toolchain for the next several years (ADR-008, ADR-013). What follows is
+//! forty lines and does exactly what these four commands need.
+//!
+//! Everything the tool prints about an import goes to stdout; anything that
+//! went wrong goes to stderr and sets the exit status, so it composes with
+//! a shell the way a tool should.
+
+use std::io::{BufRead, Write};
+use std::path::Path;
+use std::process::ExitCode;
+
+use quantydb_core::{Db, FileStorage};
+use quantydb_exec::{Output, Session};
+use quantydb_import::{execute, plan, Options};
+use quantydb_ql::ast::Statement;
+
+const USAGE: &str = "\
+quantydb, a database that remembers
+
+usage:
+  quantydb create <database.qdb>
+  quantydb import <source.sqlite> <target.qdb> [--dry-run] [--strict]
+  quantydb run <database.qdb> <statement> [--sql]
+  quantydb shell <database.qdb> [--sql]
+  quantydb serve <database.qdb> [--listen <addr>] [--workers <n>]
+                              [--tokens <file>]
+  quantydb tables <database.qdb>
+  quantydb branch <database.qdb> <name> [--at <commit>]
+  quantydb branches <database.qdb>
+  quantydb switch <database.qdb> <branch>
+  quantydb merge <database.qdb> <branch>
+  quantydb log <database.qdb>
+  quantydb stats <database.qdb>
+  quantydb gc <database.qdb> <keep> | blobs
+  quantydb token <label>
+  quantydb connect <addr> [statement] [--token <t>] [--sql]
+  quantydb about
+  quantydb update --file <binary> [--sha256 <hex>] [--yes]
+  quantydb setup [database.qdb]
+  quantydb uninstall
+
+  create   make an empty database
+  import   read a sqlite file and write it into a new quantydb database
+             --dry-run  print what would happen and write nothing
+             --strict   refuse anything lossy instead of reporting it
+  run      execute one statement and print the result
+  shell    read statements from stdin, one per line
+  tables   list the tables in a database
+  branch   fork the current branch under a new name
+             --at       fork from this commit instead of the head
+  branches list them, marking the one you are on
+  switch   move to another branch
+  merge    fast forward the current branch onto another one
+  log      print the commits of the current branch
+  stats    page counts for the file as it stands
+  gc       drop history, keeping <keep> commits per branch
+             blobs    drop chunks no row names any more
+  token    mint one and print it, with the line that accepts it
+  connect  talk to a running server; with a statement it runs that one,
+             without it reads statements from stdin, as shell does
+  about    what this is, who made it, and what it does not depend on
+  update   replace this binary with another one you already have
+  setup    make a database, a token and optionally a service unit
+  uninstall  take the service and this binary away, and nothing else
+
+  --sql    read the statement in sql rather than qql
+
+  deleting a branch is `quantydb run <db> \"drop branch <name>\"`
+
+connect  --token    the token to show, if the server requires one
+
+setup    --tokens   token file to write or add to
+         --listen   address the server should bind
+         --service  write a systemd unit; --no-service to skip the question
+         --yes      take every default without asking
+
+update   --file     the binary to install. Fetching a release needs TLS,
+                    which is not written yet, so this is the way in
+         --sha256   refuse the file unless it hashes to this
+         --yes      do not ask first
+
+serve    --listen   address to bind, default 127.0.0.1:7878
+         --workers  event loop threads, default one per core
+         --tokens   file of accepted token hashes; without it the server
+                    requires no authentication and belongs on loopback
+";
+
+mod client;
+mod setup;
+mod update;
+
+fn main() -> ExitCode {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    match run(&args) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(Failure::Usage(message)) => {
+            eprintln!("{message}\n\n{USAGE}");
+            ExitCode::from(2)
+        }
+        Err(Failure::Failed(message)) => {
+            eprintln!("{message}");
+            ExitCode::FAILURE
+        }
+        Err(Failure::PipeClosed) => ExitCode::SUCCESS,
+        Err(Failure::Refused) => ExitCode::FAILURE,
+    }
+}
+
+enum Failure {
+    /// The command line itself was wrong, so the usage is worth printing.
+    Usage(String),
+    /// The command was understood and did not work.
+    Failed(String),
+    /// Whoever was reading our output stopped, as `head` does. Nothing
+    /// went wrong and there is nobody left to tell.
+    PipeClosed,
+    /// A server refused a statement and has already said why, so there is
+    /// nothing to add beyond the exit code.
+    Refused,
+}
+
+fn usage(message: impl Into<String>) -> Failure {
+    Failure::Usage(message.into())
+}
+
+fn failed(message: impl Into<String>) -> Failure {
+    Failure::Failed(message.into())
+}
+
+/// Write a line to stdout.
+///
+/// Rust ignores SIGPIPE, so a `println!` into a pipe nobody is reading any
+/// more panics with a backtrace. `quantydb tables db | head -1` is an
+/// ordinary thing to type, and it must end quietly rather than looking like
+/// a crash, so every line this tool prints goes through here.
+fn emit(text: &str) -> Result<(), Failure> {
+    let mut out = std::io::stdout().lock();
+    match writeln!(out, "{text}") {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => Err(Failure::PipeClosed),
+        Err(e) => Err(failed(format!("writing to stdout: {e}"))),
+    }
+}
+
+/// Flags pulled out of the arguments, leaving the positional ones behind.
+#[derive(Default)]
+struct Flags {
+    dry_run: bool,
+    strict: bool,
+    sql: bool,
+    at: Option<u64>,
+    listen: Option<String>,
+    workers: Option<usize>,
+    tokens: Option<String>,
+    token: Option<String>,
+    file: Option<String>,
+    sha256: Option<String>,
+    service: Option<bool>,
+    yes: bool,
+    elchi: bool,
+}
+
+fn split_flags(args: &[String]) -> Result<(Vec<&str>, Flags), Failure> {
+    let mut positional = Vec::new();
+    let mut flags = Flags::default();
+    let mut expect: Option<&str> = None;
+    for arg in args {
+        if let Some(name) = expect.take() {
+            match name {
+                "--listen" => flags.listen = Some(arg.clone()),
+                "--tokens" => flags.tokens = Some(arg.clone()),
+                "--token" => flags.token = Some(arg.clone()),
+                "--file" => flags.file = Some(arg.clone()),
+                "--sha256" => flags.sha256 = Some(arg.clone()),
+                "--workers" => {
+                    let n = arg
+                        .parse::<usize>()
+                        .map_err(|_| usage(format!("--workers wants a number, got {arg}")))?;
+                    if n == 0 {
+                        return Err(usage("--workers must be at least 1"));
+                    }
+                    flags.workers = Some(n);
+                }
+                "--at" => {
+                    flags.at = Some(
+                        arg.parse::<u64>()
+                            .map_err(|_| usage(format!("--at wants a commit id, got {arg}")))?,
+                    );
+                }
+                _ => unreachable!(),
+            }
+            continue;
+        }
+        match arg.as_str() {
+            "--listen" | "--workers" | "--tokens" | "--token" | "--at" | "--file" | "--sha256" => {
+                expect = Some(match arg.as_str() {
+                    "--listen" => "--listen",
+                    "--tokens" => "--tokens",
+                    "--token" => "--token",
+                    "--at" => "--at",
+                    "--file" => "--file",
+                    "--sha256" => "--sha256",
+                    _ => "--workers",
+                })
+            }
+            // Named rather than left to fall into 'unknown option', because
+            // the README sketched it for years and ADR-032 says why not.
+            "--branch" => {
+                return Err(usage(
+                    "--branch does not exist: a write always lands on the current \
+                     branch, so running elsewhere means switching there and back, \
+                     which is three commits and a window where a kill leaves the \
+                     database on a branch nobody chose. Use switch instead.",
+                ))
+            }
+            "--elchi" => flags.elchi = true,
+            "--yes" | "-y" => flags.yes = true,
+            "--service" => flags.service = Some(true),
+            "--no-service" => flags.service = Some(false),
+            "--dry-run" => flags.dry_run = true,
+            "--strict" => flags.strict = true,
+            "--sql" => flags.sql = true,
+            "--help" | "-h" => return Err(usage("")),
+            other if other.starts_with("--") => {
+                return Err(usage(format!("unknown option {other}")))
+            }
+            other => positional.push(other),
+        }
+    }
+    Ok((positional, flags))
+}
+
+fn run(args: &[String]) -> Result<(), Failure> {
+    let (positional, flags) = split_flags(args)?;
+    let Some((command, rest)) = positional.split_first() else {
+        if flags.elchi {
+            return emit("<3");
+        }
+        return Err(usage("no command given"));
+    };
+
+    if flags.elchi {
+        return emit("<3");
+    }
+
+    match *command {
+        "create" => match rest {
+            [database] => create(Path::new(database)),
+            _ => Err(usage("create takes a database")),
+        },
+        "import" => match rest {
+            [source, target] => import(Path::new(source), Path::new(target), &flags),
+            _ => Err(usage("import takes a source and a target")),
+        },
+        "run" => match rest {
+            [database, statement] => run_statement(Path::new(database), statement, &flags),
+            _ => Err(usage("run takes a database and a statement")),
+        },
+        "shell" => match rest {
+            [database] => shell(Path::new(database), &flags),
+            _ => Err(usage("shell takes a database")),
+        },
+        "serve" => match rest {
+            [database] => serve(Path::new(database), &flags),
+            _ => Err(usage("serve takes a database")),
+        },
+        "token" => match rest {
+            [label] => token(label),
+            _ => Err(usage("token takes a label")),
+        },
+        "about" => match rest {
+            [] => about(),
+            _ => Err(usage("about takes nothing")),
+        },
+        "setup" => match rest {
+            [] => setup::setup(
+                None,
+                flags.tokens.as_deref(),
+                flags.listen.as_deref(),
+                flags.service,
+                flags.yes,
+            ),
+            [database] => setup::setup(
+                Some(database),
+                flags.tokens.as_deref(),
+                flags.listen.as_deref(),
+                flags.service,
+                flags.yes,
+            ),
+            _ => Err(usage("setup takes an optional database")),
+        },
+        "uninstall" => match rest {
+            [] => setup::uninstall(flags.yes),
+            _ => Err(usage("uninstall takes nothing")),
+        },
+        "update" => match rest {
+            [] => update::update(flags.file.as_deref(), flags.sha256.as_deref(), flags.yes),
+            _ => Err(usage("update takes no positional arguments; use --file")),
+        },
+        "connect" => match rest {
+            [addr] => client::connect(addr, None, flags.token.as_deref(), flags.sql),
+            [addr, statement] => {
+                client::connect(addr, Some(statement), flags.token.as_deref(), flags.sql)
+            }
+            _ => Err(usage("connect takes an address and an optional statement")),
+        },
+        "tables" => match rest {
+            [database] => run_ours(database, &Statement::ShowTables),
+            _ => Err(usage("tables takes a database")),
+        },
+        "branch" => match rest {
+            [database, name] => run_ours(
+                database,
+                &Statement::Branch {
+                    name: (*name).to_string(),
+                    at: flags.at,
+                },
+            ),
+            _ => Err(usage("branch takes a database and a name")),
+        },
+        "branches" => match rest {
+            [database] => run_ours(database, &Statement::ShowBranches),
+            _ => Err(usage("branches takes a database")),
+        },
+        "switch" => match rest {
+            [database, name] => run_ours(
+                database,
+                &Statement::Switch {
+                    name: (*name).to_string(),
+                },
+            ),
+            _ => Err(usage("switch takes a database and a branch")),
+        },
+        "merge" => match rest {
+            [database, name] => run_ours(
+                database,
+                &Statement::Merge {
+                    name: (*name).to_string(),
+                },
+            ),
+            _ => Err(usage("merge takes a database and a branch")),
+        },
+        "log" => match rest {
+            [database] => run_ours(database, &Statement::Log),
+            _ => Err(usage("log takes a database")),
+        },
+        "stats" => match rest {
+            [database] => run_ours(database, &Statement::ShowStats),
+            _ => Err(usage("stats takes a database")),
+        },
+        "gc" => match rest {
+            [database, "blobs"] => run_ours(database, &Statement::GcBlobs),
+            [database, keep] => {
+                let keep = keep
+                    .parse::<u64>()
+                    .map_err(|_| usage(format!("gc wants a number of commits, got {keep}")))?;
+                if keep == 0 {
+                    return Err(usage("gc must keep at least one commit per branch"));
+                }
+                run_ours(database, &Statement::Gc { keep })
+            }
+            _ => Err(usage("gc takes a database and how many commits to keep")),
+        },
+        "help" => Err(usage("")),
+        other => Err(usage(format!("unknown command {other}"))),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// create
+// ---------------------------------------------------------------------------
+
+/// Make an empty database.
+///
+/// This exists as its own command rather than as something `run` and
+/// `shell` do when the file is missing. Creating a database by mistyping a
+/// path is a mistake that looks like success: the tool answers, the queries
+/// return nothing, and the real database is somewhere else with the data
+/// still in it.
+fn create(database: &Path) -> Result<(), Failure> {
+    if database.exists() {
+        return Err(failed(format!("{} already exists", database.display())));
+    }
+    Db::create_file(database).map_err(|e| failed(format!("{}: {e}", database.display())))?;
+    emit(&format!("created {}", database.display()))
+}
+
+// ---------------------------------------------------------------------------
+// import
+// ---------------------------------------------------------------------------
+
+fn import(source: &Path, target: &Path, flags: &Flags) -> Result<(), Failure> {
+    let reader = quantydb_sqlite::open_file(source)
+        .map_err(|e| failed(format!("{}: {e}", source.display())))?;
+    let plan = plan(
+        &reader,
+        &Options {
+            strict: flags.strict,
+        },
+    )
+    .map_err(|e| failed(format!("{}: {e}", source.display())))?;
+
+    // the plan renders itself, so this tool and the dry run report print
+    // the same thing rather than two descriptions that drift apart
+    emit(plan.report().trim_end())?;
+    emit(&format!(
+        "\n{} tables, {} rows",
+        plan.tables.len(),
+        plan.rows()
+    ))?;
+
+    if !plan.is_runnable() {
+        return Err(failed(format!(
+            "{} problem(s), nothing was written",
+            plan.problems.len()
+        )));
+    }
+    if flags.dry_run {
+        return emit("\ndry run, nothing was written");
+    }
+
+    // a target that already exists is not overwritten. an import that
+    // silently replaced a database would be the one mistake in this tool
+    // that cannot be undone.
+    if target.exists() {
+        return Err(failed(format!(
+            "{} already exists; delete it or pick another name",
+            target.display()
+        )));
+    }
+
+    let db = Db::create_file(target).map_err(|e| failed(format!("{}: {e}", target.display())))?;
+    let mut session = Session::new(db);
+    let report = execute(&reader, &plan, &mut session).map_err(|e| {
+        failed(format!(
+            "{e}\n\n{} is incomplete and should be deleted",
+            target.display()
+        ))
+    })?;
+
+    emit(&format!(
+        "\nimported {} rows into {} tables in {}",
+        report.rows(),
+        report.tables.len(),
+        target.display()
+    ))
+}
+
+// ---------------------------------------------------------------------------
+// running statements
+// ---------------------------------------------------------------------------
+
+fn open(database: &Path) -> Result<Session<FileStorage>, Failure> {
+    open_for(database, true)
+}
+
+/// Open the database, taking the writer lock only if we are going to
+/// write.
+///
+/// A `get` or a `show` changes nothing, and holding an exclusive lock to
+/// answer one would mean a served database could not be read from the
+/// shell. Many readers alongside one writer is the model (ADR-035).
+fn open_for(database: &Path, writing: bool) -> Result<Session<FileStorage>, Failure> {
+    if !database.exists() {
+        return Err(failed(format!("{} does not exist", database.display())));
+    }
+    let opened = if writing {
+        Db::open_file(database)
+    } else {
+        Db::open_file_unlocked(database)
+    };
+    let db = opened.map_err(|e| failed(format!("{}: {e}", database.display())))?;
+    Ok(Session::new(db))
+}
+
+/// Run a statement this tool built rather than one the user typed.
+///
+/// It goes in as an AST, so no name is ever glued into text and a bad one
+/// meets the engine's own message instead of the parser's. The user's
+/// flags deliberately do not apply: reading `branch x` as SQL could only
+/// ever be a mistake (ADR-032).
+fn run_ours(database: &str, statement: &Statement) -> Result<(), Failure> {
+    let mut session = open_for(Path::new(database), statement.writes())?;
+    let output = session
+        .execute_ast(statement)
+        .map_err(|e| failed(e.to_string()))?;
+    print_output(&output)
+}
+
+fn run_statement(database: &Path, statement: &str, flags: &Flags) -> Result<(), Failure> {
+    // Parse before opening, so a read does not ask for the writer lock.
+    // Something that will not parse cannot write either, so it opens
+    // unlocked and fails with the parser's message; asking for the lock
+    // first would answer a typo with a complaint about locks.
+    let writing = if flags.sql {
+        quantydb_ql::parse_sql(statement).is_ok_and(|s| s.writes())
+    } else {
+        quantydb_ql::parse(statement).is_ok_and(|s| s.writes())
+    };
+    let mut session = open_for(database, writing)?;
+    let output = execute_one(&mut session, statement, flags.sql).map_err(failed)?;
+    print_output(&output)
+}
+
+fn execute_one(
+    session: &mut Session<FileStorage>,
+    statement: &str,
+    sql: bool,
+) -> Result<Output, String> {
+    let result = if sql {
+        session.execute_sql(statement)
+    } else {
+        session.execute(statement)
+    };
+    result.map_err(|e| e.to_string())
+}
+
+fn print_output(output: &Output) -> Result<(), Failure> {
+    let text = output.render();
+    if text.is_empty() {
+        return Ok(());
+    }
+    emit(&text)
+}
+
+/// Read statements from stdin, one per line.
+///
+/// Errors do not end the session: a typo in one statement is not a reason
+/// to throw away the ones after it, which is the whole point of a shell.
+fn shell(database: &Path, flags: &Flags) -> Result<(), Failure> {
+    let mut session = open(database)?;
+    let stdin = std::io::stdin();
+    let interactive = is_terminal();
+
+    if interactive {
+        emit(&format!(
+            "{} -- one statement per line, ctrl-d to leave",
+            database.display()
+        ))?;
+    }
+    let mut failures = 0u32;
+    for line in stdin.lock().lines() {
+        let line = line.map_err(|e| failed(format!("reading stdin: {e}")))?;
+        let statement = line.trim();
+        if statement.is_empty() || statement.starts_with('#') {
+            continue;
+        }
+        match execute_one(&mut session, statement, flags.sql) {
+            Ok(output) => print_output(&output)?,
+            Err(message) => {
+                failures += 1;
+                eprintln!("{message}");
+            }
+        }
+        if interactive {
+            let _ = std::io::stdout().flush();
+        }
+    }
+    if failures > 0 {
+        return Err(failed(format!("{failures} statement(s) failed")));
+    }
+    Ok(())
+}
+
+/// Whether stdin is a terminal, so the shell knows whether to greet anyone.
+///
+/// `IsTerminal` landed in 1.70 and the MSRV is 1.75, so this is the
+/// standard library's answer rather than a guess.
+fn is_terminal() -> bool {
+    use std::io::IsTerminal;
+    std::io::stdin().is_terminal()
+}
+
+/// Counts that `about` prints, and that a test holds to reality.
+///
+/// Each is a floor rather than a snapshot: the test checks that the real
+/// number is at least this, so the tool can fall behind but can never
+/// overclaim, and nobody has to update it on every commit.
+pub const CRATES: usize = 14;
+/// At least this many test functions exist.
+pub const TESTS: usize = 550;
+/// At least this many decision records exist.
+pub const DECISIONS: usize = 39;
+/// Exactly this many packages that are not this workspace.
+pub const FOREIGN_DEPENDENCIES: usize = 0;
+
+/// What this is, who made it, and what it does not depend on.
+fn about() -> Result<(), Failure> {
+    emit(&format!("quantydb {}", env!("CARGO_PKG_VERSION")))?;
+    emit("one database that reshapes itself into whatever you need")?;
+    emit("")?;
+    emit(&format!(
+        "  dependencies   {FOREIGN_DEPENDENCIES}, and that is the whole list"
+    ))?;
+    emit("  people         1")?;
+    emit("  funding        none")?;
+    emit(&format!(
+        "  crates         {CRATES}, all of them in this repository"
+    ))?;
+    emit(&format!(
+        "  tests          {TESTS}+ functions, run on every push"
+    ))?;
+    emit(&format!(
+        "  decisions      {DECISIONS}+ written down, with their costs"
+    ))?;
+    emit("")?;
+    emit("The checksum, the locks, the reactor, sha256 and the wire")?;
+    emit("protocol are written out here rather than pulled in. Every one of")?;
+    emit("those choices is argued in docs/DECISIONS.md, cost included.")?;
+    emit("")?;
+    emit("  source   https://github.com/QuantyRoot/QuantyDatabase")?;
+    emit("  licence  MIT")?;
+    emit("  history  HUNDRED.md, for the bugs and the ideas that lost")
+}
+
+/// Print a new token and the line that makes a server accept it.
+///
+/// The token is printed once and stored nowhere: this is the only moment
+/// it exists in one place, which is the property that makes the file worth
+/// keeping only hashes.
+fn token(label: &str) -> Result<(), Failure> {
+    if label.split_whitespace().count() != 1 {
+        return Err(usage("a label is one word, it goes on the line as-is"));
+    }
+    let (token, line) = quantydb_auth::mint(label)
+        .map_err(|e| failed(format!("could not read /dev/urandom: {e}")))?;
+    emit(&format!("token {token}"))?;
+    emit(&format!("line  {line}"))?;
+    emit("")?;
+    emit("give the token to its owner and append the line to --tokens.")?;
+    emit("the token is not stored anywhere; losing it means minting another.")
+}
+
+#[cfg(target_os = "linux")]
+fn serve(database: &Path, flags: &Flags) -> Result<(), Failure> {
+    use std::net::TcpListener;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use std::thread;
+    use std::time::Duration;
+
+    use quantydb_auth::Tokens;
+    use quantydb_server::Worker;
+    use quantydb_service::{Deadlines, Executor};
+
+    if !database.exists() {
+        return Err(failed(format!("no database at {}", database.display())));
+    }
+    let session = open(database)?;
+
+    // No token file means no authentication, which is a real configuration
+    // and the reason the default address is loopback (ADR-026).
+    let tokens = match &flags.tokens {
+        Some(path) => {
+            Some(Tokens::load(path).map_err(|e| failed(format!("token file {path}: {e}")))?)
+        }
+        None => None,
+    };
+
+    let addr = flags.listen.as_deref().unwrap_or("127.0.0.1:7878");
+    let workers = match flags.workers {
+        Some(n) => n,
+        None => thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1),
+    };
+
+    let probe = TcpListener::bind(addr).map_err(|e| failed(format!("binding {addr}: {e}")))?;
+    let bound = probe
+        .local_addr()
+        .map_err(|e| failed(format!("{addr}: {e}")))?;
+    drop(probe);
+
+    let running = Arc::new(AtomicBool::new(true));
+    let accepted = Arc::new(AtomicUsize::new(0));
+    let live: Arc<Vec<AtomicUsize>> = Arc::new((0..workers).map(|_| AtomicUsize::new(0)).collect());
+
+    // A shutdown that is asked for rather than taken. Without this every
+    // stop is a crash: recoverable, exercised by the crash harness, and
+    // still not the same as closing (ADR-041).
+    quantydb_sys::signal::listen_for_quit()
+        .map_err(|e| failed(format!("installing signal handlers: {e}")))?;
+
+    match &tokens {
+        Some(t) => {
+            emit(&format!(
+                "requiring a token, {} in force from {}",
+                t.len(),
+                t.path().display()
+            ))?;
+            if t.permissive() {
+                emit("note: the token file is readable by others; chmod 600 it")?;
+            }
+        }
+        None => emit("no authentication required")?,
+    }
+
+    // Said every time, at every address, because the cost of not saying it
+    // is somebody's token in somebody else's hands.
+    warn_about_the_wire(bound, tokens.is_some())?;
+
+    // One thread owns the session; every worker submits to it. It is
+    // created before the workers and dropped after them, so no handle
+    // outlives the executor it points at.
+    let executor = Executor::spawn(session, Deadlines::default(), tokens);
+
+    let mut handles = Vec::with_capacity(workers);
+    for id in 0..workers {
+        let own = quantydb_server::bind_reuseport(bound)
+            .map_err(|e| failed(format!("worker {id} binding {bound}: {e}")))?;
+        own.set_nonblocking(true)
+            .map_err(|e| failed(format!("worker {id}: {e}")))?;
+        let mut worker = Worker::owning(own, running.clone())
+            .map_err(|e| failed(format!("worker {id}: {e}")))?;
+        let running = running.clone();
+        let accepted = accepted.clone();
+        let live = live.clone();
+        let dispatch = executor.handle();
+        handles.push(thread::spawn(move || {
+            while running.load(Ordering::Relaxed) {
+                match worker.turn(200, &dispatch) {
+                    Ok(turn) => {
+                        if turn.accepted > 0 {
+                            accepted.fetch_add(turn.accepted, Ordering::Relaxed);
+                        }
+                        live[id].store(worker.len(), Ordering::Relaxed);
+                    }
+                    Err(e) => {
+                        eprintln!("worker {id}: {e}");
+                        break;
+                    }
+                }
+            }
+            worker.shutdown(&dispatch);
+        }));
+    }
+
+    emit(&format!("listening on {bound}, {workers} workers"))?;
+    emit(&format!("serving {}", database.display()))?;
+
+    // Polled rather than delivered: the handler sets a flag and the loop
+    // reads it, so the interval is how long a Ctrl-C takes to be noticed.
+    // A quarter second to answer, five seconds between status lines.
+    let mut since_status = Duration::ZERO;
+    let step = Duration::from_millis(250);
+    let mut asked_to_stop = false;
+    loop {
+        thread::sleep(step);
+        since_status += step;
+
+        if !asked_to_stop && quantydb_sys::signal::quit_requested() {
+            asked_to_stop = true;
+            let held: usize = live.iter().map(|c| c.load(Ordering::Relaxed)).sum();
+            emit(&format!("stopping, {held} connection(s) open"))?;
+            running.store(false, Ordering::Relaxed);
+        }
+
+        if since_status >= Duration::from_secs(5) && !asked_to_stop {
+            since_status = Duration::ZERO;
+            let held: usize = live.iter().map(|c| c.load(Ordering::Relaxed)).sum();
+            let spread: Vec<usize> = live.iter().map(|c| c.load(Ordering::Relaxed)).collect();
+            emit(&format!(
+                "held={held} accepted={} spread={spread:?}",
+                accepted.load(Ordering::Relaxed)
+            ))?;
+        }
+
+        if handles.iter().all(|h| h.is_finished()) {
+            break;
+        }
+    }
+
+    // Joined rather than left to the process exit, so a worker that is
+    // mid-answer finishes it. Dropping the executor after this sends its
+    // thread a stop and joins that too, which is what closes the session
+    // and gives up the file lock.
+    for h in handles {
+        let _ = h.join();
+    }
+    drop(executor);
+    emit("closed")?;
+    Ok(())
+}
+
+/// Say plainly that the wire is not encrypted.
+///
+/// The protocol is plaintext and the token goes over it on every
+/// connection, so anyone on the path can read it and use it again. That is
+/// fine on loopback and over a private link, and it is not fine on the
+/// public internet. TLS is not written yet (ADR-020 says it would be
+/// written here rather than pulled in), so until it is, this says so every
+/// single time, and louder when the address is not a loopback one.
+#[cfg(target_os = "linux")]
+fn warn_about_the_wire(bound: std::net::SocketAddr, tokens: bool) -> Result<(), Failure> {
+    if bound.ip().is_loopback() {
+        emit("note: the wire is not encrypted; TLS is not built yet")?;
+        return Ok(());
+    }
+    emit("")?;
+    emit("  !!  THIS CONNECTION IS NOT ENCRYPTED  !!")?;
+    emit("")?;
+    emit(&format!(
+        "  {bound} is reachable beyond this machine, and the"
+    ))?;
+    emit("  protocol is plaintext. Tokens cross the wire in the clear on")?;
+    emit("  every connection: anyone who can see the traffic can read one")?;
+    emit("  and use it again. TLS is a work in progress and is not here.")?;
+    if !tokens {
+        emit("")?;
+        emit("  There is also no token file, so nothing is being asked for")?;
+        emit("  at all: anyone who can reach this port is already inside.")?;
+    }
+    emit("")?;
+    emit("  Put this behind wireguard, an ssh tunnel or a TLS proxy, or")?;
+    emit("  keep it on a network you trust. Do not expose it to the")?;
+    emit("  internet.")?;
+    emit("")
+}
+
+#[cfg(not(target_os = "linux"))]
+fn serve(_database: &Path, _flags: &Flags) -> Result<(), Failure> {
+    Err(failed("serve needs epoll and is linux only for now"))
+}

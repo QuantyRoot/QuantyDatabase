@@ -3,115 +3,115 @@
 version = 4
 
 [[package]]
-name = "quanty"
+name = "quantydb"
 version = "0.3.0"
 dependencies = [
- "quanty-core",
- "quanty-derive",
- "quanty-exec",
- "quanty-ql",
+ "quantydb-core",
+ "quantydb-derive",
+ "quantydb-exec",
+ "quantydb-ql",
 ]
 
 [[package]]
-name = "quanty-auth"
+name = "quantydb-auth"
 version = "0.3.0"
 dependencies = [
- "quanty-core",
- "quanty-sys",
+ "quantydb-core",
+ "quantydb-sys",
 ]
 
 [[package]]
-name = "quanty-bench"
+name = "quantydb-bench"
 version = "0.3.0"
 dependencies = [
- "quanty-core",
- "quanty-exec",
- "quanty-proto",
+ "quantydb-core",
+ "quantydb-exec",
+ "quantydb-proto",
 ]
 
 [[package]]
-name = "quanty-cli"
+name = "quantydb-cli"
 version = "0.3.0"
 dependencies = [
- "quanty-auth",
- "quanty-core",
- "quanty-exec",
- "quanty-import",
- "quanty-proto",
- "quanty-ql",
- "quanty-server",
- "quanty-service",
- "quanty-sqlite",
- "quanty-sys",
+ "quantydb-auth",
+ "quantydb-core",
+ "quantydb-exec",
+ "quantydb-import",
+ "quantydb-proto",
+ "quantydb-ql",
+ "quantydb-server",
+ "quantydb-service",
+ "quantydb-sqlite",
+ "quantydb-sys",
 ]
 
 [[package]]
-name = "quanty-core"
+name = "quantydb-core"
 version = "0.3.0"
 dependencies = [
- "quanty-sys",
+ "quantydb-sys",
 ]
 
 [[package]]
-name = "quanty-derive"
+name = "quantydb-derive"
 version = "0.3.0"
 
 [[package]]
-name = "quanty-exec"
+name = "quantydb-exec"
 version = "0.3.0"
 dependencies = [
- "quanty-core",
- "quanty-ql",
+ "quantydb-core",
+ "quantydb-ql",
 ]
 
 [[package]]
-name = "quanty-import"
+name = "quantydb-import"
 version = "0.3.0"
 dependencies = [
- "quanty-core",
- "quanty-exec",
- "quanty-ql",
- "quanty-sqlite",
+ "quantydb-core",
+ "quantydb-exec",
+ "quantydb-ql",
+ "quantydb-sqlite",
 ]
 
 [[package]]
-name = "quanty-proto"
+name = "quantydb-proto"
 version = "0.3.0"
 dependencies = [
- "quanty-core",
+ "quantydb-core",
 ]
 
 [[package]]
-name = "quanty-ql"
+name = "quantydb-ql"
 version = "0.3.0"
 dependencies = [
- "quanty-core",
+ "quantydb-core",
 ]
 
 [[package]]
-name = "quanty-server"
+name = "quantydb-server"
 version = "0.3.0"
 dependencies = [
- "quanty-proto",
- "quanty-sys",
+ "quantydb-proto",
+ "quantydb-sys",
 ]
 
 [[package]]
-name = "quanty-service"
+name = "quantydb-service"
 version = "0.3.0"
 dependencies = [
- "quanty-auth",
- "quanty-core",
- "quanty-exec",
- "quanty-proto",
- "quanty-ql",
- "quanty-server",
+ "quantydb-auth",
+ "quantydb-core",
+ "quantydb-exec",
+ "quantydb-proto",
+ "quantydb-ql",
+ "quantydb-server",
 ]
 
 [[package]]
-name = "quanty-sqlite"
+name = "quantydb-sqlite"
 version = "0.3.0"
 
 [[package]]
-name = "quanty-sys"
+name = "quantydb-sys"
 version = "0.3.0"

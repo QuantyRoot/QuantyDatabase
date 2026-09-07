@@ -1,0 +1,27 @@
+[package]
+name = "quantydb-service"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The executor thread that answers protocol requests for QuantyDB"
+
+[dependencies]
+quantydb-auth.workspace = true
+quantydb-core.workspace = true
+quantydb-exec.workspace = true
+quantydb-proto.workspace = true
+quantydb-ql.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+quantydb-server.workspace = true
+
+[dev-dependencies]
+quantydb-auth.workspace = true
+quantydb-core.workspace = true
+quantydb-exec.workspace = true
+quantydb-proto.workspace = true
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+quantydb-server.workspace = true

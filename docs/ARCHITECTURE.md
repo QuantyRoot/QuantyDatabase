@@ -150,7 +150,7 @@ GC walks commits outside the retention window, moves their exclusively
 owned pages to the free list once retention allows it (phase 3, ADR-010).
 The free list is itself a small tree of page ranges. It runs only when
 asked, never incrementally on commit: `gc keep 5` as a statement, or
-`quanty gc <db> 5`.
+`quantydb gc <db> 5`.
 
 ### Key encoding
 
@@ -262,7 +262,7 @@ wrote the epoll syscalls out by hand. What exists:
 - auth: token hashes in a file beside the database, never inside it,
   because branching and `as of` would make "revoked" true only at the tip
   of one branch (ADR-026)
-- `quanty connect` speaks the protocol, and its output is held byte for
+- `quantydb connect` speaks the protocol, and its output is held byte for
   byte against the local path
 
 Still open: every statement crosses the one executor thread, reads
@@ -275,7 +275,7 @@ Two independent pieces, do not mix them up:
 
 1. **Importer.** Read the SQLite file format directly (it is documented and
    stable), convert tables, indexes and data into a Quanty file.
-   `quanty import app.sqlite app.qdb`. No SQLite library dependency, we
+   `quantydb import app.sqlite app.qdb`. No SQLite library dependency, we
    parse the format ourselves.
 2. **Dialect.** The SQL front end above. Goal is "your typical app queries
    run unchanged", not bug-for-bug compatibility.
@@ -296,7 +296,7 @@ This project lives or dies on trust in the storage layer.
   produce an error, never UB). They are plain `cargo test` harnesses with
   their own generators, not cargo-fuzz, which is a tool and a nightly
   toolchain this project does not take.
-- **Benchmarks:** `quanty-bench`, hand written for the same reason, with
+- **Benchmarks:** `quantydb-bench`, hand written for the same reason, with
   a macro bench (bulk load, point reads, range scans, mixed workload)
   tracked over time. Compared against SQLite through both command line
   tools, and against PostgreSQL in chat. redb was named here and has
@@ -305,31 +305,31 @@ This project lives or dies on trust in the storage layer.
 ## Workspace layout
 
 ```
-quanty/
+quantydb/
   Cargo.toml            (workspace)
   crates/
-    quanty-core/        pager, btree, commits, mvcc, blobs, encoding
-    quanty-ql/          QQL + SQL front ends (pure syntax)
-    quanty-exec/        catalog, planner, executor
-    quanty/             public embedded API, the crate users add
-    quanty-derive/      ORM derive macros
-    quanty-proto/       wire protocol codec (bytes only, no I/O)
-    quanty-server/      reactor, connection state machine, dispatch
-    quanty-service/     the executor thread, write queue, group commit
-    quanty-auth/        sha256 and the token file
-    quanty-sqlite/      reader for the SQLite file format
-    quanty-import/      turns a SQLite database into a QuantyDB one
-    quanty-bench/       timing against SQLite, load generator, commit cost
-    quanty-cli/         quanty binary (repl, import, branch, gc,
+    quantydb-core/        pager, btree, commits, mvcc, blobs, encoding
+    quantydb-ql/          QQL + SQL front ends (pure syntax)
+    quantydb-exec/        catalog, planner, executor
+    quantydb/             public embedded API, the crate users add
+    quantydb-derive/      ORM derive macros
+    quantydb-proto/       wire protocol codec (bytes only, no I/O)
+    quantydb-server/      reactor, connection state machine, dispatch
+    quantydb-service/     the executor thread, write queue, group commit
+    quantydb-auth/        sha256 and the token file
+    quantydb-sqlite/      reader for the SQLite file format
+    quantydb-import/      turns a SQLite database into a QuantyDB one
+    quantydb-bench/       timing against SQLite, load generator, commit cost
+    quantydb-cli/         quantydb binary (repl, import, branch, gc,
                         serve, connect, token)
   docs/
   tests/                cross-crate integration + crash harness
 ```
 
-`quanty/` is built and its surface is fixed by ADR-030: concrete types
+`quantydb/` is built and its surface is fixed by ADR-030: concrete types
 only, statements as text, transactions as a borrow, and nothing from the
 internal crates re-exported, so no internal type reaches an embedder's
-signatures. `quanty-derive/` sits on top of it and holds to ADR-020: it
+signatures. `quantydb-derive/` sits on top of it and holds to ADR-020: it
 walks the `TokenStream` it is handed, with no `syn` and no `quote`.
 
 There is no dependency budget, because there are no dependencies. This
@@ -349,5 +349,5 @@ backends, which is also what keeps a WASM build possible.
 - bloom filters per leaf range and prefix compression in nodes: v2.
 - the adaptive story (auto index suggestions, hot/cold tiering, layout
   switching) needs a stats collector first. `DbStats` counts pages, head
-  pages and free pages, and `show stats` and `quanty stats` surface it.
+  pages and free pages, and `show stats` and `quantydb stats` surface it.
   Make decisions from real numbers.

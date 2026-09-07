@@ -21,29 +21,29 @@ wrapped.
   writing, reading, search, history, branches, the SQL front end, the
   embedded crate and the server. Every example in it was run and carries
   the output that came back.
-- `quanty setup [database]` walks through what a server needs: a database,
+- `quantydb setup [database]` walks through what a server needs: a database,
   a token file written private with one token in it, and optionally a
   systemd unit that runs as a person rather than as root. It starts
   nothing and overwrites nothing, and prints the exact commands to start
   and to connect (ADR-043).
-- `quanty uninstall` takes away the service and the binary, and never the
+- `quantydb uninstall` takes away the service and the binary, and never the
   database or the token file. It only removes a unit whose `ExecStart`
   names the binary doing the asking, so a copy in a downloads folder
   cannot take out the service running the installed one.
-- `quanty update --file <binary>` installs a binary you already have over
+- `quantydb update --file <binary>` installs a binary you already have over
   the running one, keeping the old one as `.old`. It refuses a file that
   is shorter than its own headers describe, which is what half a download
   looks like, and refuses one that will not run and report a version.
   Fetching a release itself needs TLS and waits for it (ADR-042).
-- `quanty serve` says that the wire is not encrypted, every time. On a
+- `quantydb serve` says that the wire is not encrypted, every time. On a
   loopback address that is one line; on any other it is a block that says
   tokens cross in the clear, and says so more loudly still when no token
   file was given at all. TLS is not built yet and the server should not
   be reachable from the internet until it is.
-- An embedded crate. `quanty` is what a Rust application depends on, with
+- An embedded crate. `quantydb` is what a Rust application depends on, with
   a concrete `Database`, transactions as a borrow, and statements as text
   (ADR-030).
-- `#[derive(Row)]` in `quanty-derive`, mapping a struct with named fields
+- `#[derive(Row)]` in `quantydb-derive`, mapping a struct with named fields
   to a table. No `syn` and no `quote`: the macro walks the token stream
   (ADR-031).
 - A content addressed blob store with deduplication, and an `asset` column
@@ -74,7 +74,7 @@ wrapped.
   run: `SO_REUSEPORT` sends everything to the listener that bound last,
   0 / 0 / 0 / 200, and a shared listener manages 0 / 0 / 22 / 178, against
   39 / 48 / 54 / 59 on Linux. A macOS server would run on one worker
-  whichever shape it picked, which is now a measured reason `quanty serve`
+  whichever shape it picked, which is now a measured reason `quantydb serve`
   stays on Linux rather than a `cfg` waiting to be deleted (ADR-038).
 - An accept test that runs its workers on their own threads. The existing
   one turned them in order on a single thread, where whoever ran first
@@ -116,17 +116,17 @@ wrapped.
   a column's text index. A table definition is written at the lowest
   version that can express it, so a table that gained neither stays
   readable by everything that came before.
-- Every syscall now lives in `quanty-sys`, which is the only crate
+- Every syscall now lives in `quantydb-sys`, which is the only crate
   allowed unsafe code. It was one module inside the Linux-only server,
   which left nowhere for a Windows random source to go and nowhere for a
   second reactor to live.
-- SHA-256 moved from `quanty-auth` into `quanty-core`, since a hash used
+- SHA-256 moved from `quantydb-auth` into `quantydb-core`, since a hash used
   for content addressing belongs with the storage and two copies of one
   would be two databases.
 
 ### Fixed
 
-- `quanty serve` shuts down when it is asked to. SIGINT, SIGTERM and
+- `quantydb serve` shuts down when it is asked to. SIGINT, SIGTERM and
   SIGHUP set a flag the loop already had and nothing had ever set, so
   every stop used to be a crash: connections dropped mid-answer, the
   executor thread never joined, the file lock taken back by the kernel
@@ -144,7 +144,7 @@ wrapped.
 - The writer lock on Windows, where a whole-file lock is mandatory rather
   than advisory and made the database unreadable by anything else. It
   locks a byte past the data now.
-- `quanty token` on Windows. Minting read `/dev/urandom`, which is not a
+- `quantydb token` on Windows. Minting read `/dev/urandom`, which is not a
   path there, so no token could be made. The random source is the
   operating system's on every platform now.
 - Two writers on one file could each believe they were alone, and the
@@ -170,8 +170,8 @@ wrapped.
 
 ### Added
 
-- A network server for the same engine: `quanty serve` and
-  `quanty connect`. An event loop per worker written on epoll directly,
+- A network server for the same engine: `quantydb serve` and
+  `quantydb connect`. An event loop per worker written on epoll directly,
   connections parked rather than blocked, one executor thread owning the
   session, group commit, and token authentication stored beside the
   database rather than in it.

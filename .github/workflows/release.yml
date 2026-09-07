@@ -28,22 +28,22 @@ jobs:
           # older one and says almost nothing about why.
           - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
-            name: quanty-linux-x86_64
+            name: quantydb-linux-x86_64
           # Static, for anything older than that runner. It costs about
           # 2.2x on the read path, measured, which is why it is the second
           # file and not the first. See ADR-040.
           - os: ubuntu-22.04
             target: x86_64-unknown-linux-musl
-            name: quanty-linux-x86_64-static
+            name: quantydb-linux-x86_64-static
           - os: macos-latest
             target: aarch64-apple-darwin
-            name: quanty-macos-arm64
+            name: quantydb-macos-arm64
           - os: macos-latest
             target: x86_64-apple-darwin
-            name: quanty-macos-x86_64
+            name: quantydb-macos-x86_64
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            name: quanty-windows-x86_64
+            name: quantydb-windows-x86_64
     steps:
       - uses: actions/checkout@v4
 
@@ -71,7 +71,7 @@ jobs:
         run: cargo test --workspace --locked
 
       - name: build
-        run: cargo build --release --locked -p quanty-cli --target ${{ matrix.target }}
+        run: cargo build --release --locked -p quantydb-cli --target ${{ matrix.target }}
 
       # Named for the platform rather than the target triple, and carrying
       # its own checksum, so a downloaded file can be checked without
@@ -81,10 +81,10 @@ jobs:
         run: |
           mkdir -p dist
           if [ "${{ matrix.os }}" = "windows-latest" ]; then
-            cp "target/${{ matrix.target }}/release/quanty.exe" "dist/${{ matrix.name }}.exe"
+            cp "target/${{ matrix.target }}/release/quantydb.exe" "dist/${{ matrix.name }}.exe"
             cd dist && sha256sum "${{ matrix.name }}.exe" > "${{ matrix.name }}.exe.sha256"
           else
-            cp "target/${{ matrix.target }}/release/quanty" "dist/${{ matrix.name }}"
+            cp "target/${{ matrix.target }}/release/quantydb" "dist/${{ matrix.name }}"
             cd dist
             if command -v sha256sum > /dev/null; then
               sha256sum "${{ matrix.name }}" > "${{ matrix.name }}.sha256"

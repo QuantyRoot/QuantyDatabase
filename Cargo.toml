@@ -1,19 +1,19 @@
 [workspace]
 members = [
-    "crates/quanty",
-    "crates/quanty-derive",
-    "crates/quanty-core",
-    "crates/quanty-auth",
-    "crates/quanty-ql",
-    "crates/quanty-exec",
-    "crates/quanty-proto",
-    "crates/quanty-server",
-    "crates/quanty-service",
-    "crates/quanty-sqlite",
-    "crates/quanty-sys",
-    "crates/quanty-import",
-    "crates/quanty-cli",
-    "crates/quanty-bench",
+    "crates/quantydb",
+    "crates/quantydb-derive",
+    "crates/quantydb-core",
+    "crates/quantydb-auth",
+    "crates/quantydb-ql",
+    "crates/quantydb-exec",
+    "crates/quantydb-proto",
+    "crates/quantydb-server",
+    "crates/quantydb-service",
+    "crates/quantydb-sqlite",
+    "crates/quantydb-sys",
+    "crates/quantydb-import",
+    "crates/quantydb-cli",
+    "crates/quantydb-bench",
 ]
 resolver = "2"
 
@@ -29,20 +29,20 @@ repository = "https://github.com/QuantyRoot/QuantyDatabase"
 # version, and forty-four inline versions would be forty-four numbers
 # to bump. A test keeps these in step with the workspace version.
 [workspace.dependencies]
-quanty-sys = { path = "crates/quanty-sys", version = "0.3.0" }
-quanty-core = { path = "crates/quanty-core", version = "0.3.0" }
-quanty-proto = { path = "crates/quanty-proto", version = "0.3.0" }
-quanty-auth = { path = "crates/quanty-auth", version = "0.3.0" }
-quanty-ql = { path = "crates/quanty-ql", version = "0.3.0" }
-quanty-exec = { path = "crates/quanty-exec", version = "0.3.0" }
-quanty-sqlite = { path = "crates/quanty-sqlite", version = "0.3.0" }
-quanty-import = { path = "crates/quanty-import", version = "0.3.0" }
-quanty-derive = { path = "crates/quanty-derive", version = "0.3.0" }
-quanty = { path = "crates/quanty", version = "0.3.0" }
-quanty-service = { path = "crates/quanty-service", version = "0.3.0" }
-quanty-server = { path = "crates/quanty-server", version = "0.3.0" }
-quanty-cli = { path = "crates/quanty-cli", version = "0.3.0" }
-quanty-bench = { path = "crates/quanty-bench", version = "0.3.0" }
+quantydb-sys = { path = "crates/quantydb-sys", version = "0.3.0" }
+quantydb-core = { path = "crates/quantydb-core", version = "0.3.0" }
+quantydb-proto = { path = "crates/quantydb-proto", version = "0.3.0" }
+quantydb-auth = { path = "crates/quantydb-auth", version = "0.3.0" }
+quantydb-ql = { path = "crates/quantydb-ql", version = "0.3.0" }
+quantydb-exec = { path = "crates/quantydb-exec", version = "0.3.0" }
+quantydb-sqlite = { path = "crates/quantydb-sqlite", version = "0.3.0" }
+quantydb-import = { path = "crates/quantydb-import", version = "0.3.0" }
+quantydb-derive = { path = "crates/quantydb-derive", version = "0.3.0" }
+quantydb = { path = "crates/quantydb", version = "0.3.0" }
+quantydb-service = { path = "crates/quantydb-service", version = "0.3.0" }
+quantydb-server = { path = "crates/quantydb-server", version = "0.3.0" }
+quantydb-cli = { path = "crates/quantydb-cli", version = "0.3.0" }
+quantydb-bench = { path = "crates/quantydb-bench", version = "0.3.0" }
 
 [profile.release]
 lto = "thin"

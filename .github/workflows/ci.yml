@@ -66,7 +66,7 @@ jobs:
       # instead of guessing at it. Filters that match nothing pass, which
       # is what happens on Windows, where there is no reactor.
       - name: how accepts spread on this kernel
-        run: cargo test -p quanty-server --test accept -- --nocapture reuseport_spreads a_shared_listener_across
+        run: cargo test -p quantydb-server --test accept -- --nocapture reuseport_spreads a_shared_listener_across
 
   crash-harness:
     name: crash harness (1000 kills)
@@ -77,7 +77,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.98.0
       - uses: Swatinem/rust-cache@v2
       - name: kill -9 the pager a thousand times
-        run: cargo test -p quanty-core --test crash_harness -- --nocapture
+        run: cargo test -p quantydb-core --test crash_harness -- --nocapture
         env:
           QUANTY_CRASH_ITERS: "1000"
 
@@ -90,7 +90,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.98.0
       - uses: Swatinem/rust-cache@v2
       - name: kill -9 inside an open transaction a thousand times
-        run: cargo test -p quanty-exec --test txn_crash -- --nocapture
+        run: cargo test -p quantydb-exec --test txn_crash -- --nocapture
         env:
           QUANTY_TXN_CRASH_ITERS: "1000"
 
@@ -114,7 +114,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.98.0
       - uses: Swatinem/rust-cache@v2
       - name: 1M key bulk load and scan
-        run: cargo test -p quanty-core --release --test heavy -- --ignored --nocapture
+        run: cargo test -p quantydb-core --release --test heavy -- --ignored --nocapture
 
   parser-fuzz:
     name: parser fuzz (10 min)
@@ -125,7 +125,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.98.0
       - uses: Swatinem/rust-cache@v2
       - name: fuzz the QQL parser
-        run: cargo test -p quanty-ql --release --test parser_fuzz -- --nocapture
+        run: cargo test -p quantydb-ql --release --test parser_fuzz -- --nocapture
         env:
           QUANTY_FUZZ_SECS: "600"
 
@@ -138,7 +138,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.98.0
       - uses: Swatinem/rust-cache@v2
       - name: fuzz the SQL parser
-        run: cargo test -p quanty-ql --release --test sql_parser_fuzz -- --nocapture
+        run: cargo test -p quantydb-ql --release --test sql_parser_fuzz -- --nocapture
         env:
           QUANTY_FUZZ_SECS: "600"
 
@@ -151,7 +151,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.98.0
       - uses: Swatinem/rust-cache@v2
       - name: fuzz the SQLite reader
-        run: cargo test -p quanty-sqlite --release --test reader_fuzz -- --nocapture
+        run: cargo test -p quantydb-sqlite --release --test reader_fuzz -- --nocapture
         env:
           QUANTY_FUZZ_SECS: "600"
 
@@ -164,7 +164,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.98.0
       - uses: Swatinem/rust-cache@v2
       - name: kill -9 the server mid-write and check what it promised
-        run: cargo test -p quanty-cli --release --test crash -- --nocapture
+        run: cargo test -p quantydb-cli --release --test crash -- --nocapture
         env:
           QUANTY_SERVER_CRASH_ITERS: "300"
 
@@ -177,7 +177,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.98.0
       - uses: Swatinem/rust-cache@v2
       - name: hammer the executor from many connections
-        run: cargo test -p quanty-service --release --test soak -- --nocapture
+        run: cargo test -p quantydb-service --release --test soak -- --nocapture
         env:
           QUANTY_FUZZ_SECS: "600"
 
@@ -190,7 +190,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.98.0
       - uses: Swatinem/rust-cache@v2
       - name: fuzz the wire protocol
-        run: cargo test -p quanty-proto --release --test proto_fuzz -- --nocapture
+        run: cargo test -p quantydb-proto --release --test proto_fuzz -- --nocapture
         env:
           QUANTY_FUZZ_SECS: "600"
 
@@ -206,8 +206,8 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y sqlite3
       - name: time both engines on the same machine
         run: |
-          cargo build --release -p quanty-cli -p quanty-bench
-          ./target/release/quanty-bench --check | tee bench.txt
+          cargo build --release -p quantydb-cli -p quantydb-bench
+          ./target/release/quantydb-bench --check | tee bench.txt
       - name: put the table in the job summary
         if: always()
         run: |
