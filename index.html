@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>QuantyDB packages</title>
+<style>
+  :root { color-scheme: dark light; }
+  body {
+    font: 16px/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    max-width: 46rem; margin: 3rem auto; padding: 0 1.25rem;
+    background: #0f1115; color: #d6dae2;
+  }
+  h1 { font-size: 1.5rem; margin: 0 0 .25rem; }
+  h2 { font-size: 1rem; margin: 2.25rem 0 .5rem; color: #9aa4b2; font-weight: 600; }
+  p { color: #9aa4b2; }
+  a { color: #7aa2f7; }
+  pre {
+    background: #161923; border: 1px solid #232735; border-radius: 6px;
+    padding: .85rem 1rem; overflow-x: auto; font-size: .875rem;
+  }
+  .warn { border-left: 3px solid #e0af68; padding-left: 1rem; }
+</style>
+</head>
+<body>
+
+<h1>QuantyDB</h1>
+<p>One database that reshapes itself into whatever you need.
+<a href="https://github.com/QuantyRoot/QuantyDatabase">Source</a> &middot;
+<a href="https://github.com/QuantyRoot/QuantyDatabase/releases">Releases</a></p>
+
+<h2>Any Linux or macOS</h2>
+<pre>curl -fsSL https://quantyroot.github.io/QuantyDatabase/install.sh | sh</pre>
+
+<h2>Debian, Ubuntu</h2>
+<pre>curl -fsSL https://quantyroot.github.io/QuantyDatabase/gpg.key \
+  | sudo gpg --dearmor -o /usr/share/keyrings/quantydb.gpg
+
+echo "deb [signed-by=/usr/share/keyrings/quantydb.gpg] \
+  https://quantyroot.github.io/QuantyDatabase/apt stable main" \
+  | sudo tee /etc/apt/sources.list.d/quantydb.list
+
+sudo apt update &amp;&amp; sudo apt install quantydb</pre>
+
+<h2>Fedora, RHEL, openSUSE</h2>
+<pre>sudo curl -fsSL https://quantyroot.github.io/QuantyDatabase/quantydb.repo \
+  -o /etc/yum.repos.d/quantydb.repo
+
+sudo dnf install quantydb</pre>
+
+<h2>Homebrew</h2>
+<pre>brew tap quantyroot/quantydb https://github.com/QuantyRoot/QuantyDatabase
+brew install quantydb</pre>
+
+<h2>Before you put it on a server</h2>
+<p class="warn">The server speaks plaintext. Tokens cross the wire in the
+clear on every connection, so anyone who can watch the traffic can take
+one and use it again. TLS is written here rather than pulled in, and is
+not written yet. Keep <code>quantydb serve</code> on loopback or behind
+wireguard, an ssh tunnel or a TLS proxy. <code>quantydb serve</code> runs
+on Linux; the tool and both query languages run everywhere.</p>
+
+<p>Signing key fingerprint:
+<code>67EB 7423 F266 FC43 DD55&nbsp; D891 7F81 0738 A287 E24D</code></p>
+
+</body>
+</html>

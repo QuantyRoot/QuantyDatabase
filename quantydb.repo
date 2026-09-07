@@ -1,0 +1,6 @@
+[quantydb]
+name=QuantyDB
+baseurl=https://quantyroot.github.io/QuantyDatabase/rpm
+enabled=1
+gpgcheck=1
+gpgkey=https://quantyroot.github.io/QuantyDatabase/gpg.key
