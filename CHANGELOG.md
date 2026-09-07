@@ -47,11 +47,16 @@ wrapped.
   registrations rather than one bitmask (ADR-038).
 - A CI step that prints how accepts spread across workers on each
   platform, since the assertion only holds where a kernel promised it and
-  a passing test says nothing on its own. It reported what `SO_REUSEPORT`
-  does on macOS on the first run: nothing, everything to the listener that
-  bound last, 0 / 0 / 0 / 200 against Linux's 47 / 58 / 44 / 51. That is
-  now a documented reason `quanty serve` stays on Linux rather than a
-  `cfg` waiting to be deleted (ADR-038).
+  a passing test says nothing on its own. macOS answered on the first
+  run: `SO_REUSEPORT` sends everything to the listener that bound last,
+  0 / 0 / 0 / 200, and a shared listener manages 0 / 0 / 22 / 178, against
+  39 / 48 / 54 / 59 on Linux. A macOS server would run on one worker
+  whichever shape it picked, which is now a measured reason `quanty serve`
+  stays on Linux rather than a `cfg` waiting to be deleted (ADR-038).
+- An accept test that runs its workers on their own threads. The existing
+  one turned them in order on a single thread, where whoever ran first
+  drained the queue whoever the kernel woke, so it measured the loop.
+  Nothing had driven the accept path concurrently until now.
 
 ### Changed
 

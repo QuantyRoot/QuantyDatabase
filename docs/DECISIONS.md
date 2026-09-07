@@ -1844,16 +1844,37 @@ a matter of removing a `cfg`: the accept shape has to change with it, to
 the shared listener every worker watches, which kqueue does support and
 which no longer has `EPOLLEXCLUSIVE` to make tidy.
 
-**And the second number is not a number.** The shared listener test
-prints its counts too, and they say [64, 0, 0, 0] on Linux, which looks
-like the same finding and is not one. That test turns its workers in
-order on one thread and `accept_all` drains until it would block, so
-whichever worker runs first takes the whole queue whoever the kernel
-woke. It measures the harness. Whether a shared listener spreads across
-workers that are actually running at the same time is still open on both
-kernels, and answering it needs a test with threads in it. The counts are
-labelled in the output so the next reader does not mistake them for the
-answer.
+**The other shape does not save it.** The obvious answer to a reuseport
+that does not spread is the shared listener every worker watches, which
+kqueue supports without complaint. So that was measured too, with each
+worker on its own thread, since the older test turned four workers in
+order on one and the first one drained the queue whoever the kernel woke
+— it measured the loop, not the kernel. Two hundred connections, four
+workers, one run per platform except Linux which was run five times:
+
+```
+                     Linux                     Darwin
+reuseport            39 / 48 / 54 / 59         0 / 0 / 0 / 200
+shared listener      145 to 190 of 200         0 / 0 / 22 / 178
+                     to one worker
+```
+
+Linux behaves as ADR-025 recorded, now with a better instrument: the
+exclusive wakeup is lopsided and reuseport is the shape that spreads.
+Darwin spreads under neither. The shared listener puts a second worker to
+work and stops there, which is not a distribution, and one run is not
+enough to say whether the 22 means anything at all.
+
+**So the macOS server would be a one worker server, whichever shape it
+picked.** That is the finding, and it is larger than the `cfg` this work
+started from. Spreading accepts on Darwin needs a third design that does
+not exist here: one thread that accepts and hands descriptors to workers,
+round robin or by depth. It is buildable and it is not bought, because
+nothing has asked for a macOS server yet and ADR-016 says not to buy
+ahead of the ask. What changes today is that `quanty serve` stays on
+Linux for a measured reason rather than for a missing backend, and the
+next person to reach for the `cfg` finds the numbers instead of the
+assumption.
 
 **The price.** A second backend to keep, about 300 lines of `unsafe` at
 the boundary and 180 of safe Rust above it. The Linux path gained two
