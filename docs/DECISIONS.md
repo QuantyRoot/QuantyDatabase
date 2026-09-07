@@ -48,6 +48,7 @@ project.)
 - [ADR-040](#adr-040-a-release-is-five-binaries-and-the-linux-one-is-not-static) A release is five binaries, and the Linux one is not static
 - [ADR-041](#adr-041-a-signal-sets-a-flag-and-every-shutdown-stops-being-a-crash) A signal sets a flag, and every shutdown stops being a crash
 - [ADR-042](#adr-042-the-updater-installs-a-file-and-proves-it-before-it-does) The updater installs a file, and proves it before it does
+- [ADR-043](#adr-043-setup-writes-no-state-so-uninstall-needs-none-to-read) Setup writes no state, so uninstall needs none to read
 
 ## ADR-001: Rust
 
@@ -2156,3 +2157,65 @@ A checksum is still the only thing that proves a file is *the* file rather
 than merely a whole one. `--sha256` takes one, and without it the digest
 is printed with a note saying it describes what arrived rather than what
 was published.
+
+## ADR-043: Setup writes no state, so uninstall needs none to read
+
+`quanty setup` walks through what a server needs and writes it. `quanty
+uninstall` takes it away. The obvious way to connect the two is a
+manifest: setup records what it made, uninstall reads the record. That was
+not built, and the reason is the thing worth keeping.
+
+The tool has no configuration directory and writes nothing outside the
+files it is pointed at. That is what makes removing it easy, and a
+manifest would spend exactly that property to buy back a worse version of
+it: a file that can be stale, that has to be found, that has to be
+cleaned up by the thing it describes.
+
+**So there is one well-known path and no record.** The service unit goes
+to `/etc/systemd/system/quanty.service` and nowhere else, and the unit
+already says where the database and the token file are, on its
+`ExecStart` line. Uninstall reads that. The two halves agree without a
+third file to keep in step, and a machine where setup was never run has
+nothing to be inconsistent about.
+
+**Nothing else setup makes is an installation.** A database is data and a
+token file is a secret. Neither is removed, ever, by anything. Uninstall
+says where they are and says they are yours, which is the whole of its
+policy on them. A wizard that writes a database and an uninstall that
+removes it is a data loss bug with a friendly interface.
+
+**Uninstall only removes the service that runs this binary.** That came
+out of writing the test rather than the code. The test needed its own
+copy of the tool in a temporary directory, which meant asking what
+happens when that copy is told to uninstall on a machine that has a real
+service. The answer, at the time, was that it would have removed it. So
+the unit is only taken away when its `ExecStart` names the binary doing
+the asking; otherwise it is listed, and left, with the reason. A copy in a
+downloads folder cannot take out the service running the installed one.
+
+**Setup starts nothing.** It writes the unit and prints the two commands
+that would enable it. A program that quietly starts a network service
+during what the reader thought was a questionnaire is a surprise, and
+surprises on a server are expensive. For the same reason it overwrites
+nothing: an existing database is used as it is, an existing token file is
+appended to, and an existing unit stops the whole thing with a message.
+
+**The unit is not run as root.** `User=` is the invoking user, or whoever
+`SUDO_USER` says asked. It carries `NoNewPrivileges`, `PrivateTmp`,
+`ProtectHome`, `ProtectSystem=strict` with `ReadWritePaths` set to the
+directory holding the database, and `KillSignal=SIGTERM` with a thirty
+second stop timeout, which is only worth writing now that a signal
+actually closes the server rather than ending it (ADR-041).
+
+**End of input means the default.** Every question is asked with a default
+in brackets and answered by pressing return, and reaching the end of
+standard input answers all of them the same way. That is what makes the
+wizard scriptable without a second code path for the non-interactive
+case, and it is why the tests can drive it without a terminal.
+
+**The price.** Two commands whose behaviour depends on a path spelled in
+one place, which is a constant that has to stay in step with what the unit
+looks like. And `uninstall` shells out to `systemctl` to stop the service
+before the unit goes, since leaving systemd holding a service whose
+definition has vanished is worse than the dependency on a command that is
+already there on any machine with a unit directory.

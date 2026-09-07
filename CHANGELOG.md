@@ -17,6 +17,15 @@ wrapped.
 
 ### Added
 
+- `quanty setup [database]` walks through what a server needs: a database,
+  a token file written private with one token in it, and optionally a
+  systemd unit that runs as a person rather than as root. It starts
+  nothing and overwrites nothing, and prints the exact commands to start
+  and to connect (ADR-043).
+- `quanty uninstall` takes away the service and the binary, and never the
+  database or the token file. It only removes a unit whose `ExecStart`
+  names the binary doing the asking, so a copy in a downloads folder
+  cannot take out the service running the installed one.
 - `quanty update --file <binary>` installs a binary you already have over
   the running one, keeping the old one as `.old`. It refuses a file that
   is shorter than its own headers describe, which is what half a download

@@ -49,6 +49,27 @@ Download `quanty-windows-x86_64.exe`, rename it to `quanty.exe`, and put
 it in a directory on your `PATH`. SmartScreen will warn about it for the
 same reason Gatekeeper does.
 
+## Setting up a server
+
+```
+quanty setup
+```
+
+It asks where the database should live, where the token file goes and
+what address to listen on, and offers to write a systemd unit. Every
+question has a default; pressing return takes it. It writes the files,
+prints the token once and prints the exact command to start the server.
+It starts nothing itself.
+
+Give it the answers up front to skip the questions:
+
+```
+quanty setup /var/lib/quanty/main.qdb --tokens /etc/quanty/tokens --service --yes
+```
+
+The token is printed once and stored nowhere: the token file keeps a hash
+of it. Losing it means minting another with `quanty token <label>`.
+
 ## Checking what you downloaded
 
 Each release carries a `SHA256SUMS` file covering every binary in it.
@@ -115,5 +136,17 @@ from Linux can be used from anywhere.
 
 ## Uninstalling
 
-Delete the binary. It writes nothing outside the database files you point
-it at, keeps no configuration directory, and installs no service.
+```
+quanty uninstall
+```
+
+It lists what it found, asks, then stops and removes the service unit and
+the binary. It never removes a database or a token file: those are yours,
+and it tells you where they are so you can decide.
+
+It only removes a service unit that runs the binary you are asking, so a
+copy sitting in a downloads folder cannot take out the one you installed.
+
+By hand it is the same short list: the binary, `/etc/systemd/system/quanty.service`
+if you asked for one, and whatever database and token files you made.
+There is no configuration directory and nothing else on disk.

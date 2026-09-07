@@ -44,6 +44,8 @@ usage:
   quanty connect <addr> [statement] [--token <t>] [--sql]
   quanty about
   quanty update --file <binary> [--sha256 <hex>] [--yes]
+  quanty setup [database.qdb]
+  quanty uninstall
 
   create   make an empty database
   import   read a sqlite file and write it into a new quanty database
@@ -66,12 +68,19 @@ usage:
              without it reads statements from stdin, as shell does
   about    what this is, who made it, and what it does not depend on
   update   replace this binary with another one you already have
+  setup    make a database, a token and optionally a service unit
+  uninstall  take the service and this binary away, and nothing else
 
   --sql    read the statement in sql rather than qql
 
   deleting a branch is `quanty run <db> \"drop branch <name>\"`
 
 connect  --token    the token to show, if the server requires one
+
+setup    --tokens   token file to write or add to
+         --listen   address the server should bind
+         --service  write a systemd unit; --no-service to skip the question
+         --yes      take every default without asking
 
 update   --file     the binary to install. Fetching a release needs TLS,
                     which is not written yet, so this is the way in
@@ -85,6 +94,7 @@ serve    --listen   address to bind, default 127.0.0.1:7878
 ";
 
 mod client;
+mod setup;
 mod update;
 
 fn main() -> ExitCode {
@@ -153,6 +163,7 @@ struct Flags {
     token: Option<String>,
     file: Option<String>,
     sha256: Option<String>,
+    service: Option<bool>,
     yes: bool,
     elchi: bool,
 }
@@ -212,6 +223,8 @@ fn split_flags(args: &[String]) -> Result<(Vec<&str>, Flags), Failure> {
             }
             "--elchi" => flags.elchi = true,
             "--yes" | "-y" => flags.yes = true,
+            "--service" => flags.service = Some(true),
+            "--no-service" => flags.service = Some(false),
             "--dry-run" => flags.dry_run = true,
             "--strict" => flags.strict = true,
             "--sql" => flags.sql = true,
@@ -266,6 +279,27 @@ fn run(args: &[String]) -> Result<(), Failure> {
         "about" => match rest {
             [] => about(),
             _ => Err(usage("about takes nothing")),
+        },
+        "setup" => match rest {
+            [] => setup::setup(
+                None,
+                flags.tokens.as_deref(),
+                flags.listen.as_deref(),
+                flags.service,
+                flags.yes,
+            ),
+            [database] => setup::setup(
+                Some(database),
+                flags.tokens.as_deref(),
+                flags.listen.as_deref(),
+                flags.service,
+                flags.yes,
+            ),
+            _ => Err(usage("setup takes an optional database")),
+        },
+        "uninstall" => match rest {
+            [] => setup::uninstall(flags.yes),
+            _ => Err(usage("uninstall takes nothing")),
         },
         "update" => match rest {
             [] => update::update(flags.file.as_deref(), flags.sha256.as_deref(), flags.yes),
