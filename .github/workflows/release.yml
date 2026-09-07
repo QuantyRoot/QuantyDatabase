@@ -132,7 +132,9 @@ jobs:
           tag="permission-check-$GITHUB_RUN_ID"
           gh release create "$tag" --draft --notes "checking write access"
           echo "created the draft, so the token may write releases"
-          gh release delete "$tag" --yes --cleanup-tag
+          # No --cleanup-tag: a draft has no tag to clean up, and asking
+          # for one fails the step after the thing it was checking passed.
+          gh release delete "$tag" --yes
           echo "and deleted it"
 
   publish:
