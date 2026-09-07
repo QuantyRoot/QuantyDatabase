@@ -110,6 +110,31 @@ jobs:
           name: ${{ matrix.name }}
           path: dist/*
 
+  # The one link in the chain that a dispatch cannot otherwise exercise.
+  # The repository's default token permission is read, and a job asking for
+  # write is supposed to get it; supposed to is not the same as does, and
+  # finding out at tag time means finding out with five binaries built and
+  # nowhere to put them. A draft release is invisible to anyone without
+  # push access, and this deletes it either way.
+  can-we-publish:
+    name: check we may write a release
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: create a draft and take it away again
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          tag="permission-check-$GITHUB_RUN_ID"
+          gh release create "$tag" --draft --notes "checking write access"
+          echo "created the draft, so the token may write releases"
+          gh release delete "$tag" --yes --cleanup-tag
+          echo "and deleted it"
+
   publish:
     name: attach to the release
     needs: build
