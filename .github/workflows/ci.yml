@@ -66,7 +66,7 @@ jobs:
       # instead of guessing at it. Filters that match nothing pass, which
       # is what happens on Windows, where there is no reactor.
       - name: how accepts spread on this kernel
-        run: cargo test -p quanty-server --test accept -- --nocapture reuseport_spreads several_workers
+        run: cargo test -p quanty-server --test accept -- --nocapture reuseport_spreads a_shared_listener_across
 
   crash-harness:
     name: crash harness (1000 kills)

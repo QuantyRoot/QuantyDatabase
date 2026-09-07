@@ -4,7 +4,7 @@
 
 use std::io::Write;
 use std::net::{TcpListener, TcpStream};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -359,5 +359,86 @@ fn a_finished_reply_stops_asking_to_write() {
         start.elapsed() >= Duration::from_millis(150),
         "the loop returned immediately, so something is still registered for \
          writing with nothing to write"
+    );
+}
+
+/// Does a shared listener spread across workers that are running at the
+/// same time?
+///
+/// Its neighbour above cannot answer that. It turns four workers in order
+/// on this thread and `accept_all` drains until it would block, so the
+/// first one takes the whole queue whoever the kernel woke: those counts
+/// measure the loop. This one puts each worker on its own thread, which
+/// is the only shape in which the question means anything.
+///
+/// Nothing about the spread is asserted, on either kernel. Linux wakes one
+/// worker per connection with `EPOLLEXCLUSIVE`, and ADR-025 measured that
+/// it favours whoever sits first on the wait queue. kqueue has no
+/// exclusive wakeup and wakes all of them, so all but one get
+/// `WouldBlock`. Neither promises a distribution. What both do promise is
+/// asserted: every connection is accepted exactly once, by somebody, with
+/// four threads racing for it. The counts are printed for ADR-038.
+#[test]
+fn a_shared_listener_across_workers_that_are_running() {
+    const WORKERS: usize = 4;
+    const CHUNK: usize = 50;
+    const TOTAL: usize = 200;
+
+    let (listener, addr) = shared_listener();
+    let flag = Arc::new(AtomicBool::new(true));
+    let counts: Vec<Arc<AtomicUsize>> = (0..WORKERS)
+        .map(|_| Arc::new(AtomicUsize::new(0)))
+        .collect();
+
+    let mut threads = Vec::new();
+    for count in &counts {
+        let mut w = Worker::new(listener.clone(), flag.clone()).expect("worker");
+        let count = count.clone();
+        let flag = flag.clone();
+        threads.push(thread::spawn(move || {
+            while flag.load(Ordering::Relaxed) {
+                let turn = w.turn(20, &Idle).expect("turn");
+                if turn.accepted > 0 {
+                    count.fetch_add(turn.accepted, Ordering::Relaxed);
+                }
+            }
+            w.shutdown(&Idle);
+        }));
+    }
+
+    let accepted = || {
+        counts
+            .iter()
+            .map(|c| c.load(Ordering::Relaxed))
+            .sum::<usize>()
+    };
+
+    // Paced by the workers rather than by a sleep: open a chunk, wait for
+    // it to be taken, open the next. Darwin clamps the listen backlog to
+    // `kern.ipc.somaxconn`, so two hundred outstanding at once would be
+    // dropped rather than queued, which is what the test above learned.
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let mut clients: Vec<TcpStream> = Vec::with_capacity(TOTAL);
+    while clients.len() < TOTAL {
+        for _ in 0..CHUNK {
+            clients.push(TcpStream::connect(addr).expect("connect"));
+        }
+        let want = clients.len();
+        while accepted() < want && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    flag.store(false, Ordering::Relaxed);
+    for t in threads {
+        t.join().expect("worker thread");
+    }
+
+    let spread: Vec<usize> = counts.iter().map(|c| c.load(Ordering::Relaxed)).collect();
+    let total: usize = spread.iter().sum();
+    println!("shared listener across running workers: {spread:?}");
+    assert_eq!(
+        total, TOTAL,
+        "accepted {total} of {TOTAL}, spread {spread:?}"
     );
 }
