@@ -49,6 +49,10 @@ Download `quanty-windows-x86_64.exe`, rename it to `quanty.exe`, and put
 it in a directory on your `PATH`. SmartScreen will warn about it for the
 same reason Gatekeeper does.
 
+## Using it
+
+[USING.md](USING.md) is the tour, from an empty file to a running server.
+
 ## Setting up a server
 
 ```

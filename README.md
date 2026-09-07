@@ -162,6 +162,9 @@ macOS and Windows binaries are there too, and there is no package in apt,
 AUR, homebrew or winget yet. Checksums, Gatekeeper, and which of the two
 Linux builds to take are in [INSTALL.md](docs/INSTALL.md).
 
+Then [USING.md](docs/USING.md) is the tour: a file, a library and a
+server, with every example run and its real output underneath.
+
 ---
 
 ## Planned features

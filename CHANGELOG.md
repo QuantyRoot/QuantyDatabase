@@ -17,6 +17,10 @@ wrapped.
 
 ### Added
 
+- `docs/USING.md`, the tour from an empty file to a running server: tables,
+  writing, reading, search, history, branches, the SQL front end, the
+  embedded crate and the server. Every example in it was run and carries
+  the output that came back.
 - `quanty setup [database]` walks through what a server needs: a database,
   a token file written private with one token in it, and optionally a
   systemd unit that runs as a person rather than as root. It starts
