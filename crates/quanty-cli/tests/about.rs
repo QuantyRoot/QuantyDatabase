@@ -139,3 +139,58 @@ mod quanty_cli_claims {
     pub const DECISIONS: usize = 36;
     pub const FOREIGN_DEPENDENCIES: usize = 0;
 }
+
+/// Every internal dependency names a version, not just a path.
+///
+/// Cargo does not need one: a path is enough to build. crates.io refuses
+/// the package outright, and it refuses it at publish time, which is
+/// after some of the other crates have already gone up.
+///
+/// A version that disagrees with the workspace is a different problem and
+/// not this one. Cargo catches that itself, and harder: while the major
+/// version is zero, `^0.3.0` does not match `0.4.0`, so the build stops
+/// before any test runs. This checks the case cargo is happy with.
+#[test]
+fn every_internal_dependency_names_a_version() {
+    let manifest = fs::read_to_string(root().join("Cargo.toml")).expect("read Cargo.toml");
+
+    let entries: Vec<&str> = manifest
+        .lines()
+        .skip_while(|l| l.trim() != "[workspace.dependencies]")
+        .skip(1)
+        .take_while(|l| !l.trim_start().starts_with('['))
+        .filter(|l| l.contains("path = "))
+        .collect();
+
+    assert!(
+        !entries.is_empty(),
+        "no internal dependencies found, so this test proved nothing"
+    );
+    let naked: Vec<&&str> = entries.iter().filter(|l| !l.contains("version")).collect();
+    assert!(
+        naked.is_empty(),
+        "these build fine and cannot be published: {naked:?}"
+    );
+}
+
+/// Every crate that goes to crates.io needs a description there.
+#[test]
+fn every_crate_says_what_it_is() {
+    let mut missing = Vec::new();
+    for entry in fs::read_dir(root().join("crates")).expect("read crates") {
+        let path = entry.expect("entry").path().join("Cargo.toml");
+        let Ok(text) = fs::read_to_string(&path) else {
+            continue;
+        };
+        if !text
+            .lines()
+            .any(|l| l.trim_start().starts_with("description"))
+        {
+            missing.push(path.display().to_string());
+        }
+    }
+    assert!(
+        missing.is_empty(),
+        "crates.io refuses a package with no description: {missing:?}"
+    );
+}

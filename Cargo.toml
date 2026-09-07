@@ -24,6 +24,26 @@ rust-version = "1.89"
 license = "MIT"
 repository = "https://github.com/QuantyRoot/QuantyDatabase"
 
+# One place for the version every internal dependency asks for.
+# crates.io refuses a package whose dependency has a path and no
+# version, and forty-four inline versions would be forty-four numbers
+# to bump. A test keeps these in step with the workspace version.
+[workspace.dependencies]
+quanty-sys = { path = "crates/quanty-sys", version = "0.3.0" }
+quanty-core = { path = "crates/quanty-core", version = "0.3.0" }
+quanty-proto = { path = "crates/quanty-proto", version = "0.3.0" }
+quanty-auth = { path = "crates/quanty-auth", version = "0.3.0" }
+quanty-ql = { path = "crates/quanty-ql", version = "0.3.0" }
+quanty-exec = { path = "crates/quanty-exec", version = "0.3.0" }
+quanty-sqlite = { path = "crates/quanty-sqlite", version = "0.3.0" }
+quanty-import = { path = "crates/quanty-import", version = "0.3.0" }
+quanty-derive = { path = "crates/quanty-derive", version = "0.3.0" }
+quanty = { path = "crates/quanty", version = "0.3.0" }
+quanty-service = { path = "crates/quanty-service", version = "0.3.0" }
+quanty-server = { path = "crates/quanty-server", version = "0.3.0" }
+quanty-cli = { path = "crates/quanty-cli", version = "0.3.0" }
+quanty-bench = { path = "crates/quanty-bench", version = "0.3.0" }
+
 [profile.release]
 lto = "thin"
 codegen-units = 1

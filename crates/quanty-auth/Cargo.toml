@@ -8,5 +8,5 @@ repository.workspace = true
 description = "Token storage and verification for QuantyDB"
 
 [dependencies]
-quanty-sys = { path = "../quanty-sys" }
-quanty-core = { path = "../quanty-core" }
+quanty-sys.workspace = true
+quanty-core.workspace = true

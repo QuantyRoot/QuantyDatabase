@@ -8,4 +8,4 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-quanty-core = { path = "../quanty-core" }
+quanty-core.workspace = true

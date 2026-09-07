@@ -12,20 +12,20 @@ name = "quanty"
 path = "src/main.rs"
 
 [dependencies]
-quanty-core = { path = "../quanty-core" }
-quanty-exec = { path = "../quanty-exec" }
-quanty-import = { path = "../quanty-import" }
-quanty-ql = { path = "../quanty-ql" }
-quanty-sqlite = { path = "../quanty-sqlite" }
+quanty-core.workspace = true
+quanty-exec.workspace = true
+quanty-import.workspace = true
+quanty-ql.workspace = true
+quanty-sqlite.workspace = true
 # Minting a token and speaking the wire protocol are portable. Only the
 # server needs epoll, so only the server is behind a target.
-quanty-auth = { path = "../quanty-auth" }
-quanty-proto = { path = "../quanty-proto" }
+quanty-auth.workspace = true
+quanty-proto.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
-quanty-service = { path = "../quanty-service" }
-quanty-server = { path = "../quanty-server" }
+quanty-service.workspace = true
+quanty-server.workspace = true
 # The tool owns the process, so the tool is what turns a signal into a
 # shutdown. That is a syscall, and every syscall in this workspace is in
 # quanty-sys.
-quanty-sys = { path = "../quanty-sys" }
+quanty-sys.workspace = true

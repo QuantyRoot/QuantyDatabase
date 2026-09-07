@@ -8,4 +8,4 @@ repository.workspace = true
 description = "Wire protocol codec for QuantyDB"
 
 [dependencies]
-quanty-core = { path = "../quanty-core" }
+quanty-core.workspace = true

@@ -7,6 +7,12 @@ There is no package in apt, AUR, homebrew or winget yet, and no install
 script that pipes into a shell. Those come after the binaries have been
 out long enough to be worth packaging.
 
+The AUR one is written and cannot be submitted: registration on
+aur.archlinux.org has been paused since September 2026 while they deal
+with a wave of automated account creation, and submitting a package needs
+an account. It goes up when registration reopens, which is announced on
+aur-general and the Arch news feed and nowhere else worth polling.
+
 ## Which file
 
 Every release attaches these, built and tested on the platform they name:

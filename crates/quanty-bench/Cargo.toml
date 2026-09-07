@@ -20,6 +20,6 @@ name = "quanty-commit-cost"
 path = "src/bin/commit_cost.rs"
 
 [dependencies]
-quanty-core = { path = "../quanty-core" }
-quanty-exec = { path = "../quanty-exec" }
-quanty-proto = { path = "../quanty-proto" }
+quanty-core.workspace = true
+quanty-exec.workspace = true
+quanty-proto.workspace = true
