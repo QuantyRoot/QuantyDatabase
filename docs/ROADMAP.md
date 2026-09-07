@@ -543,9 +543,11 @@ hundred connections went 0 / 0 / 0 / 200 across reuseport listeners and
 0 / 0 / 22 / 178 across workers sharing one, against 39 / 48 / 54 / 59 on
 Linux. A macOS server would run on one worker whichever shape it picked,
 so widening `quanty serve` past Linux needs a third design that does not
-exist here — a thread that accepts and hands descriptors on. That, the
-soak, the crash harness and the connection ceiling are what the macOS
-server needs, and none of them is a `cfg` waiting to be deleted.
+exist here — a thread that accepts and hands descriptors on. ADR-039
+records its shape, where it belongs and what it costs, and does not build
+it. That, the soak, the crash harness and the connection ceiling are what
+the macOS server needs, and none of them is a `cfg` waiting to be
+deleted.
 
 ## Later / unscheduled
 

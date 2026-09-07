@@ -44,6 +44,7 @@ project.)
 - [ADR-036](#adr-036-a-text-index-is-a-secondary-index-whose-value-is-a-term) A text index is a secondary index whose value is a term
 - [ADR-037](#adr-037-one-reactor-interface-shaped-like-completion-three-backends) One reactor interface, shaped like completion, three backends
 - [ADR-038](#adr-038-kqueue-behind-the-same-interface-minus-the-exclusive-wakeup) kqueue behind the same interface, minus the exclusive wakeup
+- [ADR-039](#adr-039-spreading-accepts-is-the-servers-job-not-the-reactors) Spreading accepts is the server's job, not the reactor's
 
 ## ADR-001: Rust
 
@@ -1884,3 +1885,73 @@ rather than assumed free. And `bsd.rs` is Apple's kqueue only: FreeBSD
 widened `struct kevent` with a `uint64_t ext[4]` and numbers `EVFILT_USER`
 differently, so a module claiming both would be two layouts wearing one
 name. Nothing builds FreeBSD here, so nothing here claims it.
+
+## ADR-039: Spreading accepts is the server's job, not the reactor's
+
+ADR-038 measured that Darwin spreads accepted connections under neither
+shape available to it: reuseport sends everything to the listener that
+bound last, and a shared listener that wakes every worker still gave one
+of them 178 of 200. A macOS server would run on one worker. Spreading
+there needs a third design, and this records what it is before anyone
+needs it, so the question is answered by reading rather than by guessing
+at four in the morning.
+
+**It is not built.** Nothing has asked for a macOS server, and ADR-016
+says not to buy ahead of the ask. This is a shape on a shelf.
+
+**Where it belongs, which is the part worth deciding now.** ADR-037 said
+one interface, three backends, no `cfg` above the boundary. Accept
+spreading is the first thing that does not fit underneath it. The
+mechanism differs per kernel, and on Darwin the *policy* has to move
+above the boundary as well: some code has to choose which worker gets a
+connection, and no kernel will do it. Pushing that down would mean a
+`Poller` that knows about workers, which is the reactor knowing about
+the server.
+
+So the boundary holds and the answer is the other way round: the reactor
+reports that a listener is readable and nothing more, and choosing a
+worker is the server's business. The acceptor is a file next to
+`worker.rs`, not a branch inside `poll.rs`.
+
+**The handoff already exists here under another name.** `Outbox` is a
+`Mutex<Vec<Reply>>` and the worker's `Waker`: a foreign thread pushes and
+wakes, and `turn` drains it in the `WAKE_TOKEN` branch. Thirty lines. An
+inbox of accepted descriptors is that object with a different payload,
+drained in the same branch beside `deliver`, and the worker registers
+what it finds with its own `Poller` because the registry is per worker
+and not shared. That is the argument that this is one more file rather
+than one more design.
+
+**Which platforms would use it.**
+
+- *Linux: no.* `SO_REUSEPORT` spreads, measured twice now. An acceptor
+  would add a thread and a hop to buy something the kernel gives away.
+- *Darwin: yes, and only this.* Both kernel mechanisms were measured and
+  neither spreads.
+- *Windows: expected no, and unverified.* `AcceptEx` is a posted
+  operation rather than a wakeup: each worker posts its own accept
+  against the shared listening socket and the kernel completes exactly
+  one of them, which is the exclusive wakeup kqueue lacks, built into the
+  model. Nothing here has built or measured that, and ADR-038's whole
+  lesson is that the manual page is not the measurement. It is written
+  down as an expectation with a reason, not as a finding.
+
+**Round robin first.** Least loaded, by connections held, is better when
+lifetimes are uneven, and needs a counter per worker that the acceptor
+can read. Round robin needs nothing and is a counter away from the other
+one, so it goes first and the comparison is a measurement someone can
+run rather than a paragraph someone can argue with.
+
+**The price, named.**
+
+- A thread whose only job is `accept`, which makes connection
+  establishment single threaded on the platform that needs it. For ten
+  thousand mostly idle connections that is nothing; for a benchmark that
+  hammers connect and disconnect it is the ceiling. Unmeasured, and the
+  first thing to measure if this is ever built.
+- A hop per connection: the descriptor crosses a mutex and a wakeup
+  before anything watches it, so first byte latency grows by one wakeup.
+- A third accept path beside the owned reuseport listener and the shared
+  one, on a code base whose rule is that a feature does not get its own
+  path. The defence is that the other two stay exactly as they are and
+  this one is only reached where the kernel leaves no choice.
