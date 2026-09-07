@@ -23,6 +23,13 @@ wrapped.
   start is caught by the second check rather than installed.
 - A Homebrew formula, in this repository rather than a tap of its own, and
   a `.deb` built around the released binary.
+- Signed apt and rpm repositories, published to GitHub Pages by the
+  release workflow, so `apt install quantydb` and `dnf install quantydb`
+  work rather than only `apt install ./file.deb`. Both were built here and
+  installed from: apt fetched, verified and installed the package, and
+  changing one byte of the signed index made it refuse with BADSIG.
+- A PKGBUILD for the AUR, as `quantydb-bin`, with the `.SRCINFO` the AUR
+  actually reads generated from it rather than kept in step by hand.
 - `docs/USING.md`, the tour from an empty file to a running server: tables,
   writing, reading, search, history, branches, the SQL front end, the
   embedded crate and the server. Every example in it was run and carries

@@ -33,11 +33,14 @@ Fedora, RHEL and anything else with dnf:
 sudo dnf install ./quantydb-0.4.0.x86_64.rpm
 ```
 
-The AUR one is written and cannot be submitted: registration on
-aur.archlinux.org has been paused since September 2026 while they deal
-with a wave of automated account creation, and submitting a package needs
-an account. It goes up when registration reopens, which is announced on
-aur-general and the Arch news feed and nowhere else worth polling.
+Arch, from the AUR:
+
+```
+yay -S quantydb-bin
+```
+
+`quantydb-bin` installs the released binary. `quantydb` builds it from
+source with cargo, and needs nothing but Rust to do it.
 
 ## Which file
 

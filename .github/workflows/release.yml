@@ -132,6 +132,85 @@ jobs:
           rm -f ./*.sha256
           ls -l
 
+      - name: the version, without the v
+        id: version
+        run: echo "n=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
+
+      - name: tools for the package formats
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            apt-utils createrepo-c rpm
+
+      # Imported into the runner's keyring, which is thrown away with the
+      # runner. Without the secret the scripts still build the packages and
+      # say they did not sign them, so a missing secret is a loud repository
+      # rather than a silent one.
+      - name: the signing key
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+        run: |
+          if [ -z "$GPG_PRIVATE_KEY" ]; then
+            echo "::warning::GPG_PRIVATE_KEY is not set, packages will be unsigned"
+            exit 0
+          fi
+          echo "$GPG_PRIVATE_KEY" | gpg --batch --import
+          gpg --list-secret-keys --keyid-format LONG
+
+      - name: build the deb and the rpm
+        run: |
+          chmod +x packaging/*.sh
+          mkdir -p debs
+          packaging/deb.sh dist/quantydb-linux-x86_64 "${{ steps.version.outputs.n }}" amd64 debs
+          packaging/apt-repo.sh debs site/apt
+          packaging/rpm-repo.sh dist/quantydb-linux-x86_64 "${{ steps.version.outputs.n }}" x86_64 site/rpm
+          cp debs/*.deb site/rpm/*.rpm dist/
+
+      # The formula points at files that only exist once this release does,
+      # so its checksums come out of the SHA256SUMS just written rather than
+      # from anybody's memory.
+      - name: point the formula at this release
+        run: |
+          v="${{ steps.version.outputs.n }}"
+          sum() { grep "  $1\$" dist/SHA256SUMS | cut -d' ' -f1; }
+          python3 - "$v" "$(sum quantydb-macos-arm64)" \
+                       "$(sum quantydb-macos-x86_64)" \
+                       "$(sum quantydb-linux-x86_64)" <<'EOF'
+          import re, sys
+          version, arm, intel, linux = sys.argv[1:5]
+          p = "Formula/quantydb.rb"
+          s = open(p).read()
+          s = re.sub(r'version "[^"]*"', f'version "{version}"', s, count=1)
+          for want in (arm, intel, linux):
+              s = s.replace('"' + "0" * 64 + '"', f'"{want}"', 1)
+          open(p, "w").write(s)
+          print(s)
+          EOF
+
+      - name: publish the site and the formula
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git config user.name "Elchi"
+          git config user.email "github@elchi.dev"
+          git add Formula/quantydb.rb
+          git commit -m "release: formula points at ${{ steps.version.outputs.n }}"
+          git push origin HEAD:main
+
+          # gh-pages keeps only what a package manager fetches, so it is
+          # rebuilt rather than merged: an old .deb left behind is an old
+          # .deb apt will happily install.
+          git fetch origin gh-pages
+          git worktree add /tmp/pages gh-pages
+          rm -rf /tmp/pages/apt /tmp/pages/rpm
+          cp -r site/apt site/rpm /tmp/pages/
+          cp install.sh /tmp/pages/install.sh
+          cd /tmp/pages
+          git add -A
+          git commit -m "release: packages for ${{ steps.version.outputs.n }}"
+          git push origin gh-pages
+          cd -
+
       # gh is on the runner already. A release is rare enough that another
       # action is a dependency bought for five minutes a month.
       - name: create the release
