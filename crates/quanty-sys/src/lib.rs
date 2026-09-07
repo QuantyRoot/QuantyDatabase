@@ -15,6 +15,11 @@
 pub mod lock;
 pub mod random;
 
+// Windows asks the same question through SetConsoleCtrlHandler, which is
+// a different shape entirely, and `quanty serve` does not run there yet.
+#[cfg(unix)]
+pub mod signal;
+
 #[cfg(target_os = "linux")]
 pub mod linux;
 

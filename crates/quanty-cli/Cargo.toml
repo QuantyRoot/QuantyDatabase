@@ -25,3 +25,7 @@ quanty-proto = { path = "../quanty-proto" }
 [target.'cfg(target_os = "linux")'.dependencies]
 quanty-service = { path = "../quanty-service" }
 quanty-server = { path = "../quanty-server" }
+# The tool owns the process, so the tool is what turns a signal into a
+# shutdown. That is a syscall, and every syscall in this workspace is in
+# quanty-sys.
+quanty-sys = { path = "../quanty-sys" }

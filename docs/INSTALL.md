@@ -76,10 +76,14 @@ The binary lands in `target/release/quanty`.
 
 ## Updating
 
-Download the new file over the old one. There is no `quanty update` and
-no self-updater: a database that rewrites its own binary is a way to lose
-an afternoon, and once there are packages, the package manager is the
-thing that should be doing this.
+`quanty update --file <binary>` replaces the running tool with one you
+already have on the machine, after checking that it is a working quanty
+and telling you which version it is about to become.
+
+It does not fetch anything yet. Pulling a release off GitHub needs HTTPS,
+and this project writes what it depends on (ADR-020), so the network path
+arrives with TLS. Until then: download the new file, point `update` at
+it, or let a package manager do it once there are packages.
 
 ## What runs where
 

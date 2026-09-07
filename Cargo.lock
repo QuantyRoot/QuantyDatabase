@@ -42,6 +42,7 @@ dependencies = [
  "quanty-server",
  "quanty-service",
  "quanty-sqlite",
+ "quanty-sys",
 ]
 
 [[package]]

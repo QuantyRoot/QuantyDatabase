@@ -46,6 +46,7 @@ project.)
 - [ADR-038](#adr-038-kqueue-behind-the-same-interface-minus-the-exclusive-wakeup) kqueue behind the same interface, minus the exclusive wakeup
 - [ADR-039](#adr-039-spreading-accepts-is-the-servers-job-not-the-reactors) Spreading accepts is the server's job, not the reactor's
 - [ADR-040](#adr-040-a-release-is-five-binaries-and-the-linux-one-is-not-static) A release is five binaries, and the Linux one is not static
+- [ADR-041](#adr-041-a-signal-sets-a-flag-and-every-shutdown-stops-being-a-crash) A signal sets a flag, and every shutdown stops being a crash
 
 ## ADR-001: Rust
 
@@ -1814,8 +1815,8 @@ replaced it.** ADR-025 measured that a shared listener under
 `SO_REUSEPORT`, which spreads because Linux hashes the four-tuple. Darwin
 has `SO_REUSEPORT` and does not promise that hashing; FreeBSD spells the
 balancing variant `SO_REUSEPORT_LB` and Darwin has no equivalent name at
-all. So on macOS *both* mechanisms for spreading accepts are missing, not
-just the one the handover named.
+all. So on macOS *both* mechanisms for spreading accepts are missing, and
+the exclusive wakeup was only the obvious half of it.
 
 What is built is the honest version: `register_listener` takes `shared`
 and cannot honour it, every worker watching a shared listener wakes, and
@@ -1914,14 +1915,14 @@ reports that a listener is readable and nothing more, and choosing a
 worker is the server's business. The acceptor is a file next to
 `worker.rs`, not a branch inside `poll.rs`.
 
-**The handoff already exists here under another name.** `Outbox` is a
-`Mutex<Vec<Reply>>` and the worker's `Waker`: a foreign thread pushes and
-wakes, and `turn` drains it in the `WAKE_TOKEN` branch. Thirty lines. An
-inbox of accepted descriptors is that object with a different payload,
-drained in the same branch beside `deliver`, and the worker registers
-what it finds with its own `Poller` because the registry is per worker
-and not shared. That is the argument that this is one more file rather
-than one more design.
+**Passing the descriptor already exists here under another name.**
+`Outbox` is a `Mutex<Vec<Reply>>` and the worker's `Waker`: a foreign
+thread pushes and wakes, and `turn` drains it in the `WAKE_TOKEN` branch.
+Thirty lines. An inbox of accepted descriptors is that object with a
+different payload, drained in the same branch beside `deliver`, and the
+worker registers what it finds with its own `Poller` because the registry
+is per worker and not shared. That is the argument that this is one more
+file rather than one more design.
 
 **Which platforms would use it.**
 
@@ -2020,8 +2021,74 @@ it means a machine with cores to spare, and it does not change the
 decision: the single threaded path already argues for glibc. If the
 server is ever measured on both, this record gets the second number.
 
-**No self-update.** `quanty update` was on the list and is not built. A
-database that rewrites its own binary is a way to lose an afternoon, and
-once packages exist, the package manager should be doing it. The install
-page says to download the new file over the old one, which is the whole
-procedure.
+**Amended on 2026-09-07: `quanty update` ships after all.** An earlier
+draft of this record argued there would be none, which was wrong on the
+facts. Update has been on the list for a long time and the question was
+always when rather than whether.
+
+The sequencing is the part worth writing down. Pulling a release off
+GitHub needs HTTPS, and under ADR-020 that means writing TLS here rather
+than pulling it in, which is a phase of its own. So `quanty update` lands
+first in the form that needs no network at all, taking a file that is
+already on the machine, and grows the network path once TLS exists. That
+design gets its own record rather than a paragraph in this one.
+
+## ADR-041: A signal sets a flag, and every shutdown stops being a crash
+
+`quanty serve` had a `running` flag, every worker checked it, and
+`worker.shutdown` waited at the end of the loop. Nothing ever set the flag
+to false. There was no signal handling anywhere in the workspace, so
+Ctrl-C and `systemctl stop` ended the process where it stood: connections
+dropped mid-answer, the executor thread never joined, the file lock given
+up by the kernel rather than by us.
+
+That is not data loss. The pager and the transaction layer are killed a
+thousand times each on every push and the file comes back, which is the
+whole point of the crash harness. But recovering is not closing, and a
+database whose only exit is a crash is one that exercises its recovery
+path on every restart of the service that runs it.
+
+**`signal`, not `sigaction`.** `struct sigaction` is a different layout on
+Linux and Darwin, so taking it would mean two declarations and a third
+when something else arrives. `signal` takes a function pointer and no
+struct, and both platforms give it BSD semantics: the handler stays
+installed and blocking calls resume rather than failing. That is exactly
+enough for a handler that sets a flag.
+
+**The handler is one relaxed store.** Almost nothing is safe to call
+between two instructions of a thread that was not expecting to be
+interrupted; a handler that allocates or takes a lock is a deadlock
+waiting for the wrong moment. So it stores `true` and returns, and
+everything else happens in the loop.
+
+**Which means the flag is polled, not delivered.** Restart semantics mean
+a blocked call is resumed, so nothing notices a signal by being
+interrupted. Every loop in this workspace already waits with a timeout:
+the workers use 200 ms, and the supervising loop now steps at 250 ms
+instead of sleeping five seconds between status lines. A Ctrl-C is
+therefore answered in about a quarter of a second, and any future loop
+that waits without a timeout will not answer it at all. That is written
+on the module.
+
+**SIGHUP is in the list** because nothing here has a configuration to
+reload, which is the only other thing it traditionally means. When
+something does, it comes out of the list and gets its own handler.
+
+**A second signal does not force the exit.** Pressing Ctrl-C twice is a
+common way to say "I meant it", and it is not wired up, because the
+shutdown is already bounded: workers leave within one poll timeout, and
+the executor finishes at most the statement it is on, which the deadlines
+bound. If that ever stops being true, this is the first thing to add.
+`kill -9` remains available and remains safe, which is a claim the crash
+harness makes rather than this record.
+
+**The price.** One more module at the syscall boundary, about seventy
+lines. A quarter second of latency between asking and being heard. And
+the supervising loop wakes twenty times as often as it did, to do nothing
+almost every time, which is a rounding error against a thread that was
+already sleeping.
+
+**Not done: Windows.** There is no `signal` worth calling there for this;
+it is `SetConsoleCtrlHandler`, which is a different shape and a handler on
+its own thread. `quanty serve` does not run on Windows yet, so the module
+is `cfg(unix)` and the question waits for IOCP (ADR-037).

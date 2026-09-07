@@ -17,6 +17,11 @@ wrapped.
 
 ### Added
 
+- `quanty serve` says that the wire is not encrypted, every time. On a
+  loopback address that is one line; on any other it is a block that says
+  tokens cross in the clear, and says so more loudly still when no token
+  file was given at all. TLS is not built yet and the server should not
+  be reachable from the internet until it is.
 - An embedded crate. `quanty` is what a Rust application depends on, with
   a concrete `Database`, transactions as a borrow, and statements as text
   (ADR-030).
@@ -103,6 +108,12 @@ wrapped.
 
 ### Fixed
 
+- `quanty serve` shuts down when it is asked to. SIGINT, SIGTERM and
+  SIGHUP set a flag the loop already had and nothing had ever set, so
+  every stop used to be a crash: connections dropped mid-answer, the
+  executor thread never joined, the file lock taken back by the kernel
+  rather than given up. It recovered, because the crash harness makes
+  sure of that, and recovering is not closing (ADR-041).
 - The encoded socket address on macOS, which was written in Linux's
   layout. The BSDs spend the first byte on the structure's own length and
   leave one byte for the family, and `AF_INET6` is 30 there rather than

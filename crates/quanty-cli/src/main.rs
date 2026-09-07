@@ -629,6 +629,12 @@ fn serve(database: &Path, flags: &Flags) -> Result<(), Failure> {
     let accepted = Arc::new(AtomicUsize::new(0));
     let live: Arc<Vec<AtomicUsize>> = Arc::new((0..workers).map(|_| AtomicUsize::new(0)).collect());
 
+    // A shutdown that is asked for rather than taken. Without this every
+    // stop is a crash: recoverable, exercised by the crash harness, and
+    // still not the same as closing (ADR-041).
+    quanty_sys::signal::listen_for_quit()
+        .map_err(|e| failed(format!("installing signal handlers: {e}")))?;
+
     match &tokens {
         Some(t) => {
             emit(&format!(
@@ -640,8 +646,12 @@ fn serve(database: &Path, flags: &Flags) -> Result<(), Failure> {
                 emit("note: the token file is readable by others; chmod 600 it")?;
             }
         }
-        None => emit("no authentication required; keep this on loopback")?,
+        None => emit("no authentication required")?,
     }
+
+    // Said every time, at every address, because the cost of not saying it
+    // is somebody's token in somebody else's hands.
+    warn_about_the_wire(bound, tokens.is_some())?;
 
     // One thread owns the session; every worker submits to it. It is
     // created before the workers and dropped after them, so no handle
@@ -682,19 +692,83 @@ fn serve(database: &Path, flags: &Flags) -> Result<(), Failure> {
     emit(&format!("listening on {bound}, {workers} workers"))?;
     emit(&format!("serving {}", database.display()))?;
 
+    // Polled rather than delivered: the handler sets a flag and the loop
+    // reads it, so the interval is how long a Ctrl-C takes to be noticed.
+    // A quarter second to answer, five seconds between status lines.
+    let mut since_status = Duration::ZERO;
+    let step = Duration::from_millis(250);
+    let mut asked_to_stop = false;
     loop {
-        thread::sleep(Duration::from_secs(5));
-        let held: usize = live.iter().map(|c| c.load(Ordering::Relaxed)).sum();
-        let spread: Vec<usize> = live.iter().map(|c| c.load(Ordering::Relaxed)).collect();
-        emit(&format!(
-            "held={held} accepted={} spread={spread:?}",
-            accepted.load(Ordering::Relaxed)
-        ))?;
+        thread::sleep(step);
+        since_status += step;
+
+        if !asked_to_stop && quanty_sys::signal::quit_requested() {
+            asked_to_stop = true;
+            let held: usize = live.iter().map(|c| c.load(Ordering::Relaxed)).sum();
+            emit(&format!("stopping, {held} connection(s) open"))?;
+            running.store(false, Ordering::Relaxed);
+        }
+
+        if since_status >= Duration::from_secs(5) && !asked_to_stop {
+            since_status = Duration::ZERO;
+            let held: usize = live.iter().map(|c| c.load(Ordering::Relaxed)).sum();
+            let spread: Vec<usize> = live.iter().map(|c| c.load(Ordering::Relaxed)).collect();
+            emit(&format!(
+                "held={held} accepted={} spread={spread:?}",
+                accepted.load(Ordering::Relaxed)
+            ))?;
+        }
+
         if handles.iter().all(|h| h.is_finished()) {
             break;
         }
     }
+
+    // Joined rather than left to the process exit, so a worker that is
+    // mid-answer finishes it. Dropping the executor after this sends its
+    // thread a stop and joins that too, which is what closes the session
+    // and gives up the file lock.
+    for h in handles {
+        let _ = h.join();
+    }
+    drop(executor);
+    emit("closed")?;
     Ok(())
+}
+
+/// Say plainly that the wire is not encrypted.
+///
+/// The protocol is plaintext and the token goes over it on every
+/// connection, so anyone on the path can read it and use it again. That is
+/// fine on loopback and over a private link, and it is not fine on the
+/// public internet. TLS is not written yet (ADR-020 says it would be
+/// written here rather than pulled in), so until it is, this says so every
+/// single time, and louder when the address is not a loopback one.
+#[cfg(target_os = "linux")]
+fn warn_about_the_wire(bound: std::net::SocketAddr, tokens: bool) -> Result<(), Failure> {
+    if bound.ip().is_loopback() {
+        emit("note: the wire is not encrypted; TLS is not built yet")?;
+        return Ok(());
+    }
+    emit("")?;
+    emit("  !!  THIS CONNECTION IS NOT ENCRYPTED  !!")?;
+    emit("")?;
+    emit(&format!(
+        "  {bound} is reachable beyond this machine, and the"
+    ))?;
+    emit("  protocol is plaintext. Tokens cross the wire in the clear on")?;
+    emit("  every connection: anyone who can see the traffic can read one")?;
+    emit("  and use it again. TLS is a work in progress and is not here.")?;
+    if !tokens {
+        emit("")?;
+        emit("  There is also no token file, so nothing is being asked for")?;
+        emit("  at all: anyone who can reach this port is already inside.")?;
+    }
+    emit("")?;
+    emit("  Put this behind wireguard, an ssh tunnel or a TLS proxy, or")?;
+    emit("  keep it on a network you trust. Do not expose it to the")?;
+    emit("  internet.")?;
+    emit("")
 }
 
 #[cfg(not(target_os = "linux"))]
