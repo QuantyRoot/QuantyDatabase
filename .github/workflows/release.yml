@@ -35,6 +35,12 @@ jobs:
           - os: ubuntu-22.04
             target: x86_64-unknown-linux-musl
             name: quantydb-linux-x86_64-static
+          # Native, not cross compiled: the runner is arm64, so the tests
+          # in this job run on the architecture the binary is for. A cross
+          # build would ship something no machine had executed.
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            name: quantydb-linux-arm64
           - os: macos-latest
             target: aarch64-apple-darwin
             name: quantydb-macos-arm64
@@ -188,9 +194,12 @@ jobs:
         run: |
           chmod +x packaging/*.sh
           mkdir -p debs
-          packaging/deb.sh dist/quantydb-linux-x86_64 "${{ steps.version.outputs.n }}" amd64 debs
+          v="${{ steps.version.outputs.n }}"
+          packaging/deb.sh dist/quantydb-linux-x86_64 "$v" amd64 debs
+          packaging/deb.sh dist/quantydb-linux-arm64  "$v" arm64 debs
           packaging/apt-repo.sh debs site/apt
-          packaging/rpm-repo.sh dist/quantydb-linux-x86_64 "${{ steps.version.outputs.n }}" x86_64 site/rpm
+          packaging/rpm-repo.sh dist/quantydb-linux-x86_64 "$v" x86_64  site/rpm
+          packaging/rpm-repo.sh dist/quantydb-linux-arm64  "$v" aarch64 site/rpm
           cp debs/*.deb site/rpm/*.rpm dist/
 
       # The formula points at files that only exist once this release does,

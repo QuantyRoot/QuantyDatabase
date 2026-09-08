@@ -64,7 +64,7 @@ install -D -m 0755 %{_sourcedir}/quantydb %{buildroot}%{_bindir}/quantydb
 %changelog
 EOF
 
-rpmbuild --define "_topdir $work" -bb "$work/SPECS/quantydb.spec" > /dev/null
+rpmbuild --define "_topdir $work" --target "$arch" -bb "$work/SPECS/quantydb.spec" > /dev/null
 rpm_file=$(find "$work/RPMS" -name '*.rpm' | head -1)
 [ -n "$rpm_file" ] || { echo "rpmbuild produced nothing" >&2; exit 1; }
 

@@ -28,13 +28,11 @@ command -v apt-ftparchive > /dev/null 2>&1 \
 
 suite=stable
 component=main
-arch=amd64
 
 pool="$out/pool/$component/q/quantydb"
 dist="$out/dists/$suite"
-binary="$dist/$component/binary-$arch"
 
-mkdir -p "$pool" "$binary"
+mkdir -p "$pool"
 found=0
 for deb in "$debs"/*.deb; do
     [ -f "$deb" ] || continue
@@ -44,17 +42,29 @@ done
 [ "$found" -gt 0 ] || { echo "no .deb files in $debs" >&2; exit 1; }
 echo "$found package(s) in the pool"
 
-# Paths inside Packages have to be relative to the repository root, which
-# is what apt appends to the base URL, so this runs from there.
-( cd "$out" && apt-ftparchive packages "pool/$component" > "dists/$suite/$component/binary-$arch/Packages" )
-gzip -9 -k -f "$binary/Packages"
+# One Packages file per architecture, and apt only looks in the directory
+# for the one it is running on. A package listed under the wrong
+# architecture is a package nobody can see.
+arches=$(for deb in "$pool"/*.deb; do
+    dpkg-deb -f "$deb" Architecture
+done | sort -u)
+echo "architectures: $(echo "$arches" | tr '\n' ' ')"
+
+for arch in $arches; do
+    mkdir -p "$dist/$component/binary-$arch"
+    # Paths inside Packages are relative to the repository root, which is
+    # what apt appends to the base URL, so this runs from there.
+    ( cd "$out" && apt-ftparchive --arch "$arch" packages "pool/$component" \
+        > "dists/$suite/$component/binary-$arch/Packages" )
+    gzip -9 -k -f "$dist/$component/binary-$arch/Packages"
+done
 
 cat > "$out/apt-release.conf" <<EOF
 APT::FTPArchive::Release::Origin "QuantyDB";
 APT::FTPArchive::Release::Label "QuantyDB";
 APT::FTPArchive::Release::Suite "$suite";
 APT::FTPArchive::Release::Codename "$suite";
-APT::FTPArchive::Release::Architectures "$arch";
+APT::FTPArchive::Release::Architectures "$(echo "$arches" | tr '\n' ' ')";
 APT::FTPArchive::Release::Components "$component";
 APT::FTPArchive::Release::Description "QuantyDB packages";
 EOF

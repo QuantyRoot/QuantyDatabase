@@ -19,6 +19,10 @@ wrapped.
 
 ### Added
 
+- Linux on arm64: a Pi, a Graviton, an Ampere. Built and tested on an
+  arm64 runner rather than cross compiled, because a binary no machine has
+  executed is a binary nobody has tested. The apt and rpm repositories
+  carry both architectures.
 - `install.sh`, which works out which build it wants, checks it against
   the release's own `SHA256SUMS`, runs it once before installing it, and
   puts it on the PATH. A file that matches its checksum and still does not

@@ -53,6 +53,50 @@ in, and each of those choices is argued and costed in
 
 ---
 
+## Install
+
+```
+curl -fsSL https://quantyroot.github.io/QuantyDatabase/install.sh | sh
+```
+
+Debian, Ubuntu, Raspberry Pi OS:
+
+```
+curl -fsSL https://quantyroot.github.io/QuantyDatabase/gpg.key \
+  | sudo gpg --dearmor -o /usr/share/keyrings/quantydb.gpg
+echo "deb [signed-by=/usr/share/keyrings/quantydb.gpg] \
+  https://quantyroot.github.io/QuantyDatabase/apt stable main" \
+  | sudo tee /etc/apt/sources.list.d/quantydb.list
+sudo apt update && sudo apt install quantydb
+```
+
+Fedora, RHEL, openSUSE:
+
+```
+sudo curl -fsSL https://quantyroot.github.io/QuantyDatabase/quantydb.repo \
+  -o /etc/yum.repos.d/quantydb.repo
+sudo dnf install quantydb
+```
+
+macOS and Linux, with Homebrew:
+
+```
+brew tap quantyroot/quantydb https://github.com/QuantyRoot/QuantyDatabase
+brew install quantydb
+```
+
+Arch, from the AUR: `yay -S quantydb-bin`. From source, with Rust 1.89
+and nothing else: `cargo install quantydb-cli`.
+
+x86_64 and arm64 on Linux, both architectures on macOS, x86_64 on
+Windows, each built and tested on the machine it is for.
+
+[INSTALL.md](docs/INSTALL.md) has the rest: checksums, Gatekeeper, the
+static build for old glibc, and how to update. [USING.md](docs/USING.md)
+is the tour, from an empty file to a running server.
+
+---
+
 ## The trick
 
 Most databases overwrite data in place and treat history as a problem.
@@ -139,31 +183,6 @@ quantydb run app.qdb "drop branch risky-migration"
 There is no `--branch` flag. A write always lands on the current branch,
 so running elsewhere would mean switching there and back, and ADR-032 has
 the rest of that argument.
-
----
-
-## Install
-
-One file, no runtime, nothing to configure. Every release attaches a
-binary per platform, each built and tested on the platform it names.
-
-```
-curl -LO https://github.com/QuantyRoot/QuantyDatabase/releases/latest/download/quantydb-linux-x86_64
-chmod +x quantydb-linux-x86_64
-sudo mv quantydb-linux-x86_64 /usr/local/bin/quantydb
-quantydb about
-```
-
-From source needs Rust 1.89 and nothing else: `cargo build --release -p
-quantydb-cli`. There is no C toolchain to install and no system library to
-find.
-
-macOS and Windows binaries are there too, and there is no package in apt,
-AUR, homebrew or winget yet. Checksums, Gatekeeper, and which of the two
-Linux builds to take are in [INSTALL.md](docs/INSTALL.md).
-
-Then [USING.md](docs/USING.md) is the tour: a file, a library and a
-server, with every example run and its real output underneath.
 
 ---
 
@@ -274,9 +293,9 @@ What that costs is measured and written down in
 
 | | |
 |---|---|
-| Rust, source | 25347 lines across 14 crates |
-| Rust, tests | 16226 lines, 551 test functions |
-| Design notes | 4061 lines, 36 decision records |
+| Rust, source | 27284 lines across 14 crates |
+| Rust, tests | 17075 lines, 580 test functions |
+| Design notes | 5191 lines, 43 decision records |
 | Dependencies | 0 |
 | People | 1 |
 | Funding | none |

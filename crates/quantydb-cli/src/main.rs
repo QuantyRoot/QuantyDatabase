@@ -586,9 +586,9 @@ fn is_terminal() -> bool {
 /// overclaim, and nobody has to update it on every commit.
 pub const CRATES: usize = 14;
 /// At least this many test functions exist.
-pub const TESTS: usize = 550;
+pub const TESTS: usize = 570;
 /// At least this many decision records exist.
-pub const DECISIONS: usize = 39;
+pub const DECISIONS: usize = 43;
 /// Exactly this many packages that are not this workspace.
 pub const FOREIGN_DEPENDENCIES: usize = 0;
 

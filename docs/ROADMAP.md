@@ -533,6 +533,10 @@ loop is epoll, hand written, and kqueue and IOCP are each a second and a
 third one of those. `quantydb connect` is a plain TCP client and runs
 everywhere, so a database served from Linux can be used from anywhere.
 
+Linux ships for x86_64 and arm64, both built and tested on the
+architecture they are for rather than cross compiled, since a binary no
+machine has executed is a binary nobody has tested.
+
 The readiness layer now has a kqueue backend, and the reactor's own tests
 run on macOS in CI rather than only compiling there (ADR-038). That is
 not the same as the server running there, and the reason is now measured

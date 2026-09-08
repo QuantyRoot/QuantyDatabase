@@ -21,17 +21,31 @@ brew tap quantyroot/quantydb https://github.com/QuantyRoot/QuantyDatabase
 brew install quantydb
 ```
 
-Debian, Ubuntu and anything else with apt:
+Debian, Ubuntu, Raspberry Pi OS and anything else with apt:
 
 ```
-sudo apt install ./quantydb_0.4.0_amd64.deb
+curl -fsSL https://quantyroot.github.io/QuantyDatabase/gpg.key \
+  | sudo gpg --dearmor -o /usr/share/keyrings/quantydb.gpg
+echo "deb [signed-by=/usr/share/keyrings/quantydb.gpg] \
+  https://quantyroot.github.io/QuantyDatabase/apt stable main" \
+  | sudo tee /etc/apt/sources.list.d/quantydb.list
+sudo apt update && sudo apt install quantydb
 ```
 
-Fedora, RHEL and anything else with dnf:
+Fedora, RHEL, openSUSE and anything else with dnf or zypper:
 
 ```
-sudo dnf install ./quantydb-0.4.0.x86_64.rpm
+sudo curl -fsSL https://quantyroot.github.io/QuantyDatabase/quantydb.repo \
+  -o /etc/yum.repos.d/quantydb.repo
+sudo dnf install quantydb
 ```
+
+Both carry amd64 and arm64, and both check the signature: the package
+manager refuses anything not signed by the key above, which is the point
+of the key.
+
+A single file without a repository still works, if you would rather:
+`sudo apt install ./quantydb_0.4.0_amd64.deb`.
 
 Arch, from the AUR:
 
@@ -48,8 +62,9 @@ Every release attaches these, built and tested on the platform they name:
 
 | File | For |
 |---|---|
-| `quantydb-linux-x86_64` | Linux, glibc 2.35 or newer |
-| `quantydb-linux-x86_64-static` | Linux, anything older or unusual |
+| `quantydb-linux-x86_64` | Linux on Intel or AMD, glibc 2.35 or newer |
+| `quantydb-linux-arm64` | Linux on arm64: a Pi, a Graviton, an Ampere |
+| `quantydb-linux-x86_64-static` | Linux on Intel or AMD, older or unusual |
 | `quantydb-macos-arm64` | macOS on Apple silicon |
 | `quantydb-macos-x86_64` | macOS on Intel |
 | `quantydb-windows-x86_64.exe` | Windows |
