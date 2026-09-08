@@ -284,6 +284,54 @@ Acceptance:
 - [ ] docs/EXTENSIONS.md documents the surface and states plainly that it is
       unstable before 1.0
 
+## Phase 10: The cache you do not have to run
+
+The overview names five systems people bolt together, and the list below
+it answers four of them. Search, assets, history and a server all point at
+one engine. Caching does not, and neither does rate limiting: they were in
+the problem statement and never in the plan. That gap is the whole of this
+phase.
+
+**Memory tables**, declared as such, holding rows that do not survive a
+restart. That is not a compromise, it is what a cache is: Redis loses its
+contents on restart too, and a cache that has to be recovered is a
+database with extra steps.
+
+The first sketch of this said durability per table, a flag that lets a
+commit skip its fsync. Reading the commit protocol says no. A commit
+writes its dirty pages, fsyncs, writes a new meta, fsyncs again, and that
+meta covers the whole file. There is no way to leave one table out of it
+without a second commit path beside the one the crash harness spends two
+thousand three hundred kills on every push. In memory there is nothing to
+leave out.
+
+What a cache needs beyond a table:
+
+- **an expiry**, per row, and something that removes what has passed it
+- **an increment that answers**, because rate limiting needs the count in
+  the same round trip that changed it, and `set` currently answers with
+  how many rows it touched
+- **a ceiling**, and a rule for what goes when it is reached
+
+Under `quantydb serve` these live beside the executor, which is where the
+one thread that owns the session already is, so they are shared across
+connections without a second lock discipline.
+
+Acceptance:
+- [ ] a memory table survives a reopen by being empty, and the file on
+      disk is byte identical to one that never had it
+- [ ] an expiry removes rows without a statement asking, and a read after
+      the expiry never sees them, including a read inside a transaction
+      that started before it
+- [ ] the counter is atomic under the connection ceiling: n connections
+      incrementing the same key n times each end at exactly n squared
+- [ ] the ceiling holds under a workload that would otherwise exceed it,
+      and what it drops is written down rather than surprising
+- [ ] the crash harness is untouched by any of it, which is the point
+
+Can be pulled forward. It touches neither the pager nor the format, so it
+does not queue behind the phases that do.
+
 ## Done: the public embedded crate, and the derive that follows it
 
 The workspace layout in ARCHITECTURE.md carried two crates since the

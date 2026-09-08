@@ -92,6 +92,12 @@ and nothing else: `cargo install quantydb-cli`. As a library:
 x86_64 and arm64 on Linux, both architectures on macOS, x86_64 on
 Windows, each built and tested on the machine it is for.
 
+Building a client for another language? [PROTOCOL.md](docs/PROTOCOL.md) is
+the wire format and is meant to be enough on its own. Put the topic
+`quantydb-sdk` on your repository and it appears on the
+[integrations page](https://quantyroot.github.io/QuantyDatabase/integrations.html)
+within a week, with no pull request and nothing to ask anybody for.
+
 [INSTALL.md](docs/INSTALL.md) has the rest: checksums, Gatekeeper, the
 static build for old glibc, and how to update. [USING.md](docs/USING.md)
 is the tour, from an empty file to a running server.

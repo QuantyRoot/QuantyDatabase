@@ -1,0 +1,120 @@
+name: integrations
+
+# Anyone who puts the topic `quantydb-sdk` on a public repository shows up
+# on the site within a week. No pull request, no review queue, nothing to
+# ask anybody for: the person who wrote the thing is the person who decides
+# it exists.
+#
+# The page says plainly that the list is found rather than checked. A
+# generated list that looks like a recommendation is a recommendation, and
+# this one is not.
+on:
+  schedule:
+    - cron: "17 4 * * 1"
+  workflow_dispatch:
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: gh-pages
+
+      - name: ask github who has the topic
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          gh api -X GET search/repositories \
+            -f q="topic:quantydb-sdk" -f sort=updated -f per_page=100 \
+            > /tmp/found.json
+          echo "found $(python3 -c 'import json;print(json.load(open("/tmp/found.json"))["total_count"])') repositories"
+
+      - name: write the page
+        run: |
+          python3 - <<'PY'
+          import datetime, html, json, pathlib
+
+          found = json.load(open("/tmp/found.json"))["items"]
+          found.sort(key=lambda r: (-r["stargazers_count"], r["full_name"].lower()))
+          today = datetime.date.today().isoformat()
+
+          rows = []
+          for r in found:
+              desc = html.escape(r["description"] or "")
+              lang = html.escape(r["language"] or "")
+              rows.append(
+                  f'<tr><td><a href="{html.escape(r["html_url"])}">'
+                  f'{html.escape(r["full_name"])}</a></td>'
+                  f"<td>{lang}</td><td>{desc}</td>"
+                  f'<td>{r["stargazers_count"]}</td></tr>'
+              )
+          table = "\n".join(rows) or (
+              '<tr><td colspan="4">Nothing yet. Add the topic '
+              "<code>quantydb-sdk</code> to a repository and it appears here.</td></tr>"
+          )
+
+          page = f"""<!doctype html>
+          <html lang="en"><head><meta charset="utf-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1">
+          <title>QuantyDB integrations</title>
+          <style>
+            :root {{ color-scheme: dark light; }}
+            body {{ font: 16px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace;
+                   max-width: 60rem; margin: 3rem auto; padding: 0 1.25rem;
+                   background: #0f1115; color: #d6dae2; }}
+            h1 {{ font-size: 1.5rem; margin: 0 0 .25rem; }}
+            p {{ color: #9aa4b2; }}
+            a {{ color: #7aa2f7; }}
+            table {{ border-collapse: collapse; width: 100%; margin-top: 1.5rem; }}
+            td, th {{ border-bottom: 1px solid #232735; padding: .6rem .5rem;
+                     text-align: left; vertical-align: top; font-size: .9rem; }}
+            th {{ color: #9aa4b2; font-weight: 600; }}
+            .warn {{ border-left: 3px solid #e0af68; padding-left: 1rem; }}
+          </style></head><body>
+
+          <h1>Integrations</h1>
+          <p>Clients, drivers and tools built on QuantyDB by other people.
+          <a href="https://github.com/QuantyRoot/QuantyDatabase">Back to the project</a></p>
+
+          <p class="warn">This list is <strong>found, not checked</strong>. It is
+          every public repository carrying the topic <code>quantydb-sdk</code>,
+          collected once a week and sorted by stars. Nobody here has reviewed
+          any of it, and appearing on this page is not a recommendation. Read
+          the code before you run it, the same as anything else.</p>
+
+          <p>To appear: add the topic <code>quantydb-sdk</code> to your public
+          repository. To disappear: take it off. The list is rebuilt from
+          scratch each week, so both take effect on their own.</p>
+
+          <p>Writing one? <a href="https://github.com/QuantyRoot/QuantyDatabase/blob/main/docs/PROTOCOL.md">PROTOCOL.md</a>
+          is the wire format, and it is meant to be enough on its own. If you
+          had to read our source to get something working, that is a bug in the
+          document and worth an issue.</p>
+
+          <table>
+          <tr><th>Repository</th><th>Language</th><th>Description</th><th>Stars</th></tr>
+          {table}
+          </table>
+
+          <p>Collected {today}.</p>
+          </body></html>
+          """
+          pathlib.Path("integrations.html").write_text(page)
+          print(f"wrote {len(found)} entries")
+          PY
+
+      - name: publish if it changed
+        run: |
+          git config user.name "Elchi"
+          git config user.email "github@elchi.dev"
+          if git diff --quiet -- integrations.html; then
+            echo "nothing changed"
+            exit 0
+          fi
+          git add integrations.html
+          git commit -m "integrations: refreshed from the quantydb-sdk topic"
+          git push origin gh-pages
