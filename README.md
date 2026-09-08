@@ -86,7 +86,8 @@ brew install quantydb
 ```
 
 Arch, from the AUR: `yay -S quantydb-bin`. From source, with Rust 1.89
-and nothing else: `cargo install quantydb-cli`.
+and nothing else: `cargo install quantydb-cli`. As a library:
+`cargo add quantydb`.
 
 x86_64 and arm64 on Linux, both architectures on macOS, x86_64 on
 Windows, each built and tested on the machine it is for.

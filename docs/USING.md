@@ -215,7 +215,7 @@ rows walked, and prints nothing when it has no complaint.
 
 ## Embedded in Rust
 
-Add the crate, then open a file or a page of memory. A transaction is a
+`cargo add quantydb`, then open a file or a page of memory. A transaction is a
 borrow, so it cannot outlive the database and cannot be left open: the
 closure returning is what decides commit or rollback.
 
