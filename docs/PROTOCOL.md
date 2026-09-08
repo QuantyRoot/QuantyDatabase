@@ -132,6 +132,34 @@ Type bytes outside these ranges are a protocol error. The gaps are
 deliberate: 0x14..0x1F and 0x28..0x2F are reserved so a later version can
 add messages without moving anything.
 
+### What each body holds, exactly
+
+`text` below means a `u32` length and that many UTF-8 bytes. `bytes` is
+the same shape without the UTF-8 requirement. `count` is a `u32` with the
+limit named in "Element limits". Every integer is little endian.
+
+```
+0x10  Auth        bytes    the token
+0x11  Query       text     the statement
+0x12  QuerySql    text     the statement
+0x13  Close       empty
+
+0x20  Ready       empty
+0x21  Ok          empty
+0x22  Count       text u64                verb, then how many rows
+0x23  RowsBegin   count, then that many text          column names
+0x24  RowBatch    count, then that many rows          see "Result sets"
+0x25  RowsEnd     empty
+0x26  Lines       count, then that many text
+0x27  Error       u16 text                code, then message
+```
+
+A statement carries its length inside the body even though the frame
+header already gives the body length. That is redundant and it is
+deliberate: every variable length field in this protocol is written the
+same way, so a decoder has one rule rather than one rule and an
+exception.
+
 ## One request at a time
 
 A connection has exactly one request in flight. The client sends one
@@ -227,8 +255,20 @@ included, not only writers.
 `Auth` carries an opaque token: a 4 byte length and that many bytes. The
 server replies `Ready` or `Error` with `0x0004`. A server that requires
 auth answers `0x0003` to any `Query` that arrives before a successful
-`Auth`; a server that does not require it may send `Ready` unprompted after
-the handshake.
+`Auth`.
+
+**The token goes on the wire as the characters it is printed as.**
+`quantydb token <label>` prints sixty-four hexadecimal characters; those
+sixty-four bytes are what `Auth` carries, not the thirty-two bytes they
+spell. The server hashes what it receives, so decoding the hex first
+produces a different hash and a refusal that says nothing about why.
+
+**Every accepted handshake is followed by an unprompted `Ready`,** whether
+or not the server requires a token. A client that does not read it will
+find it waiting as the answer to whatever it sends next, which looks like
+the server replying to the wrong message. Read it, then carry on: against
+a server with no token file there is nothing else to do, and against one
+with a token file `Auth` comes next and has a `Ready` of its own.
 
 **Where tokens are stored and how they are revoked is decided in ADR-026,
 not here.** They live in a file beside the database rather than in it,
@@ -252,6 +292,29 @@ Authentication is per connection: a token accepted on one says nothing
 about any other. It is checked when `Auth` arrives, so revoking a token
 shuts out new connections rather than cutting off one that is already
 talking.
+
+## Writing a client
+
+This document is meant to be enough on its own. If you had to read the
+Rust to get something working, that is a bug here and worth an issue.
+
+It was tested that way rather than assumed: the document alone, with no
+access to the source, was handed to someone who wrote a Python client from
+it. Four things had to be guessed and three of the guesses were right. The
+one that was wrong, and two mistakes the document caused before any guess
+mattered, are fixed above:
+
+- `Query` and `QuerySql` carry a length inside the body. The old text said
+  only "one statement" and the natural reading was that the statement
+  filled the frame.
+- The unprompted `Ready` after the handshake arrives whether or not
+  authentication is required. The old text promised it only from a server
+  that needs no token, so the first real query appeared to get the wrong
+  reply.
+- The token is the printed characters, not the bytes they spell.
+
+The message table now gives every body field by name and width, because
+prose like "verb plus a u64" is exactly what forces a guess.
 
 ## Version history
 
