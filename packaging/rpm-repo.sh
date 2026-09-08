@@ -49,6 +49,11 @@ URL:            https://github.com/QuantyRoot/QuantyDatabase
 # rpm otherwise adds /usr/lib/.build-id symlinks nobody asked for, to a
 # package that declares one file.
 %define _build_id_links none
+# And it otherwise runs strip over everything it installs, which fails on
+# a binary for another architecture: the host's strip cannot read an
+# aarch64 ELF. Nothing here should be touching the binary anyway. It was
+# built and tested on the machine it is for, and this only wraps it.
+%global __os_install_post %{nil}
 AutoReqProv:    no
 
 %description
