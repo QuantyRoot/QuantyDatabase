@@ -54,9 +54,9 @@ and the server refuses to start without a database that exists:
 
 ```
 cargo build --release
-target/release/quanty create /tmp/accept.qdb
-target/release/quanty run /tmp/accept.qdb "table t { id: int @key, n: int }"
-target/release/quanty run /tmp/accept.qdb "put t { id: 1, n: 1 }"
+target/release/quantydb create /tmp/accept.qdb
+target/release/quantydb run /tmp/accept.qdb "table t { id: int @key, n: int }"
+target/release/quantydb run /tmp/accept.qdb "put t { id: 1, n: 1 }"
 ```
 
 Then the server on two cores and the client on others:
@@ -67,11 +67,11 @@ ulimit -n 65536
 systemd-run --user --scope \
   -p AllowedCPUs=0,1 \
   -p MemoryMax=7G \
-  target/release/quanty serve /tmp/accept.qdb --workers 2
+  target/release/quantydb serve /tmp/accept.qdb --workers 2
 
 # the client anywhere else, in its own shell
 ulimit -n 65536
-taskset -c 4-11 target/release/quanty-acceptance \
+taskset -c 4-11 target/release/quantydb-acceptance \
   --connections 10000 --active 32 --qps 1000 --duration 30m --mixed
 ```
 
@@ -100,7 +100,7 @@ curve, not about the last line. Sample it in a third shell:
 
 ```
 while :; do
-  SRV=$(pgrep -f 'quanty serve /tmp/accept.qdb' | tail -1)
+  SRV=$(pgrep -f 'quantydb serve /tmp/accept.qdb' | tail -1)
   if [ -z "$SRV" ]; then
     echo "$(date +%H:%M:%S) no server"
   else
@@ -169,7 +169,7 @@ validate the 2 vCPU number and does not claim to.
   full half hour, not one failure in 1800064 of them, and neither
   descriptors nor resident memory growing. The run is in the table below.
 - `[x]` **kill -9 under write load, reopen, zero corruption.** Met, and in
-  the stronger form: `crates/quanty-cli/tests/crash.rs` writes from four
+  the stronger form: `crates/quantydb-cli/tests/crash.rs` writes from four
   connections, kills the serving process with SIGKILL in the middle,
   reopens the file and requires that every write the server answered with
   a row count is still there. Corruption would show up as a database that
@@ -185,7 +185,7 @@ validate the 2 vCPU number and does not claim to.
   commit makes it fail in the first round, and the lost rows come one from
   each connection, which is one batch that replied and then died.
 - `[x]` **Versioned handshake, old client against new server fails
-  cleanly.** Met by `crates/quanty-cli/tests/handshake.rs`, which puts
+  cleanly.** Met by `crates/quantydb-cli/tests/handshake.rs`, which puts
   wrong clients in front of a running process rather than in front of the
   codec. A version the server does not know yet, a version zero, and
   something that is not this protocol at all each get four readable bytes

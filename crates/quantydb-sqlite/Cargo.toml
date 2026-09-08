@@ -1,0 +1,14 @@
+[package]
+name = "quantydb-sqlite"
+description = "Reader for the SQLite 3 file format, used to import .sqlite files into QuantyDB"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+# The fixtures are a megabyte of real SQLite files, and everyone who
+# downloads this from the index would download them too, to run tests they
+# cannot run from a published crate anyway. They stay in the repository.
+exclude = ["tests/data/*"]
+
+[dependencies]

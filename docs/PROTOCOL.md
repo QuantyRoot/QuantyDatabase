@@ -1,7 +1,7 @@
 # QuantyDB Wire Protocol, version 1
 
 Normative description of the protocol spoken between a client and a
-quanty server. If the code and this document disagree, one of them has a
+quantydb server. If the code and this document disagree, one of them has a
 bug and the fix must touch both.
 
 Byte order is little endian everywhere, matching docs/FORMAT.md. Text is
@@ -11,7 +11,7 @@ makes it threads, but nothing below depends on that.
 ## What this is not
 
 The value encoding here is **not** the order-preserving key encoding in
-`quanty-core::encoding`, even where the two agree today. That encoding
+`quantydb-core::encoding`, even where the two agree today. That encoding
 exists to make memcmp match logical order and escapes zero bytes to do it;
 this one exists to round-trip a value across a socket. They are separate
 formats with separate version histories, and a change to one must not be
@@ -68,7 +68,7 @@ the sequence is unbounded; what is bounded is how much a single frame can
 commit the receiver to before it has seen any of it. With these caps the
 memory a decoder can be made to hold is bounded in absolute terms, around
 3.7 MiB at worst, rather than as a fraction of `MAX_BODY`. That number is
-measured, not argued: see the allocation test in quanty-proto.
+measured, not argued: see the allocation test in quantydb-proto.
 
 ## Handshake
 
@@ -236,8 +236,8 @@ because branching and `as of` would otherwise make "revoked" true only at
 the tip of one branch. The token stays opaque on the wire either way, so
 the format did not need the answer to be written down.
 
-`quanty connect <addr>` is a client for this protocol, and its output is
-held byte for byte against `quanty run` on the same database. Anything the
+`quantydb connect <addr>` is a client for this protocol, and its output is
+held byte for byte against `quantydb run` on the same database. Anything the
 wire loses or garbles shows up as a difference without the test needing to
 know the right answer.
 

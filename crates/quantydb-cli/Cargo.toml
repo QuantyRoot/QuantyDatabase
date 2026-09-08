@@ -1,0 +1,31 @@
+[package]
+name = "quantydb-cli"
+description = "The quanty command line tool"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "quantydb"
+path = "src/main.rs"
+
+[dependencies]
+quantydb-core.workspace = true
+quantydb-exec.workspace = true
+quantydb-import.workspace = true
+quantydb-ql.workspace = true
+quantydb-sqlite.workspace = true
+# Minting a token and speaking the wire protocol are portable. Only the
+# server needs epoll, so only the server is behind a target.
+quantydb-auth.workspace = true
+quantydb-proto.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+quantydb-service.workspace = true
+quantydb-server.workspace = true
+# The tool owns the process, so the tool is what turns a signal into a
+# shutdown. That is a syscall, and every syscall in this workspace is in
+# quantydb-sys.
+quantydb-sys.workspace = true

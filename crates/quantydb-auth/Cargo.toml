@@ -1,0 +1,12 @@
+[package]
+name = "quantydb-auth"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Token storage and verification for QuantyDB"
+
+[dependencies]
+quantydb-sys.workspace = true
+quantydb-core.workspace = true

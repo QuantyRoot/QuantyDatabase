@@ -1,9 +1,9 @@
 # QQL
 
 The Quanty Query Language. Design goals: readable, typed, no surprises.
-This document is normative for the parser in `crates/quanty-ql` and the
-semantics in `crates/quanty-exec`; the golden tests under
-`crates/quanty-exec/tests/golden/` are the executable version of it.
+This document is normative for the parser in `crates/quantydb-ql` and the
+semantics in `crates/quantydb-exec`; the golden tests under
+`crates/quantydb-exec/tests/golden/` are the executable version of it.
 
 ## Statements
 

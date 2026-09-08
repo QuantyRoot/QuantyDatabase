@@ -57,7 +57,7 @@ Acceptance:
 ## Phase 3: Time travel + branches
 
 AS OF (timestamp and commit id), named branches, create/switch/delete,
-fast-forward merge, `quanty log`, retention policies, GC (mark and sweep;
+fast-forward merge, `quantydb log`, retention policies, GC (mark and sweep;
 an incremental variant can come later if pauses ever matter).
 
 Acceptance:
@@ -73,7 +73,7 @@ Acceptance:
 SQL front end (subset per ARCHITECTURE.md) lowering to the same plans as
 QQL, inner and left joins in the planner and executor, multi-statement
 transactions, a .sqlite importer reading the SQLite format directly, and a
-minimal quanty-cli around it.
+minimal quantydb-cli around it.
 
 Acceptance:
 - [x] the SQL golden suite runs the same logical cases as the QQL suite
@@ -127,18 +127,18 @@ and chose threads over a runtime. ADR-023 then overturned its own reasoning
 and wrote the epoll syscalls out by hand after all, which is the honest
 version of what happened and is why both records are still here.
 
-Binary protocol, an epoll event loop per worker, auth tokens, `quanty
-serve` and `quanty connect`, single writer queueing, group commit.
+Binary protocol, an epoll event loop per worker, auth tokens, `quantydb
+serve` and `quantydb connect`, single writer queueing, group commit.
 
-- [x] versioned binary protocol and codec (`quanty-proto`, ADR-023)
+- [x] versioned binary protocol and codec (`quantydb-proto`, ADR-023)
 - [x] the reactor: epoll, one listener per worker, connections parked
-      rather than blocked (`quanty-server`, ADR-025)
+      rather than blocked (`quantydb-server`, ADR-025)
 - [x] the executor: one thread owns the session, transactions park per
-      connection (`quanty-service`, ADR-027)
+      connection (`quantydb-service`, ADR-027)
 - [x] group commit, measured into existence rather than assumed (ADR-028)
 - [x] readers do not queue behind someone else's transaction (ADR-029)
 - [x] token auth, stored beside the database and never in it (ADR-026)
-- [x] `quanty connect`, held to the same output as the local path
+- [x] `quantydb connect`, held to the same output as the local path
 - [ ] concurrent readers: they no longer stall, but they still serialize
       over one thread. Whether they should run in parallel is the open
       question in ADR-029 and it needs a machine with more than one core
@@ -236,7 +236,7 @@ Acceptance:
 
 ## Phase 8: The adaptive layer
 
-Stats collector, `quanty stats`, index suggestions, auto index (opt-in),
+Stats collector, `quantydb stats`, index suggestions, auto index (opt-in),
 hot/cold blob tiering to buckets (S3 API), workload-aware defaults.
 
 Acceptance:
@@ -287,18 +287,18 @@ Acceptance:
 ## Done: the public embedded crate, and the derive that follows it
 
 The workspace layout in ARCHITECTURE.md carried two crates since the
-beginning that no phase ever built: `quanty/`, the public embedded API that
-a Rust application adds as a dependency, and `quanty-derive/`, the ORM
+beginning that no phase ever built: `quantydb/`, the public embedded API that
+a Rust application adds as a dependency, and `quantydb-derive/`, the ORM
 derive macros over it. Both exist now; ADR-030 fixes the surface and
 ADR-031 fixes what the derive covers.
 
-- [x] `quanty/` exists, depends only on the internal crates, and re-exports
+- [x] `quantydb/` exists, depends only on the internal crates, and re-exports
       none of them, so no internal type reaches an embedder's signatures.
 - [x] `Database` carries no type parameter, and `gc` stays behind `&mut`:
       reaching around an open transaction to run one does not compile.
 - [x] A closure transaction commits on `Ok`, rolls back on `Err`, and
       leaves no transaction open either way.
-- [x] `quanty-derive/`, without `syn` and without `quote`: a struct of
+- [x] `quantydb-derive/`, without `syn` and without `quote`: a struct of
       named fields maps to a table, and generated writes go through the
       statement AST rather than through generated text (ADR-031).
 
@@ -323,7 +323,7 @@ Open, and to be decided rather than assumed here:
 - how much the first version promises. ADR-018 declares the extension
   surface explicitly unstable before 1.0; whether the embedded surface makes
   the same statement is a separate call.
-- whether `quanty-derive` ships with it or follows later. It follows
+- whether `quantydb-derive` ships with it or follows later. It follows
   later: the two are separable and only one of them is on phase 9's path.
 
 **Decided: no exception, so no `syn` and no `quote`.** ADR-020 has now
@@ -336,7 +336,7 @@ the derive follows the embedded crate rather than arriving with it.
 
 ## Unscheduled and blocking: fetching things over the network
 
-`quanty update` is meant to pull releases from GitHub, and that is a
+`quantydb update` is meant to pull releases from GitHub, and that is a
 product decision, not an open question. What is open is how, because
 GitHub serves nothing over plain HTTP and answers a request for it with a
 redirect to HTTPS.
@@ -376,7 +376,7 @@ next thing to measure.
 **Reading is close, writing is not.** With reads timed on their own,
 against a database loaded beforehand, the picture separates cleanly:
 
-| what | quanty | sqlite | ratio |
+| what | quantydb | sqlite | ratio |
 |---|---|---|---|
 | open a database, do nothing | 1.1 ms | 1.2 ms | 0.92x |
 | 5000 lookups by key | 44 ms | 31 ms | 1.44x |
@@ -528,21 +528,25 @@ definitions of `serve`, and the token minter and the wire codec were
 declared Linux-only dependencies although neither has a line of platform
 code in it.
 
-`quanty serve` is Linux only and says so when asked elsewhere. Its event
+`quantydb serve` is Linux only and says so when asked elsewhere. Its event
 loop is epoll, hand written, and kqueue and IOCP are each a second and a
-third one of those. `quanty connect` is a plain TCP client and runs
+third one of those. `quantydb connect` is a plain TCP client and runs
 everywhere, so a database served from Linux can be used from anywhere.
+
+Linux ships for x86_64 and arm64, both built and tested on the
+architecture they are for rather than cross compiled, since a binary no
+machine has executed is a binary nobody has tested.
 
 The readiness layer now has a kqueue backend, and the reactor's own tests
 run on macOS in CI rather than only compiling there (ADR-038). That is
 not the same as the server running there, and the reason is now measured
-rather than assumed. `quanty serve` gives each worker its own listener
+rather than assumed. `quantydb serve` gives each worker its own listener
 bound with `SO_REUSEPORT`, because that is what spreads accepts on Linux
 (ADR-025). On macOS neither that nor the shared listener spreads: two
 hundred connections went 0 / 0 / 0 / 200 across reuseport listeners and
 0 / 0 / 22 / 178 across workers sharing one, against 39 / 48 / 54 / 59 on
 Linux. A macOS server would run on one worker whichever shape it picked,
-so widening `quanty serve` past Linux needs a third design that does not
+so widening `quantydb serve` past Linux needs a third design that does not
 exist here — a thread that accepts and hands descriptors on. ADR-039
 records its shape, where it belongs and what it costs, and does not build
 it. That, the soak, the crash harness and the connection ceiling are what

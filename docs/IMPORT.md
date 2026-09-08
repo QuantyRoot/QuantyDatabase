@@ -1,8 +1,8 @@
 # Importing a SQLite database
 
 ```sh
-quanty import app.sqlite app.qdb
-quanty run app.qdb "get users { name } limit 10"
+quantydb import app.sqlite app.qdb
+quantydb run app.qdb "get users { name } limit 10"
 ```
 
 That is the whole thing when it works, which is the point. What follows is
@@ -26,7 +26,7 @@ instead of the first problem alone after ten minutes of writing (ADR-019).
 worth running once on anything unfamiliar.
 
 ```sh
-quanty import app.sqlite app.qdb --dry-run
+quantydb import app.sqlite app.qdb --dry-run
 ```
 
 ## What the types become
@@ -124,10 +124,10 @@ A refusal names the table, the column and the row.
 The database is a QuantyDB one, so everything else applies to it:
 
 ```sh
-quanty tables app.qdb
-quanty run app.qdb "get users { name, score } where score > 100"
-quanty run app.qdb "select name from users where score > 100" --sql
-quanty shell app.qdb < statements.txt
+quantydb tables app.qdb
+quantydb run app.qdb "get users { name, score } where score > 100"
+quantydb run app.qdb "select name from users where score > 100" --sql
+quantydb shell app.qdb < statements.txt
 ```
 
 An import writes into a database that does not exist yet and refuses to

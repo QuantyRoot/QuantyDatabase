@@ -98,7 +98,7 @@ handle correctly, and the trait keeps WASM/memory backends possible).
 
 ## ADR-008: Dependency budget
 
-quanty-core: crc32c, blake3, parking_lot, nothing else without an ADR.
+quantydb-core: crc32c, blake3, parking_lot, nothing else without an ADR.
 Everything above core can use tokio/serde/etc. as needed. Reason: the core
 must stay auditable, portable and fast to compile.
 
@@ -509,7 +509,7 @@ have no date type and this is not the place to pretend otherwise.
 
 ## ADR-020: The core has no dependencies either
 
-ADR-008 gave quanty-core a budget of three: crc32c, blake3 and parking_lot.
+ADR-008 gave quantydb-core a budget of three: crc32c, blake3 and parking_lot.
 Two of those were being used, and both are now written out instead, so the
 workspace depends on nothing outside the standard library. This supersedes
 the budget rather than bending it, so the reasoning belongs here.
@@ -875,8 +875,8 @@ there is no guessing attack for a work factor to slow down. ADR-020 keeps
 dependencies out of the workspace, so the hash is one we write against
 published test vectors, and that is a slice of its own.
 
-**Built.** `quanty serve --tokens <file>` requires a token; without the
-flag nothing changes for anyone. `quanty token <label>` mints one and
+**Built.** `quantydb serve --tokens <file>` requires a token; without the
+flag nothing changes for anyone. `quantydb token <label>` mints one and
 prints it once, together with the line to append. The file is looked at
 again once a second, so deleting a line shuts the door on a running
 server. A file that has become unreadable or malformed leaves the last
@@ -895,7 +895,7 @@ connections and does not cut off one that is already talking. And a
 refused token is not a ban: the connection stays open and may try again,
 because the alternative is a server that a typo can lock you out of.
 
-SHA-256 is written out in `quanty-auth` because ADR-020 keeps dependencies
+SHA-256 is written out in `quantydb-auth` because ADR-020 keeps dependencies
 out. It is checked against the published vectors, the million byte one
 included, and against a separate implementation at every length around the
 block and padding boundaries, which is the only way to cover inputs the
@@ -905,7 +905,7 @@ standard does not publish.
 answered with `Ready` without the token being looked at, which is exactly
 the "a server that does not require it" case docs/PROTOCOL.md already
 describes. That is a real configuration and not a placeholder, but it is
-the reason `quanty serve` belongs on a loopback address until this is done.
+the reason `quantydb serve` belongs on a loopback address until this is done.
 
 ## ADR-027: One executor thread owns the session, transactions park
 
@@ -951,7 +951,7 @@ optimization, and there is no measurement of what fsync costs here yet.
 ## ADR-028: Group commit is worth building, and not for the fsync
 
 ADR-024 deferred group commit and ADR-027 deferred it again, both times for
-the same reason: ADR-016 wants the number first. `quanty-commit-cost` is
+the same reason: ADR-016 wants the number first. `quantydb-commit-cost` is
 that measurement. Batching k statements into one transaction is the same
 arithmetic as group commit at queue depth k, so the curve over k is the
 ceiling. On the development container, one core, overlay filesystem:
@@ -1047,7 +1047,7 @@ is a test that fails without that.
 
 **Checked together, not only apart.** Parking, batching, both deadlines
 and this bypass each have a test of their own, and none of them reaches the
-state space they share. `crates/quanty-service/tests/soak.rs` runs six
+state space they share. `crates/quantydb-service/tests/soak.rs` runs six
 connections doing arbitrary things for a budget and checks four invariants
 that hold whichever way a race went: every request gets exactly one
 answer, the answer fits the question, waiting past the deadline is answered
@@ -1063,7 +1063,7 @@ puts them rather than being reclassified from outside it.
 ## ADR-030: The embedded crate owns the database and speaks statements
 
 README draws three doors into the product and only two of them exist.
-`quanty/` is the left one: what a Rust application adds to its
+`quantydb/` is the left one: what a Rust application adds to its
 `Cargo.toml`. The engine under it is finished, so this record is not
 about a capability. It is about choosing a surface narrow enough to
 keep, and naming what it does not cover.
@@ -1093,7 +1093,7 @@ made before anyone has written against it. Text is already fuzzed, has
 golden files, and is what the server speaks, so the embedded and remote
 doors describe work the same way. What is typed is what comes back:
 `Value`, column names and rows, because parsing our own output would be
-absurd. The typed front end is `quanty-derive`, it follows later, and it
+absurd. The typed front end is `quantydb-derive`, it follows later, and it
 will be built on this rather than beside it.
 
 **A transaction is a borrow, not an object.** `Database::transaction`
@@ -1107,12 +1107,12 @@ its own database has nothing to multiplex.
 **0.4 promises the surface and nothing under it.** ADR-018 declares the
 extension surface unstable before 1.0. This one makes the opposite
 promise, because a surface that promises nothing gives no reason to
-prefer it over depending on `quanty-exec` directly, which is the state
-this crate exists to end. Every item `quanty` exports is semver-stable
+prefer it over depending on `quantydb-exec` directly, which is the state
+this crate exists to end. Every item `quantydb` exports is semver-stable
 from 0.4: breaking it needs a minor bump and a line in CHANGELOG.md,
 which exists now and did not when this was written. Not
-covered, and said plainly in the crate docs: nothing from `quanty-core`
-or `quanty-exec` is re-exported, so no internal type leaks into an
+covered, and said plainly in the crate docs: nothing from `quantydb-core`
+or `quantydb-exec` is re-exported, so no internal type leaks into an
 embedder's signatures; `Value` and `Outcome` are non-exhaustive and may
 grow variants; the file format has its own version and its own rules.
 
@@ -1141,7 +1141,7 @@ parameters, and `render_value` renders text unquoted because it exists to
 display a value rather than to embed one. A derive that pasted field
 values into `put users { name: "..." }` would therefore be an injection
 surface generated at compile time, which is a worse thing to ship than no
-derive at all. `quanty-import` already writes through
+derive at all. `quantydb-import` already writes through
 `Session::execute_ast` with `Expr::Literal` holding the value, and the
 derive uses the same road. The AST stays out of the public surface;
 `Database::insert` takes the row and builds it internally.
@@ -1157,8 +1157,8 @@ how the stability promise of ADR-030 stays a promise about the surface
 people write against rather than about everything that is reachable.
 
 **The table name is the struct name in snake case**, overridable with
-`#[quanty(table = "...")]`, and a field maps to a column of its own name,
-overridable with `#[quanty(column = "...")]`. Nothing is pluralised. A
+`#[quantydb(table = "...")]`, and a field maps to a column of its own name,
+overridable with `#[quantydb(column = "...")]`. Nothing is pluralised. A
 `User` maps to `user`, not to `users`, because a macro that guesses
 English plurals is wrong often enough to be worse than typing the
 attribute.
@@ -1179,16 +1179,16 @@ for it yet. `to_values` clones each field, so every field has to be
 `Clone`; taking the row apart by value would be cheaper and would stop
 the caller keeping it. And the snake case conversion splits on every
 capital, so an acronym comes out as `h_t_t_p_header`, which is what
-`#[quanty(table = "...")]` is for.
+`#[quantydb(table = "...")]` is for.
 
 ## ADR-032: Branch verbs on the tool, and no `--branch` on `run`
 
 Phase 3 finished branching two phases ago, and it has been reachable ever
-since as `quanty run db.qdb "branch x"`. README drew `quanty branch` and
-`quanty merge` from the start and no phase ever built them, which is the
+since as `quantydb run db.qdb "branch x"`. README drew `quantydb branch` and
+`quantydb merge` from the start and no phase ever built them, which is the
 same kind of gap ADR-030 closed on the library side, one shell wide.
 
-**The verbs build a statement, they do not print one.** `quanty tables`
+**The verbs build a statement, they do not print one.** `quantydb tables`
 set the precedent by passing the text `show tables` to the parser, and
 five more of those would be five more places where a name gets glued into
 a string. `branch`, `branches`, `switch`, `merge` and `log` construct the
@@ -1204,7 +1204,7 @@ Reading `branch x` as SQL could only ever be a mistake.
 **Deleting a branch stays in `run`.** Every verb this tool has is one
 word, and `drop branch` is two. Inventing `drop-branch`, or overloading
 `drop` so that it means a branch here and a table in QQL, buys one saved
-word on a rare and destructive operation. `quanty run db.qdb "drop branch
+word on a rare and destructive operation. `quantydb run db.qdb "drop branch
 x"` says what it does.
 
 **`--branch` is refused rather than faked.** README sketched running a
@@ -1294,7 +1294,7 @@ stays linear in the rows that exist now rather than in history.
 dependency question was still open. There is a hand written SHA-256 in
 this repository already, checked against the published vectors, and a
 second hash function is a second thing to get right. It moves from
-`quanty-auth` into `quanty-core`, which is where a trust anchor belongs,
+`quantydb-auth` into `quantydb-core`, which is where a trust anchor belongs,
 and auth depends on core for it rather than keeping a copy: two
 implementations of a hash that drift are two different databases.
 
@@ -1342,7 +1342,7 @@ gains a variant. There are twenty exhaustive matches on `Value` across
 seven crates: the wire protocol, both parsers, the pretty printer, the
 importer, the public crate. Every one of them would need an answer to a
 question nobody has asked, starting with what a blob looks like on the
-wire and what `quanty run` prints for one. It also throws away the
+wire and what `quantydb run` prints for one. It also throws away the
 streaming from ADR-033: if a blob is a value, reading the row means
 reassembling it, and a gigabyte column is a gigabyte in memory on every
 `get`.
@@ -1468,7 +1468,7 @@ mean the same thing on both platforms.** On unix `flock` is advisory:
 it keeps two writers apart and a reader never notices. On Windows a byte
 range lock is mandatory, so `File::try_lock`, which covers the whole
 file, stopped anybody else reading the database at all. A second handle
-answered `not a quanty database`, because its reads came back refused,
+answered `not a quantydb database`, because its reads came back refused,
 and "many readers alongside one writer" had quietly become "one process".
 Windows locks a single byte far past anything a database grows into
 instead: nothing reads or writes there, a second writer asking for the
@@ -1480,7 +1480,7 @@ process ends, killed or not, so a crash leaves no database unopenable.
 Readers take no lock, because many readers alongside one writer is the
 model and always was; a shared lock would only conflict with the
 writer's. `Db::open_file_unlocked` is that path, and the tool asks
-`Statement::writes()` before it opens, so `quanty run db "get users"`
+`Statement::writes()` before it opens, so `quantydb run db "get users"`
 still answers while a server holds the file and `put` is refused.
 
 **The guard stays, and skipping it when the lock is held would be a
@@ -1840,11 +1840,11 @@ which is the BSD behaviour the name `SO_REUSEPORT_LB` exists to
 distinguish itself from on FreeBSD, and Darwin has no such name at all.
 
 That decides the shape of the macOS server rather than merely describing
-it. `quanty serve` binds one listener per worker with `SO_REUSEPORT` and
+it. `quantydb serve` binds one listener per worker with `SO_REUSEPORT` and
 gives each worker its own, because ADR-025 measured that this is what
 spreads on Linux. On Darwin the same code is a four worker server that
 runs on one worker, which is the failure ADR-025 rejected, complete
-instead of merely lopsided. So widening `quanty serve` past Linux is not
+instead of merely lopsided. So widening `quantydb serve` past Linux is not
 a matter of removing a `cfg`: the accept shape has to change with it, to
 the shared listener every worker watches, which kqueue does support and
 which no longer has `EPOLLEXCLUSIVE` to make tidy.
@@ -1876,7 +1876,7 @@ started from. Spreading accepts on Darwin needs a third design that does
 not exist here: one thread that accepts and hands descriptors to workers,
 round robin or by depth. It is buildable and it is not bought, because
 nothing has asked for a macOS server yet and ADR-016 says not to buy
-ahead of the ask. What changes today is that `quanty serve` stays on
+ahead of the ask. What changes today is that `quantydb serve` stays on
 Linux for a measured reason rather than for a missing backend, and the
 next person to reach for the `cfg` finds the numbers instead of the
 assumption.
@@ -2018,26 +2018,26 @@ avoided. A 2.2x read penalty is too much to pay for not asking.
 
 **Unmeasured, and named as such.** The allocator case where musl is
 supposed to hurt most is many threads allocating at once, which is
-`quanty serve` and not the tool. That was not measured, because measuring
+`quantydb serve` and not the tool. That was not measured, because measuring
 it means a machine with cores to spare, and it does not change the
 decision: the single threaded path already argues for glibc. If the
 server is ever measured on both, this record gets the second number.
 
-**Amended on 2026-09-07: `quanty update` ships after all.** An earlier
+**Amended on 2026-09-07: `quantydb update` ships after all.** An earlier
 draft of this record argued there would be none, which was wrong on the
 facts. Update has been on the list for a long time and the question was
 always when rather than whether.
 
 The sequencing is the part worth writing down. Pulling a release off
 GitHub needs HTTPS, and under ADR-020 that means writing TLS here rather
-than pulling it in, which is a phase of its own. So `quanty update` lands
+than pulling it in, which is a phase of its own. So `quantydb update` lands
 first in the form that needs no network at all, taking a file that is
 already on the machine, and grows the network path once TLS exists. That
 design gets its own record rather than a paragraph in this one.
 
 ## ADR-041: A signal sets a flag, and every shutdown stops being a crash
 
-`quanty serve` had a `running` flag, every worker checked it, and
+`quantydb serve` had a `running` flag, every worker checked it, and
 `worker.shutdown` waited at the end of the loop. Nothing ever set the flag
 to false. There was no signal handling anywhere in the workspace, so
 Ctrl-C and `systemctl stop` ended the process where it stood: connections
@@ -2092,12 +2092,12 @@ already sleeping.
 
 **Not done: Windows.** There is no `signal` worth calling there for this;
 it is `SetConsoleCtrlHandler`, which is a different shape and a handler on
-its own thread. `quanty serve` does not run on Windows yet, so the module
+its own thread. `quantydb serve` does not run on Windows yet, so the module
 is `cfg(unix)` and the question waits for IOCP (ADR-037).
 
 ## ADR-042: The updater installs a file, and proves it before it does
 
-`quanty update` is two problems wearing one name. Getting a release is a
+`quantydb update` is two problems wearing one name. Getting a release is a
 network problem: HTTPS, and under ADR-020 that means TLS written here, so
 it waits. Installing one is a file problem and it does not have to wait.
 
@@ -2160,7 +2160,7 @@ was published.
 
 ## ADR-043: Setup writes no state, so uninstall needs none to read
 
-`quanty setup` walks through what a server needs and writes it. `quanty
+`quantydb setup` walks through what a server needs and writes it. `quantydb
 uninstall` takes it away. The obvious way to connect the two is a
 manifest: setup records what it made, uninstall reads the record. That was
 not built, and the reason is the thing worth keeping.
@@ -2172,7 +2172,7 @@ it: a file that can be stale, that has to be found, that has to be
 cleaned up by the thing it describes.
 
 **So there is one well-known path and no record.** The service unit goes
-to `/etc/systemd/system/quanty.service` and nowhere else, and the unit
+to `/etc/systemd/system/quantydb.service` and nowhere else, and the unit
 already says where the database and the token file are, on its
 `ExecStart` line. Uninstall reads that. The two halves agree without a
 third file to keep in step, and a machine where setup was never run has

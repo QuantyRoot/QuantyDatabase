@@ -159,7 +159,7 @@ commit under the wrong message, and rewriting published history costs more
 than a crooked message does, so it stayed.
 
 `unsafe` appears in exactly two places in the whole workspace, both in the
-server: twelve syscall declarations in `crates/quanty-server/src/sys.rs`,
+server: twelve syscall declarations in `crates/quantydb-server/src/sys.rs`,
 and one `from_raw_fd` in `listener.rs` where a socket built by hand becomes
 a `TcpListener`. The library carries `deny(unsafe_code)` and those two
 carry the only `allow`, so the compiler holds the boundary instead of a

@@ -1,0 +1,287 @@
+//! The client and the local path, held against each other.
+//!
+//! `quantydb connect` exists so a person can use the server this repository
+//! builds, and the only way to know it is telling the truth is to ask the
+//! same question twice: once of the file directly and once over the wire.
+//! Anything the protocol loses or garbles on the way shows up here as a
+//! difference, without the test needing to know what the right answer is.
+
+#![cfg(target_os = "linux")]
+
+mod common;
+
+use std::io::Write;
+use std::net::TcpStream;
+use std::process::{Child, Command, Output, Stdio};
+use std::time::{Duration, Instant};
+
+use common::TestDir;
+
+fn quantydb(args: &[&str]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_quantydb"))
+        .args(args)
+        .output()
+        .expect("the binary runs")
+}
+
+/// Everything the command said, whichever stream it said it on.
+fn said(output: &Output) -> String {
+    let mut text = String::from_utf8_lossy(&output.stdout).to_string();
+    text.push_str(&String::from_utf8_lossy(&output.stderr));
+    text
+}
+
+struct Served {
+    child: Child,
+    addr: String,
+}
+
+impl Served {
+    fn start(database: &str, extra: &[&str]) -> Served {
+        // Port zero: the kernel picks and the server prints what it got.
+        //
+        // Asking for a free port by binding one and letting it go again is
+        // a race, and `SO_REUSEPORT` makes it a quiet one: two servers can
+        // hold the same port, a test connects to the wrong one, and the
+        // failure surfaces later as a refused connection when the other
+        // test tears its server down.
+        let mut args = vec![
+            "serve",
+            database,
+            "--listen",
+            "127.0.0.1:0",
+            "--workers",
+            "1",
+        ];
+        args.extend_from_slice(extra);
+        let mut child = Command::new(env!("CARGO_BIN_EXE_quantydb"))
+            .args(&args)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("the binary runs");
+
+        let stdout = child.stdout.take().expect("piped");
+        let mut reader = std::io::BufReader::new(stdout);
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let mut addr = String::new();
+        while Instant::now() < deadline {
+            let mut line = String::new();
+            if std::io::BufRead::read_line(&mut reader, &mut line).unwrap_or(0) == 0 {
+                break;
+            }
+            if let Some(rest) = line.trim().strip_prefix("listening on ") {
+                addr = rest.split(',').next().unwrap_or("").trim().to_string();
+                break;
+            }
+        }
+        if addr.is_empty() {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("the server never said where it was listening");
+        }
+        // Keep draining, or the pipe fills and the server blocks on its
+        // own stats line.
+        std::thread::spawn(move || {
+            let mut sink = String::new();
+            while std::io::BufRead::read_line(&mut reader, &mut sink).unwrap_or(0) > 0 {
+                sink.clear();
+            }
+        });
+
+        let ready = Instant::now() + Duration::from_secs(20);
+        while Instant::now() < ready {
+            if TcpStream::connect(&addr).is_ok() {
+                return Served { child, addr };
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let _ = child.kill();
+        let _ = child.wait();
+        panic!("the server printed an address it does not answer on");
+    }
+}
+
+impl Drop for Served {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+fn setup(dir: &TestDir) -> String {
+    let path = dir.path().join("remote.qdb");
+    let path = path.to_str().expect("utf8 path").to_string();
+    assert!(quantydb(&["create", &path]).status.success());
+    for statement in [
+        "table users { id: int @key, name: text, score: int = 0, bio: text @null }",
+        "table cities { id: int @key, name: text }",
+        "put users { id: 1, name: \"elchi\" }, { id: 2, name: \"mira\", score: 7, bio: \"hi\" }",
+        "put cities { id: 1, name: \"oslo\" }",
+    ] {
+        let out = quantydb(&["run", &path, statement]);
+        assert!(out.status.success(), "setup failed: {}", said(&out));
+    }
+    path
+}
+
+/// The statements are chosen to cover the shapes the protocol has to carry:
+/// a result set, a projection, a join, a null, an empty result, a count, a
+/// line list, and two different kinds of failure.
+const SAME_EITHER_WAY: &[&str] = &[
+    "get users",
+    "get users { name, id }",
+    "get users where score > 0",
+    "get users where score > 999",
+    "get users join cities on users.id = cities.id",
+    "show tables",
+    "explain get users",
+    "log",
+    "nonsense here",
+    "get nosuchtable",
+];
+
+#[test]
+fn the_wire_answers_exactly_what_the_file_answers() {
+    let dir = TestDir::new();
+    let database = setup(&dir);
+    let server = Served::start(&database, &[]);
+
+    let mut everything = String::new();
+    for statement in SAME_EITHER_WAY {
+        let local = quantydb(&["run", &database, statement]);
+        let remote = quantydb(&["connect", &server.addr, statement]);
+        assert_eq!(
+            said(&local),
+            said(&remote),
+            "the two paths disagree about `{statement}`"
+        );
+        assert_eq!(
+            local.status.success(),
+            remote.status.success(),
+            "the two paths disagree about whether `{statement}` worked"
+        );
+        everything.push_str(&said(&remote));
+    }
+
+    // Two identical silences would satisfy every assertion above, so the
+    // run has to show that it carried something. A row value, a column
+    // name reordered by a projection, a null, a plan, and an error.
+    for needle in [
+        "elchi",
+        "mira",
+        "oslo",
+        "null",
+        "SeqScan",
+        "not a statement",
+    ] {
+        assert!(
+            everything.contains(needle),
+            "the comparison never carried {needle:?}, so it compared nothing"
+        );
+    }
+}
+
+#[test]
+fn statements_can_be_fed_in_on_stdin() {
+    let dir = TestDir::new();
+    let database = setup(&dir);
+    let server = Served::start(&database, &[]);
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_quantydb"))
+        .args(["connect", &server.addr])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the binary runs");
+    child
+        .stdin
+        .as_mut()
+        .expect("stdin")
+        .write_all(b"# a comment, skipped\n\nshow tables\nget users\n")
+        .expect("write");
+    let out = child.wait_with_output().expect("wait");
+
+    let expected = format!(
+        "{}{}",
+        said(&quantydb(&["run", &database, "show tables"])),
+        said(&quantydb(&["run", &database, "get users"]))
+    );
+    assert_eq!(said(&out), expected, "the session output differs");
+    assert!(out.status.success());
+}
+
+/// A write over the wire has to actually land in the file.
+#[test]
+fn a_write_over_the_wire_reaches_the_database() {
+    let dir = TestDir::new();
+    let database = setup(&dir);
+    let server = Served::start(&database, &[]);
+
+    let out = quantydb(&[
+        "connect",
+        &server.addr,
+        "put users { id: 42, name: \"over the wire\" }",
+    ]);
+    assert!(out.status.success(), "{}", said(&out));
+
+    let seen = quantydb(&["connect", &server.addr, "get users where id = 42"]);
+    assert!(
+        said(&seen).contains("over the wire"),
+        "the row is not there: {}",
+        said(&seen)
+    );
+}
+
+#[test]
+fn a_server_that_wants_a_token_says_so_and_takes_one() {
+    let dir = TestDir::new();
+    let database = setup(&dir);
+
+    let minted = quantydb(&["token", "tester"]);
+    assert!(minted.status.success(), "{}", said(&minted));
+    let printed = said(&minted);
+    let token = printed
+        .lines()
+        .find_map(|l| l.strip_prefix("token "))
+        .expect("a token line")
+        .to_string();
+    let line = printed
+        .lines()
+        .find_map(|l| l.strip_prefix("line  "))
+        .expect("a line line");
+
+    let tokens = dir.path().join("tokens");
+    std::fs::write(&tokens, format!("{line}\n")).expect("write tokens");
+    let tokens = tokens.to_str().expect("utf8 path").to_string();
+    let server = Served::start(&database, &["--tokens", &tokens]);
+
+    let refused = quantydb(&["connect", &server.addr, "show tables"]);
+    assert!(
+        !refused.status.success(),
+        "a tokenless client was served: {}",
+        said(&refused)
+    );
+
+    let allowed = quantydb(&["connect", &server.addr, "show tables", "--token", &token]);
+    assert!(
+        allowed.status.success(),
+        "the minted token was refused: {}",
+        said(&allowed)
+    );
+    assert_eq!(
+        said(&allowed),
+        said(&quantydb(&["run", &database, "show tables"])),
+        "authenticating changed the answer"
+    );
+
+    let wrong = quantydb(&[
+        "connect",
+        &server.addr,
+        "show tables",
+        "--token",
+        "not the token",
+    ]);
+    assert!(!wrong.status.success(), "a wrong token was accepted");
+}

@@ -28,22 +28,28 @@ jobs:
           # older one and says almost nothing about why.
           - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
-            name: quanty-linux-x86_64
+            name: quantydb-linux-x86_64
           # Static, for anything older than that runner. It costs about
           # 2.2x on the read path, measured, which is why it is the second
           # file and not the first. See ADR-040.
           - os: ubuntu-22.04
             target: x86_64-unknown-linux-musl
-            name: quanty-linux-x86_64-static
+            name: quantydb-linux-x86_64-static
+          # Native, not cross compiled: the runner is arm64, so the tests
+          # in this job run on the architecture the binary is for. A cross
+          # build would ship something no machine had executed.
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            name: quantydb-linux-arm64
           - os: macos-latest
             target: aarch64-apple-darwin
-            name: quanty-macos-arm64
+            name: quantydb-macos-arm64
           - os: macos-latest
             target: x86_64-apple-darwin
-            name: quanty-macos-x86_64
+            name: quantydb-macos-x86_64
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            name: quanty-windows-x86_64
+            name: quantydb-windows-x86_64
     steps:
       - uses: actions/checkout@v4
 
@@ -71,7 +77,7 @@ jobs:
         run: cargo test --workspace --locked
 
       - name: build
-        run: cargo build --release --locked -p quanty-cli --target ${{ matrix.target }}
+        run: cargo build --release --locked -p quantydb-cli --target ${{ matrix.target }}
 
       # Named for the platform rather than the target triple, and carrying
       # its own checksum, so a downloaded file can be checked without
@@ -81,10 +87,10 @@ jobs:
         run: |
           mkdir -p dist
           if [ "${{ matrix.os }}" = "windows-latest" ]; then
-            cp "target/${{ matrix.target }}/release/quanty.exe" "dist/${{ matrix.name }}.exe"
+            cp "target/${{ matrix.target }}/release/quantydb.exe" "dist/${{ matrix.name }}.exe"
             cd dist && sha256sum "${{ matrix.name }}.exe" > "${{ matrix.name }}.exe.sha256"
           else
-            cp "target/${{ matrix.target }}/release/quanty" "dist/${{ matrix.name }}"
+            cp "target/${{ matrix.target }}/release/quantydb" "dist/${{ matrix.name }}"
             cd dist
             if command -v sha256sum > /dev/null; then
               sha256sum "${{ matrix.name }}" > "${{ matrix.name }}.sha256"
@@ -110,6 +116,33 @@ jobs:
           name: ${{ matrix.name }}
           path: dist/*
 
+  # The one link in the chain that a dispatch cannot otherwise exercise.
+  # The repository's default token permission is read, and a job asking for
+  # write is supposed to get it; supposed to is not the same as does, and
+  # finding out at tag time means finding out with five binaries built and
+  # nowhere to put them. A draft release is invisible to anyone without
+  # push access, and this deletes it either way.
+  can-we-publish:
+    name: check we may write a release
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: create a draft and take it away again
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          tag="permission-check-$GITHUB_RUN_ID"
+          gh release create "$tag" --draft --notes "checking write access"
+          echo "created the draft, so the token may write releases"
+          # No --cleanup-tag: a draft has no tag to clean up, and asking
+          # for one fails the step after the thing it was checking passed.
+          gh release delete "$tag" --yes
+          echo "and deleted it"
+
   publish:
     name: attach to the release
     needs: build
@@ -131,6 +164,132 @@ jobs:
           cat *.sha256 > SHA256SUMS
           rm -f ./*.sha256
           ls -l
+
+      - name: the version, without the v
+        id: version
+        run: echo "n=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
+
+      - name: tools for the package formats
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            apt-utils createrepo-c rpm
+
+      # Imported into the runner's keyring, which is thrown away with the
+      # runner. Without the secret the scripts still build the packages and
+      # say they did not sign them, so a missing secret is a loud repository
+      # rather than a silent one.
+      - name: the signing key
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+        run: |
+          if [ -z "$GPG_PRIVATE_KEY" ]; then
+            echo "::warning::GPG_PRIVATE_KEY is not set, packages will be unsigned"
+            exit 0
+          fi
+          echo "$GPG_PRIVATE_KEY" | gpg --batch --import
+          gpg --list-secret-keys --keyid-format LONG
+
+      - name: build the deb and the rpm
+        run: |
+          chmod +x packaging/*.sh
+          mkdir -p debs
+          v="${{ steps.version.outputs.n }}"
+          packaging/deb.sh dist/quantydb-linux-x86_64 "$v" amd64 debs
+          packaging/deb.sh dist/quantydb-linux-arm64  "$v" arm64 debs
+          packaging/apt-repo.sh debs site/apt
+          packaging/rpm-repo.sh dist/quantydb-linux-x86_64 "$v" x86_64  site/rpm
+          packaging/rpm-repo.sh dist/quantydb-linux-arm64  "$v" aarch64 site/rpm
+          cp debs/*.deb site/rpm/*.rpm dist/
+
+      # The formula points at files that only exist once this release does,
+      # so its checksums come out of the SHA256SUMS just written rather than
+      # from anybody's memory.
+      - name: point the formula at this release
+        run: |
+          v="${{ steps.version.outputs.n }}"
+          sum() { grep "  $1\$" dist/SHA256SUMS | cut -d' ' -f1; }
+          python3 - "$v" "$(sum quantydb-macos-arm64)" \
+                       "$(sum quantydb-macos-x86_64)" \
+                       "$(sum quantydb-linux-x86_64)" <<'EOF'
+          import re, sys
+          version, arm, intel, linux = sys.argv[1:5]
+          p = "Formula/quantydb.rb"
+          s = open(p).read()
+          s = re.sub(r'version "[^"]*"', f'version "{version}"', s, count=1)
+          for want in (arm, intel, linux):
+              s = s.replace('"' + "0" * 64 + '"', f'"{want}"', 1)
+          open(p, "w").write(s)
+          print(s)
+          EOF
+
+      # From here rather than from a laptop, because the AUR speaks ssh on
+      # port 22 and this is a machine that has it. The .SRCINFO is
+      # generated rather than edited: the AUR reads that file and nothing
+      # else, so a PKGBUILD bumped without it shows the old version for
+      # ever while installing the new one.
+      - name: push the aur package
+        env:
+          AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
+          VERSION: ${{ steps.version.outputs.n }}
+        run: |
+          if [ -z "$AUR_SSH_KEY" ]; then
+            echo "::warning::AUR_SSH_KEY is not set, skipping the AUR"
+            exit 0
+          fi
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "$AUR_SSH_KEY" > ~/.ssh/aur
+          chmod 600 ~/.ssh/aur
+          ssh-keyscan -t ed25519 aur.archlinux.org >> ~/.ssh/known_hosts 2>/dev/null
+          cat >> ~/.ssh/config <<'SSHEOF'
+          Host aur.archlinux.org
+            User aur
+            IdentityFile ~/.ssh/aur
+            IdentitiesOnly yes
+          SSHEOF
+          chmod 600 ~/.ssh/config
+
+          sum=$(grep "  quantydb-linux-x86_64\$" dist/SHA256SUMS | cut -d' ' -f1)
+          git clone ssh://aur@aur.archlinux.org/quantydb-bin.git /tmp/aur
+          cp packaging/aur/PKGBUILD packaging/aur/mksrcinfo.sh /tmp/aur/
+          cd /tmp/aur
+          sed -i "s/^pkgver=.*/pkgver=$VERSION/" PKGBUILD
+          sed -i "0,/^sha256sums=(/{s|'0\{64\}'|'$sum'|}" PKGBUILD
+          bash mksrcinfo.sh > .SRCINFO
+          rm -f mksrcinfo.sh
+          grep -E '^\s*(pkgver|sha256sums)' .SRCINFO PKGBUILD
+
+          git config user.name "Elchi"
+          git config user.email "github@elchi.dev"
+          git add PKGBUILD .SRCINFO
+          git commit -m "quantydb-bin $VERSION"
+          git push origin master
+          cd -
+
+      - name: publish the site and the formula
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git config user.name "Elchi"
+          git config user.email "github@elchi.dev"
+          git add Formula/quantydb.rb
+          git commit -m "release: formula points at ${{ steps.version.outputs.n }}"
+          git push origin HEAD:main
+
+          # gh-pages keeps only what a package manager fetches, so it is
+          # rebuilt rather than merged: an old .deb left behind is an old
+          # .deb apt will happily install.
+          git fetch origin gh-pages
+          git worktree add /tmp/pages gh-pages
+          rm -rf /tmp/pages/apt /tmp/pages/rpm
+          cp -r site/apt site/rpm /tmp/pages/
+          cp install.sh /tmp/pages/install.sh
+          cd /tmp/pages
+          git add -A
+          git commit -m "release: packages for ${{ steps.version.outputs.n }}"
+          git push origin gh-pages
+          cd -
 
       # gh is on the runner already. A release is rare enough that another
       # action is a dependency bought for five minutes a month.

@@ -16,7 +16,7 @@ tour rather than the reference.
 ## A database is a file
 
 ```
-$ quanty create shop.qdb
+$ quantydb create shop.qdb
 created shop.qdb
 ```
 
@@ -29,7 +29,7 @@ history.
 Columns are `name: type`, with attributes after them:
 
 ```
-$ quanty run shop.qdb 'table products {
+$ quantydb run shop.qdb 'table products {
     id:    int  @key
     name:  text @index
     price: int
@@ -49,7 +49,7 @@ ok
 `put` takes one row or several:
 
 ```
-$ quanty run shop.qdb 'put products
+$ quantydb run shop.qdb 'put products
     { id: 1, name: "coffee grinder", price: 4900, tags: "kitchen burr manual" },
     { id: 2, name: "kettle",         price: 3200, tags: "kitchen electric" },
     { id: 3, name: "notebook",       price: 800,  tags: "office paper" }'
@@ -59,7 +59,7 @@ put 3
 `set` changes rows in place, and arithmetic works on the column:
 
 ```
-$ quanty run shop.qdb 'set products where id = 2 { price -= 200 }'
+$ quantydb run shop.qdb 'set products where id = 2 { price -= 200 }'
 set 1
 ```
 
@@ -68,7 +68,7 @@ set 1
 `get` with no braces gives every column:
 
 ```
-$ quanty run shop.qdb 'get products'
+$ quantydb run shop.qdb 'get products'
 1|coffee grinder|4900|kitchen burr manual
 2|kettle|3000|kitchen electric
 3|notebook|800|office paper
@@ -77,7 +77,7 @@ $ quanty run shop.qdb 'get products'
 Braces choose columns, and the rest reads as you would guess:
 
 ```
-$ quanty run shop.qdb 'get products { name, price } where price > 1000 order by price desc'
+$ quantydb run shop.qdb 'get products { name, price } where price > 1000 order by price desc'
 coffee grinder|4900
 kettle|3000
 ```
@@ -87,7 +87,7 @@ kettle|3000
 A `@text` column answers `match`. A bare word finds the word:
 
 ```
-$ quanty run shop.qdb 'get products { name } where tags match "kitchen"'
+$ quantydb run shop.qdb 'get products { name } where tags match "kitchen"'
 kettle
 coffee grinder
 ```
@@ -95,14 +95,14 @@ coffee grinder
 Several words in quotes are a phrase, and have to appear in that order:
 
 ```
-$ quanty run shop.qdb 'get products { name } where tags match "burr manual"'
+$ quantydb run shop.qdb 'get products { name } where tags match "burr manual"'
 coffee grinder
 ```
 
 A trailing star is a prefix:
 
 ```
-$ quanty run shop.qdb 'get products { name } where tags match "elect*"'
+$ quantydb run shop.qdb 'get products { name } where tags match "elect*"'
 kettle
 ```
 
@@ -115,7 +115,7 @@ Every write is a commit. Nothing is overwritten in place, so the old
 version is still there:
 
 ```
-$ quanty log shop.qdb
+$ quantydb log shop.qdb
 commit 3 parent 2
 commit 2 parent 1
 commit 1 parent 0
@@ -124,17 +124,17 @@ commit 1 parent 0
 `as of` reads the database as it was at a commit:
 
 ```
-$ quanty run shop.qdb 'get products { name, price } where id = 2'
+$ quantydb run shop.qdb 'get products { name, price } where id = 2'
 kettle|3000
 
-$ quanty run shop.qdb 'get products { name, price } as of 2 where id = 2'
+$ quantydb run shop.qdb 'get products { name, price } as of 2 where id = 2'
 kettle|3200
 ```
 
 That is not a backup being restored. It is the same file answering a
 question about a moment in it.
 
-`quanty gc <db> <keep>` drops history beyond the last `keep` commits per
+`quantydb gc <db> <keep>` drops history beyond the last `keep` commits per
 branch when you want the space back.
 
 ## Branches
@@ -142,25 +142,25 @@ branch when you want the space back.
 A branch is a name for a commit, and writes land on the one you are on:
 
 ```
-$ quanty branch shop.qdb experiment
+$ quantydb branch shop.qdb experiment
 ok
-$ quanty switch shop.qdb experiment
+$ quantydb switch shop.qdb experiment
 switched to experiment
-$ quanty run shop.qdb 'set products where id = 1 { price = 1 }'
+$ quantydb run shop.qdb 'set products where id = 1 { price = 1 }'
 set 1
-$ quanty run shop.qdb 'get products { name, price } where id = 1'
+$ quantydb run shop.qdb 'get products { name, price } where id = 1'
 coffee grinder|1
 ```
 
 Main has not moved:
 
 ```
-$ quanty switch shop.qdb main
+$ quantydb switch shop.qdb main
 switched to main
-$ quanty run shop.qdb 'get products { name, price } where id = 1'
+$ quantydb run shop.qdb 'get products { name, price } where id = 1'
 coffee grinder|4900
 
-$ quanty branches shop.qdb
+$ quantydb branches shop.qdb
   experiment @6
 * main @3
 ```
@@ -168,9 +168,9 @@ $ quanty branches shop.qdb
 The star is the branch you are on, the number is the commit it names, and
 the list is alphabetical.
 
-`quanty merge shop.qdb experiment` answers
+`quantydb merge shop.qdb experiment` answers
 `merged experiment, head is now commit 6`, and
-`quanty run shop.qdb "drop branch experiment"` removes the name. There is
+`quantydb run shop.qdb "drop branch experiment"` removes the name. There is
 no `--branch` flag on purpose: a write always lands on the branch you are
 on, so running elsewhere would mean switching there and back.
 
@@ -179,14 +179,14 @@ on, so running elsewhere would mean switching there and back.
 The same database answers a SQL dialect:
 
 ```
-$ quanty run shop.qdb --sql 'SELECT name, price FROM products WHERE price < 1000'
+$ quantydb run shop.qdb --sql 'SELECT name, price FROM products WHERE price < 1000'
 notebook|800
 ```
 
 And an existing SQLite file can be read straight in:
 
 ```
-quanty import old.sqlite new.qdb
+quantydb import old.sqlite new.qdb
 ```
 
 `--dry-run` prints what it would do without writing, and `--strict`
@@ -199,7 +199,7 @@ what does not is [IMPORT.md](IMPORT.md).
 you load a file:
 
 ```
-quanty shell shop.qdb < seed.qql
+quantydb shell shop.qdb < seed.qql
 ```
 
 ## Which index it wishes you had
@@ -207,7 +207,7 @@ quanty shell shop.qdb < seed.qql
 The engine remembers what it had to scan:
 
 ```
-quanty run shop.qdb "show suggestions"
+quantydb run shop.qdb "show suggestions"
 ```
 
 It lists the columns a query narrowed on without an index, worst first by
@@ -220,7 +220,7 @@ borrow, so it cannot outlive the database and cannot be left open: the
 closure returning is what decides commit or rollback.
 
 ```rust
-use quanty::Database;
+use quantydb::Database;
 
 let mut db = Database::open("shop.qdb")?;
 
@@ -237,10 +237,10 @@ for row in rows.rows() {
 Rows come back typed if you ask them to:
 
 ```rust
-use quanty::{Database, Row};
+use quantydb::{Database, Row};
 
 #[derive(Row, Debug, PartialEq)]
-#[quanty(table = "users")]
+#[quantydb(table = "users")]
 struct User {
     id: i64,
     name: String,
@@ -262,15 +262,15 @@ content by hash and a hand written one would point at nothing.
 ## As a server
 
 ```
-$ quanty setup
+$ quantydb setup
 ```
 
 The wizard writes a database, a token file and optionally a systemd unit,
 prints the token once, and prints the command to start it. By hand:
 
 ```
-quanty serve shop.qdb --listen 127.0.0.1:7878 --tokens shop.tokens
-quanty connect 127.0.0.1:7878 --token <token>
+quantydb serve shop.qdb --listen 127.0.0.1:7878 --tokens shop.tokens
+quantydb connect 127.0.0.1:7878 --token <token>
 ```
 
 `connect` with a statement runs that one; without it, it reads statements
@@ -283,14 +283,14 @@ the server on loopback or a network you trust, or put wireguard, an ssh
 tunnel or a TLS proxy in front of it. The server says so every time it
 starts.
 
-`quanty serve` runs on Linux. The tool, the library and both languages run
+`quantydb serve` runs on Linux. The tool, the library and both languages run
 on Linux, macOS and Windows.
 
 ## When something is wrong
 
-- `quanty tables <db>` lists what is defined
-- `quanty stats <db>` gives page counts for the file as it stands
-- `quanty log <db>` shows the commits, and `as of` reads any of them
+- `quantydb tables <db>` lists what is defined
+- `quantydb stats <db>` gives page counts for the file as it stands
+- `quantydb log <db>` shows the commits, and `as of` reads any of them
 - a killed process loses nothing committed: the file recovers on the next
   open, and that path is exercised by a few thousand kills on every push
 

@@ -1,6 +1,6 @@
 # QuantyDB File Format, version 2
 
-Normative description of the on-disk format as implemented in quanty-core.
+Normative description of the on-disk format as implemented in quantydb-core.
 If the code and this document disagree, one of them has a bug and the fix
 must touch both.
 
@@ -83,7 +83,7 @@ from, page count is at least 2, and every non-nil root points inside
 
 ## B-tree nodes
 
-Keys are raw bytes, compared bytewise; the key encoding in quanty-core
+Keys are raw bytes, compared bytewise; the key encoding in quantydb-core
 guarantees byte order equals logical order for typed tuples. The longest
 allowed key is `page_size / 8`. Values up to `page_size / 4` live inline,
 larger ones move to an overflow chain.
@@ -258,7 +258,7 @@ ADR-012). This will change before any 1.0 release.
 Everything below is plain keys and values in the two trees; nothing here
 adds page types or touches the physical layer.
 
-Keys use the tuple encoding from `quanty-core::encoding`: type-tagged,
+Keys use the tuple encoding from `quantydb-core::encoding`: type-tagged,
 order preserving, self delimiting. `(a, b)` denotes such a tuple.
 
 ### Catalog tree
