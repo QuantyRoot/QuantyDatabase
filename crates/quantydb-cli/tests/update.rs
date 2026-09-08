@@ -16,7 +16,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use common::TestDir;
+use common::{run_tool, TestDir};
 
 /// A directory holding a copy of the tool, and a candidate to install.
 fn staged(dir: &TestDir) -> (PathBuf, PathBuf) {
@@ -41,12 +41,12 @@ fn a_good_binary_is_installed_and_the_old_one_kept() {
     let dir = TestDir::new();
     let (installed, candidate) = staged(&dir);
 
-    let out = Command::new(&installed)
-        .args(["update", "--file"])
-        .arg(&candidate)
-        .arg("--yes")
-        .output()
-        .expect("the tool runs");
+    let out = run_tool(
+        Command::new(&installed)
+            .args(["update", "--file"])
+            .arg(&candidate)
+            .arg("--yes"),
+    );
     let said = String::from_utf8_lossy(&out.stdout).to_string();
 
     assert!(out.status.success(), "update failed: {said}");
@@ -74,12 +74,12 @@ fn half_a_download_is_refused_and_nothing_is_touched() {
     let whole = fs::read(&candidate).expect("read the candidate");
     fs::write(&candidate, &whole[..whole.len() / 3]).expect("truncate it");
 
-    let out = Command::new(&installed)
-        .args(["update", "--file"])
-        .arg(&candidate)
-        .arg("--yes")
-        .output()
-        .expect("the tool runs");
+    let out = run_tool(
+        Command::new(&installed)
+            .args(["update", "--file"])
+            .arg(&candidate)
+            .arg("--yes"),
+    );
 
     assert!(!out.status.success(), "a truncated binary was accepted");
     assert!(still_runs(&installed), "the installed tool stopped working");
@@ -97,12 +97,12 @@ fn something_that_is_not_the_tool_is_refused() {
     let (installed, candidate) = staged(&dir);
     fs::write(&candidate, b"<html>404 not found</html>\n").expect("write a page");
 
-    let out = Command::new(&installed)
-        .args(["update", "--file"])
-        .arg(&candidate)
-        .arg("--yes")
-        .output()
-        .expect("the tool runs");
+    let out = run_tool(
+        Command::new(&installed)
+            .args(["update", "--file"])
+            .arg(&candidate)
+            .arg("--yes"),
+    );
 
     assert!(!out.status.success(), "an html page was accepted");
     assert!(still_runs(&installed), "the installed tool stopped working");
@@ -113,12 +113,12 @@ fn a_checksum_that_does_not_match_stops_it() {
     let dir = TestDir::new();
     let (installed, candidate) = staged(&dir);
 
-    let out = Command::new(&installed)
-        .args(["update", "--file"])
-        .arg(&candidate)
-        .args(["--sha256", "00", "--yes"])
-        .output()
-        .expect("the tool runs");
+    let out = run_tool(
+        Command::new(&installed)
+            .args(["update", "--file"])
+            .arg(&candidate)
+            .args(["--sha256", "00", "--yes"]),
+    );
     let said = String::from_utf8_lossy(&out.stderr).to_string();
 
     assert!(!out.status.success(), "a wrong checksum was accepted");
@@ -141,12 +141,12 @@ fn an_empty_file_is_refused_before_anything_is_written() {
     let (installed, candidate) = staged(&dir);
     fs::write(&candidate, b"").expect("empty it");
 
-    let out = Command::new(&installed)
-        .args(["update", "--file"])
-        .arg(&candidate)
-        .arg("--yes")
-        .output()
-        .expect("the tool runs");
+    let out = run_tool(
+        Command::new(&installed)
+            .args(["update", "--file"])
+            .arg(&candidate)
+            .arg("--yes"),
+    );
 
     assert!(!out.status.success(), "an empty file was accepted");
     assert!(still_runs(&installed), "the installed tool stopped working");
@@ -166,12 +166,12 @@ fn one_byte_short_is_still_short() {
     let whole = fs::read(&candidate).expect("read the candidate");
     fs::write(&candidate, &whole[..whole.len() - 1]).expect("shorten it");
 
-    let out = Command::new(&installed)
-        .args(["update", "--file"])
-        .arg(&candidate)
-        .arg("--yes")
-        .output()
-        .expect("the tool runs");
+    let out = run_tool(
+        Command::new(&installed)
+            .args(["update", "--file"])
+            .arg(&candidate)
+            .arg("--yes"),
+    );
     let said = String::from_utf8_lossy(&out.stderr).to_string();
 
     assert!(
@@ -193,12 +193,12 @@ fn a_longer_file_than_the_headers_describe_is_fine() {
     whole.extend_from_slice(&[0u8; 128]);
     fs::write(&candidate, &whole).expect("pad it");
 
-    let out = Command::new(&installed)
-        .args(["update", "--file"])
-        .arg(&candidate)
-        .arg("--yes")
-        .output()
-        .expect("the tool runs");
+    let out = run_tool(
+        Command::new(&installed)
+            .args(["update", "--file"])
+            .arg(&candidate)
+            .arg("--yes"),
+    );
 
     assert!(
         out.status.success(),
@@ -213,10 +213,7 @@ fn without_a_file_it_says_what_it_is_waiting_for() {
     let dir = TestDir::new();
     let (installed, _) = staged(&dir);
 
-    let out = Command::new(&installed)
-        .arg("update")
-        .output()
-        .expect("the tool runs");
+    let out = run_tool(Command::new(&installed).arg("update"));
     let said = String::from_utf8_lossy(&out.stderr).to_string();
 
     assert!(!out.status.success(), "update with no file should refuse");

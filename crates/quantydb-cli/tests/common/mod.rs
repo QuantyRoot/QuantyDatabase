@@ -55,3 +55,39 @@ impl Drop for TestDir {
         let _ = std::fs::remove_dir_all(&self.path);
     }
 }
+
+/// Run a program the test just wrote, retrying while the kernel says the
+/// file is busy.
+///
+/// Copying a binary and then executing it races with every other test in
+/// the same run. `fork` hands a child every descriptor the parent had
+/// open, including one another test is still writing its own copy
+/// through, and the kernel refuses to execute a file that anybody holds
+/// open for writing: ETXTBSY, `ExecutableFileBusy`. The window is between
+/// that fork and its exec, so it is short, it is nobody's bug, and it
+/// only ever appears on a machine with enough cores to run the tests at
+/// once. It appeared on CI and never here.
+///
+/// Retrying is the whole fix. Failing for any other reason fails now.
+#[allow(dead_code)]
+pub fn run_tool(command: &mut std::process::Command) -> std::process::Output {
+    use std::io::ErrorKind;
+    use std::thread::sleep;
+    use std::time::Duration;
+
+    let mut waited = Duration::ZERO;
+    let step = Duration::from_millis(20);
+    loop {
+        match command.output() {
+            Ok(out) => return out,
+            Err(e)
+                if e.kind() == ErrorKind::ExecutableFileBusy
+                    && waited < Duration::from_secs(10) =>
+            {
+                sleep(step);
+                waited += step;
+            }
+            Err(e) => panic!("the tool did not run: {e}"),
+        }
+    }
+}

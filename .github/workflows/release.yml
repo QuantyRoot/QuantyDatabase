@@ -214,6 +214,50 @@ jobs:
           print(s)
           EOF
 
+      # From here rather than from a laptop, because the AUR speaks ssh on
+      # port 22 and this is a machine that has it. The .SRCINFO is
+      # generated rather than edited: the AUR reads that file and nothing
+      # else, so a PKGBUILD bumped without it shows the old version for
+      # ever while installing the new one.
+      - name: push the aur package
+        env:
+          AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
+          VERSION: ${{ steps.version.outputs.n }}
+        run: |
+          if [ -z "$AUR_SSH_KEY" ]; then
+            echo "::warning::AUR_SSH_KEY is not set, skipping the AUR"
+            exit 0
+          fi
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "$AUR_SSH_KEY" > ~/.ssh/aur
+          chmod 600 ~/.ssh/aur
+          ssh-keyscan -t ed25519 aur.archlinux.org >> ~/.ssh/known_hosts 2>/dev/null
+          cat >> ~/.ssh/config <<'SSHEOF'
+          Host aur.archlinux.org
+            User aur
+            IdentityFile ~/.ssh/aur
+            IdentitiesOnly yes
+          SSHEOF
+          chmod 600 ~/.ssh/config
+
+          sum=$(grep "  quantydb-linux-x86_64\$" dist/SHA256SUMS | cut -d' ' -f1)
+          git clone ssh://aur@aur.archlinux.org/quantydb-bin.git /tmp/aur
+          cp packaging/aur/PKGBUILD packaging/aur/mksrcinfo.sh /tmp/aur/
+          cd /tmp/aur
+          sed -i "s/^pkgver=.*/pkgver=$VERSION/" PKGBUILD
+          sed -i "0,/^sha256sums=(/{s|'0\{64\}'|'$sum'|}" PKGBUILD
+          bash mksrcinfo.sh > .SRCINFO
+          rm -f mksrcinfo.sh
+          grep -E '^\s*(pkgver|sha256sums)' .SRCINFO PKGBUILD
+
+          git config user.name "Elchi"
+          git config user.email "github@elchi.dev"
+          git add PKGBUILD .SRCINFO
+          git commit -m "quantydb-bin $VERSION"
+          git push origin master
+          cd -
+
       - name: publish the site and the formula
         env:
           GH_TOKEN: ${{ github.token }}

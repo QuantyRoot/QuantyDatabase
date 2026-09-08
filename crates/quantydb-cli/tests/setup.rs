@@ -13,7 +13,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 
-use common::TestDir;
+use common::{run_tool, TestDir};
 
 /// A directory with its own copy of the tool, so uninstall has something
 /// to remove that is not the one the test runner is using.
@@ -29,14 +29,14 @@ fn setup_writes_a_database_a_token_and_says_how_to_start() {
     let database = dir.path().join("d.qdb");
     let tokens = dir.path().join("d.tokens");
 
-    let out = Command::new(env!("CARGO_BIN_EXE_quantydb"))
-        .arg("setup")
-        .arg(&database)
-        .arg("--tokens")
-        .arg(&tokens)
-        .args(["--listen", "127.0.0.1:7878", "--no-service", "--yes"])
-        .output()
-        .expect("the tool runs");
+    let out = run_tool(
+        Command::new(env!("CARGO_BIN_EXE_quantydb"))
+            .arg("setup")
+            .arg(&database)
+            .arg("--tokens")
+            .arg(&tokens)
+            .args(["--listen", "127.0.0.1:7878", "--no-service", "--yes"]),
+    );
     let said = String::from_utf8_lossy(&out.stdout).to_string();
 
     assert!(out.status.success(), "setup failed: {said}");
@@ -80,14 +80,14 @@ fn setup_twice_adds_a_token_and_keeps_the_database() {
     let tokens = dir.path().join("d.tokens");
 
     let run = || {
-        Command::new(env!("CARGO_BIN_EXE_quantydb"))
-            .arg("setup")
-            .arg(&database)
-            .arg("--tokens")
-            .arg(&tokens)
-            .args(["--listen", "127.0.0.1:7878", "--no-service", "--yes"])
-            .output()
-            .expect("the tool runs")
+        run_tool(
+            Command::new(env!("CARGO_BIN_EXE_quantydb"))
+                .arg("setup")
+                .arg(&database)
+                .arg("--tokens")
+                .arg(&tokens)
+                .args(["--listen", "127.0.0.1:7878", "--no-service", "--yes"]),
+        )
     };
 
     assert!(run().status.success());
@@ -118,14 +118,14 @@ fn the_token_file_is_not_readable_by_others() {
 
     let dir = TestDir::new();
     let tokens = dir.path().join("d.tokens");
-    let out = Command::new(env!("CARGO_BIN_EXE_quantydb"))
-        .arg("setup")
-        .arg(dir.path().join("d.qdb"))
-        .arg("--tokens")
-        .arg(&tokens)
-        .args(["--listen", "127.0.0.1:7878", "--no-service", "--yes"])
-        .output()
-        .expect("the tool runs");
+    let out = run_tool(
+        Command::new(env!("CARGO_BIN_EXE_quantydb"))
+            .arg("setup")
+            .arg(dir.path().join("d.qdb"))
+            .arg("--tokens")
+            .arg(&tokens)
+            .args(["--listen", "127.0.0.1:7878", "--no-service", "--yes"]),
+    );
     assert!(out.status.success());
 
     let mode = fs::metadata(&tokens).expect("stat").permissions().mode();
@@ -135,14 +135,14 @@ fn the_token_file_is_not_readable_by_others() {
 #[test]
 fn an_address_that_is_not_loopback_is_said_out_loud() {
     let dir = TestDir::new();
-    let out = Command::new(env!("CARGO_BIN_EXE_quantydb"))
-        .arg("setup")
-        .arg(dir.path().join("d.qdb"))
-        .arg("--tokens")
-        .arg(dir.path().join("d.tokens"))
-        .args(["--listen", "0.0.0.0:7878", "--no-service", "--yes"])
-        .output()
-        .expect("the tool runs");
+    let out = run_tool(
+        Command::new(env!("CARGO_BIN_EXE_quantydb"))
+            .arg("setup")
+            .arg(dir.path().join("d.qdb"))
+            .arg("--tokens")
+            .arg(dir.path().join("d.tokens"))
+            .args(["--listen", "0.0.0.0:7878", "--no-service", "--yes"]),
+    );
     let said = String::from_utf8_lossy(&out.stdout).to_string();
 
     assert!(out.status.success());
@@ -159,20 +159,17 @@ fn uninstall_removes_the_binary_and_leaves_the_data() {
     let database = dir.path().join("d.qdb");
     let tokens = dir.path().join("d.tokens");
 
-    let made = Command::new(&binary)
-        .arg("setup")
-        .arg(&database)
-        .arg("--tokens")
-        .arg(&tokens)
-        .args(["--listen", "127.0.0.1:7878", "--no-service", "--yes"])
-        .output()
-        .expect("the tool runs");
+    let made = run_tool(
+        Command::new(&binary)
+            .arg("setup")
+            .arg(&database)
+            .arg("--tokens")
+            .arg(&tokens)
+            .args(["--listen", "127.0.0.1:7878", "--no-service", "--yes"]),
+    );
     assert!(made.status.success());
 
-    let out = Command::new(&binary)
-        .args(["uninstall", "--yes"])
-        .output()
-        .expect("the tool runs");
+    let out = run_tool(Command::new(&binary).args(["uninstall", "--yes"]));
     let said = String::from_utf8_lossy(&out.stdout).to_string();
     assert!(out.status.success(), "uninstall failed: {said}");
 
@@ -191,10 +188,7 @@ fn uninstall_does_not_touch_a_service_that_runs_another_binary() {
     let dir = TestDir::new();
     let binary = own_copy(&dir);
 
-    let out = Command::new(&binary)
-        .args(["uninstall", "--yes"])
-        .output()
-        .expect("the tool runs");
+    let out = run_tool(Command::new(&binary).args(["uninstall", "--yes"]));
     let said = String::from_utf8_lossy(&out.stdout).to_string();
 
     assert!(out.status.success(), "uninstall failed: {said}");
