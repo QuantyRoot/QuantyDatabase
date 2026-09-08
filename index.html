@@ -52,6 +52,14 @@ sudo dnf install quantydb</pre>
 <pre>brew tap quantyroot/quantydb https://github.com/QuantyRoot/QuantyDatabase
 brew install quantydb</pre>
 
+<h2>Built on QuantyDB</h2>
+<p>Clients and tools other people have written:
+<a href="integrations.html">the integrations page</a>. Put the topic
+<code>quantydb-sdk</code> on a public repository and it appears there
+within a week. <a href="https://github.com/QuantyRoot/QuantyDatabase/blob/main/docs/PROTOCOL.md">PROTOCOL.md</a>
+is the wire format, and it is meant to be enough to write one without
+reading our source.</p>
+
 <h2>Before you put it on a server</h2>
 <p class="warn">The server speaks plaintext. Tokens cross the wire in the
 clear on every connection, so anyone who can watch the traffic can take
