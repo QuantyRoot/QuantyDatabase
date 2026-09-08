@@ -316,6 +316,13 @@ mattered, are fixed above:
 The message table now gives every body field by name and width, because
 prose like "verb plus a u64" is exactly what forces a guess.
 
+There is a conformance suite in the repository,
+`crates/quantydb-cli/tests/wire.rs`. It speaks this format by hand, with
+no access to the encoder it is testing, and covers every message type,
+every value type, both front ends, the refusals and the handshake. It is
+worth reading beside this page: where the two disagree, the test is what
+runs on every push.
+
 ## Version history
 
 ```
