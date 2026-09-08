@@ -39,7 +39,10 @@ Release:        1
 Summary:        One database that reshapes itself into whatever you need
 License:        MIT
 URL:            https://github.com/QuantyRoot/QuantyDatabase
-BuildArch:      $arch
+# No BuildArch here. The architecture comes from --target, and setting
+# both makes rpmbuild refuse with "No compatible architectures found for
+# build" when the target is not the host's, which is every cross built
+# package this produces.
 # The binary is already built and already tested. Nothing is compiled
 # here, so there is nothing to strip, debug or repack.
 %global debug_package %{nil}
@@ -64,7 +67,7 @@ install -D -m 0755 %{_sourcedir}/quantydb %{buildroot}%{_bindir}/quantydb
 %changelog
 EOF
 
-rpmbuild --define "_topdir $work" --target "$arch" -bb "$work/SPECS/quantydb.spec" > /dev/null
+rpmbuild --define "_topdir $work" --target "$arch-linux" -bb "$work/SPECS/quantydb.spec" > /dev/null
 rpm_file=$(find "$work/RPMS" -name '*.rpm' | head -1)
 [ -n "$rpm_file" ] || { echo "rpmbuild produced nothing" >&2; exit 1; }
 
