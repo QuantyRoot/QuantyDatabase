@@ -4,24 +4,24 @@
 class Quantydb < Formula
   desc "One database that reshapes itself into whatever you need"
   homepage "https://github.com/QuantyRoot/QuantyDatabase"
-  version "0.0.0"
+  version "0.4.0"
   license "MIT"
 
   on_macos do
     on_arm do
       url "https://github.com/QuantyRoot/QuantyDatabase/releases/download/v#{version}/quantydb-macos-arm64"
-      sha256 "0000000000000000000000000000000000000000000000000000000000000000"
+      sha256 "cbdb1f29d30aa39df00f83f553b8ddb5c7387c7a55e67398424115e23d6c1d11"
     end
     on_intel do
       url "https://github.com/QuantyRoot/QuantyDatabase/releases/download/v#{version}/quantydb-macos-x86_64"
-      sha256 "0000000000000000000000000000000000000000000000000000000000000000"
+      sha256 "f6bc0263e6e80e33c25b2bb65697f062b2e548fdbdab942c05d26b2d247ea47e"
     end
   end
 
   on_linux do
     on_intel do
       url "https://github.com/QuantyRoot/QuantyDatabase/releases/download/v#{version}/quantydb-linux-x86_64"
-      sha256 "0000000000000000000000000000000000000000000000000000000000000000"
+      sha256 "e1ba7d283b8add76d1eb38bff47b1c3a48cbd42c3566884842496ddf8ed0c282"
     end
   end
 
