@@ -31,11 +31,9 @@ os=$(uname -s)
 arch=$(uname -m)
 case "$os/$arch" in
     Linux/x86_64|Linux/amd64)   asset=quantydb-linux-x86_64 ;;
+    Linux/aarch64|Linux/arm64)  asset=quantydb-linux-arm64 ;;
     Darwin/arm64|Darwin/aarch64) asset=quantydb-macos-arm64 ;;
     Darwin/x86_64)              asset=quantydb-macos-x86_64 ;;
-    Linux/aarch64|Linux/arm64)
-        die "there is no linux arm64 build yet. Build from source: \
-cargo build --release -p quantydb-cli" ;;
     *)
         die "no build for $os on $arch. Build from source: \
 cargo build --release -p quantydb-cli" ;;

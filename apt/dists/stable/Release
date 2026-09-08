@@ -1,0 +1,28 @@
+Architectures: amd64 arm64 
+Codename: stable
+Components: main
+Date: Tue, 08 Sep 2026 02:26:04 +0000
+Description: QuantyDB packages
+Label: QuantyDB
+Origin: QuantyDB
+Suite: stable
+MD5Sum:
+ 1920979d114a7371e742ee58db643dbd              922 main/binary-amd64/Packages
+ 6c5b6e8d75eba047f8b2d42e426cd851              642 main/binary-amd64/Packages.gz
+ f720bb688fa6ba45effcca3ed5d10520              922 main/binary-arm64/Packages
+ 68e7a6f5e3a7987e55e0324424173c30              641 main/binary-arm64/Packages.gz
+SHA1:
+ c0e9c9406321e2b21a647582b552bdb9b47917a3              922 main/binary-amd64/Packages
+ 723783184789690f9f49ed0c7d6ee2ca1e625747              642 main/binary-amd64/Packages.gz
+ 13d7ed8ec9a665cdb60370d7b4dbd5a3bb4c55b3              922 main/binary-arm64/Packages
+ f44f7e82f21e9e664775a20be8a387a3c2c9e45c              641 main/binary-arm64/Packages.gz
+SHA256:
+ 762794df15a2df519c7e8ecc0559c9a49e5ec8693c6401ad2e424a84738f581c              922 main/binary-amd64/Packages
+ 598f2dfcc3282b8a84db34f7ae7606fbf318ff3d69a164e05aa1d33c7f7f7335              642 main/binary-amd64/Packages.gz
+ 462c03856d5abda09dc68ec3784e51d3e284e1ce295ab9ad58e265e45e491f66              922 main/binary-arm64/Packages
+ fbc69a648db1cc61cb9fd19b91ee33045b5b655f0f64bb81b3f59c2cd805421e              641 main/binary-arm64/Packages.gz
+SHA512:
+ a3d5a952a480ae5ffffb75b6f32735d62ef88331323868e94ee2fbb1c6fffc2eb65190674cc6a679d5cd49cad1115dc6123d479d30b4e0f040f12dd166594ffc              922 main/binary-amd64/Packages
+ b45d619408a90b70c9189f9555fa1207a63de66eb00758a22891ecb2ee967adb01126de3694662047c12043a0a55db0f7c195508e64e8daed3c74f446b106078              642 main/binary-amd64/Packages.gz
+ 74374e467343439ff8a8f22b11405b3da46f842bafbe2652f7a0d83db189ea7e9ddf6e3e2d57ed6c604c054860360400b38cfed408c1c5de669aa2b397da27f6              922 main/binary-arm64/Packages
+ 6083874c41dd3ea26f59bca152d1bc07186a5376b0d89275f0d34f2b9383f48354dc0baa3f51cf56920b625024e9485cf348d16077243acbbe19b27962264216              641 main/binary-arm64/Packages.gz

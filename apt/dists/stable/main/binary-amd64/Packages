@@ -1,0 +1,21 @@
+Package: quantydb
+Architecture: amd64
+Version: 0.4.0
+Priority: optional
+Section: database
+Maintainer: Elchi <github@elchi.dev>
+Installed-Size: 1904
+Filename: pool/main/q/quantydb/quantydb_0.4.0_amd64.deb
+Size: 681658
+MD5sum: 8192e2254bd2faa0992fd32463dd5360
+SHA1: 4a39ac3fae31a40a712bd6f28e4876a3ebfd4016
+SHA256: 5fe63f723364529162d4f5da41fcadcac801609a630d99e0cfdc6602b68a779d
+SHA512: ab19f5ed2ddc1f5b2f188dbe880b6a0f3dd71735b6f83e9aff5fb61dcd18ac853c7c8faf3b8bf74529bbbe0edae6a57783150b9bd9c94499c76b4e8be27f6a90
+Homepage: https://github.com/QuantyRoot/QuantyDatabase
+Description: One database that reshapes itself into whatever you need
+ A single-file database with copy-on-write storage, branches and history,
+ a query language of its own and a SQL front end, full text search, and a
+ server mode. Written without a single third party dependency.
+ .
+ The tool works on any Linux; the server half of it is Linux only.
+
