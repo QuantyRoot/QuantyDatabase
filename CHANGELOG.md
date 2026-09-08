@@ -15,6 +15,8 @@ wrapped.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-08
+
 ### Added
 
 - `install.sh`, which works out which build it wants, checks it against
@@ -234,7 +236,8 @@ lookup is faster than SQLite's.
 - CI from the first day: fmt, clippy, tests, the crash harness, an MSRV
   job and a parser fuzzer.
 
-[Unreleased]: https://github.com/QuantyRoot/QuantyDatabase/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/QuantyRoot/QuantyDatabase/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/QuantyRoot/QuantyDatabase/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/QuantyRoot/QuantyDatabase/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/QuantyRoot/QuantyDatabase/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/QuantyRoot/QuantyDatabase/compare/v0.1.0...v0.1.1

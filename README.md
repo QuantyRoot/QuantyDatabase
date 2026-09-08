@@ -12,7 +12,7 @@
 **One database that reshapes itself into whatever you need :3**
 
 [![CI](https://github.com/QuantyRoot/QuantyDatabase/actions/workflows/ci.yml/badge.svg)](https://github.com/QuantyRoot/QuantyDatabase/actions/workflows/ci.yml)
-![Status](https://img.shields.io/badge/status-pre--alpha-orange)
+![Status](https://img.shields.io/badge/status-alpha-orange)
 [![Rust](https://img.shields.io/badge/Rust-1.89+-B7410E?logo=rust)](https://www.rust-lang.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Made by Elchi](https://img.shields.io/badge/made%20by-Elchi-8A2BE2)](https://github.com/Elchi-dev)
@@ -213,7 +213,8 @@ Keeping this list is half the battle:
 
 ## Status
 
-Pre-alpha, and further along than that sounds. What works today:
+Alpha as of 0.4.0: there are binaries, packages and an install path, and
+the formats will still change before 1.0. What works today:
 
 - the storage core: pager, copy-on-write B-tree, transactions, snapshots of
   any commit, branches and `as of` queries

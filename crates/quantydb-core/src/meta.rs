@@ -88,7 +88,7 @@ impl Meta {
         if version != FORMAT_VERSION {
             return Err(Error::InvalidFormat(format!(
                 "format version {version} is not supported (this build reads {FORMAT_VERSION}; \
-                 pre-alpha formats are not migrated, see docs/FORMAT.md)"
+                 older formats are not migrated, see docs/FORMAT.md)"
             )));
         }
         let page_size = get_u32(buf, OFF_PAGE_SIZE);

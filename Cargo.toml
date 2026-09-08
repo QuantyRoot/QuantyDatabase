@@ -18,7 +18,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
 rust-version = "1.89"
 license = "MIT"
@@ -29,20 +29,20 @@ repository = "https://github.com/QuantyRoot/QuantyDatabase"
 # version, and forty-four inline versions would be forty-four numbers
 # to bump. A test keeps these in step with the workspace version.
 [workspace.dependencies]
-quantydb-sys = { path = "crates/quantydb-sys", version = "0.3.0" }
-quantydb-core = { path = "crates/quantydb-core", version = "0.3.0" }
-quantydb-proto = { path = "crates/quantydb-proto", version = "0.3.0" }
-quantydb-auth = { path = "crates/quantydb-auth", version = "0.3.0" }
-quantydb-ql = { path = "crates/quantydb-ql", version = "0.3.0" }
-quantydb-exec = { path = "crates/quantydb-exec", version = "0.3.0" }
-quantydb-sqlite = { path = "crates/quantydb-sqlite", version = "0.3.0" }
-quantydb-import = { path = "crates/quantydb-import", version = "0.3.0" }
-quantydb-derive = { path = "crates/quantydb-derive", version = "0.3.0" }
-quantydb = { path = "crates/quantydb", version = "0.3.0" }
-quantydb-service = { path = "crates/quantydb-service", version = "0.3.0" }
-quantydb-server = { path = "crates/quantydb-server", version = "0.3.0" }
-quantydb-cli = { path = "crates/quantydb-cli", version = "0.3.0" }
-quantydb-bench = { path = "crates/quantydb-bench", version = "0.3.0" }
+quantydb-sys = { path = "crates/quantydb-sys", version = "0.4.0" }
+quantydb-core = { path = "crates/quantydb-core", version = "0.4.0" }
+quantydb-proto = { path = "crates/quantydb-proto", version = "0.4.0" }
+quantydb-auth = { path = "crates/quantydb-auth", version = "0.4.0" }
+quantydb-ql = { path = "crates/quantydb-ql", version = "0.4.0" }
+quantydb-exec = { path = "crates/quantydb-exec", version = "0.4.0" }
+quantydb-sqlite = { path = "crates/quantydb-sqlite", version = "0.4.0" }
+quantydb-import = { path = "crates/quantydb-import", version = "0.4.0" }
+quantydb-derive = { path = "crates/quantydb-derive", version = "0.4.0" }
+quantydb = { path = "crates/quantydb", version = "0.4.0" }
+quantydb-service = { path = "crates/quantydb-service", version = "0.4.0" }
+quantydb-server = { path = "crates/quantydb-server", version = "0.4.0" }
+quantydb-cli = { path = "crates/quantydb-cli", version = "0.4.0" }
+quantydb-bench = { path = "crates/quantydb-bench", version = "0.4.0" }
 
 [profile.release]
 lto = "thin"

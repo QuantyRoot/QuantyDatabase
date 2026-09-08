@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "quantydb"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "quantydb-core",
  "quantydb-derive",
@@ -14,7 +14,7 @@ dependencies = [
 
 [[package]]
 name = "quantydb-auth"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "quantydb-core",
  "quantydb-sys",
@@ -22,7 +22,7 @@ dependencies = [
 
 [[package]]
 name = "quantydb-bench"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "quantydb-core",
  "quantydb-exec",
@@ -31,7 +31,7 @@ dependencies = [
 
 [[package]]
 name = "quantydb-cli"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "quantydb-auth",
  "quantydb-core",
@@ -47,18 +47,18 @@ dependencies = [
 
 [[package]]
 name = "quantydb-core"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "quantydb-sys",
 ]
 
 [[package]]
 name = "quantydb-derive"
-version = "0.3.0"
+version = "0.4.0"
 
 [[package]]
 name = "quantydb-exec"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "quantydb-core",
  "quantydb-ql",
@@ -66,7 +66,7 @@ dependencies = [
 
 [[package]]
 name = "quantydb-import"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "quantydb-core",
  "quantydb-exec",
@@ -76,21 +76,21 @@ dependencies = [
 
 [[package]]
 name = "quantydb-proto"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "quantydb-core",
 ]
 
 [[package]]
 name = "quantydb-ql"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "quantydb-core",
 ]
 
 [[package]]
 name = "quantydb-server"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "quantydb-proto",
  "quantydb-sys",
@@ -98,7 +98,7 @@ dependencies = [
 
 [[package]]
 name = "quantydb-service"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "quantydb-auth",
  "quantydb-core",
@@ -110,8 +110,8 @@ dependencies = [
 
 [[package]]
 name = "quantydb-sqlite"
-version = "0.3.0"
+version = "0.4.0"
 
 [[package]]
 name = "quantydb-sys"
-version = "0.3.0"
+version = "0.4.0"
