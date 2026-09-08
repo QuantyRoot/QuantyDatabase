@@ -111,10 +111,14 @@ jobs:
         run: |
           git config user.name "Elchi"
           git config user.email "github@elchi.dev"
-          if git diff --quiet -- integrations.html; then
+          # Staged first, then compared. git diff does not see a file it
+          # does not track, so the untracked first run reported no change
+          # and committed nothing: the page could only ever appear if it
+          # was already there.
+          git add integrations.html
+          if git diff --cached --quiet -- integrations.html; then
             echo "nothing changed"
             exit 0
           fi
-          git add integrations.html
           git commit -m "integrations: refreshed from the quantydb-sdk topic"
           git push origin gh-pages
