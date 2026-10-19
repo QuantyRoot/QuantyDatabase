@@ -548,24 +548,64 @@ fn close_ends_the_connection_without_an_error() {
     }
 }
 
+/// Shake hands with bytes of our own choosing and hand back the four byte
+/// reply. Only the refusals need this; everything else goes through
+/// `Wire::open`, which insists on being accepted.
+fn handshake_reply(addr: &str, hello: &[u8]) -> [u8; 4] {
+    let mut sock = TcpStream::connect(addr).expect("connect");
+    sock.set_read_timeout(Some(Duration::from_secs(20)))
+        .expect("timeout");
+    sock.write_all(hello).expect("send");
+
+    let mut reply = [0u8; 4];
+    sock.read_exact(&mut reply).expect("read");
+    reply
+}
+
+fn hello_bytes(magic: &[u8; 6], version: u16) -> Vec<u8> {
+    let mut hello = Vec::new();
+    hello.extend_from_slice(magic);
+    hello.extend_from_slice(&version.to_le_bytes());
+    hello.push(0);
+    hello
+}
+
+// The three refusals assert all four bytes and not only the first. Bytes
+// 1 and 2 are the version the two sides will speak, and a server that is
+// refusing will speak none, so the document promises zero there. A client
+// that reads them anyway prints a version nobody claimed, which is how
+// the promise came to be written down in the first place. Asserting only
+// the status byte, as these tests used to, would let the reason byte go
+// wrong without anything noticing.
+
 /// A version the server does not speak is refused rather than guessed at.
 #[test]
 fn an_unknown_version_is_refused_in_the_handshake() {
     let dir = TestDir::new();
     let server = serving(&dir);
 
-    let mut sock = TcpStream::connect(&server.addr).expect("connect");
-    sock.set_read_timeout(Some(Duration::from_secs(20)))
-        .expect("timeout");
-    let mut hello = Vec::new();
-    hello.extend_from_slice(MAGIC);
-    hello.extend_from_slice(&999u16.to_le_bytes());
-    hello.push(0);
-    sock.write_all(&hello).expect("send");
+    let reply = handshake_reply(&server.addr, &hello_bytes(MAGIC, 999));
 
-    let mut reply = [0u8; 4];
-    sock.read_exact(&mut reply).expect("read");
-    assert_eq!(reply[0], 0x00, "a version from the future was accepted");
+    assert_eq!(
+        reply,
+        [0x00, 0x00, 0x00, 0x02],
+        "a version from the future: refused, reason version too new"
+    );
+}
+
+/// Version zero is not the first version, it is the absence of one.
+#[test]
+fn version_zero_is_refused_in_the_handshake() {
+    let dir = TestDir::new();
+    let server = serving(&dir);
+
+    let reply = handshake_reply(&server.addr, &hello_bytes(MAGIC, 0));
+
+    assert_eq!(
+        reply,
+        [0x00, 0x00, 0x00, 0x01],
+        "version zero: refused, reason version too old"
+    );
 }
 
 #[test]
@@ -573,12 +613,11 @@ fn bad_magic_is_refused_in_the_handshake() {
     let dir = TestDir::new();
     let server = serving(&dir);
 
-    let mut sock = TcpStream::connect(&server.addr).expect("connect");
-    sock.set_read_timeout(Some(Duration::from_secs(20)))
-        .expect("timeout");
-    sock.write_all(b"NOTQTY\x01\x00\x00").expect("send");
+    let reply = handshake_reply(&server.addr, b"NOTQTY\x01\x00\x00");
 
-    let mut reply = [0u8; 4];
-    sock.read_exact(&mut reply).expect("read");
-    assert_eq!(reply[0], 0x00, "a client with the wrong magic was accepted");
+    assert_eq!(
+        reply,
+        [0x00, 0x00, 0x00, 0x03],
+        "the wrong magic: refused, reason bad magic"
+    );
 }

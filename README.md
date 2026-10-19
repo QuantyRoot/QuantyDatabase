@@ -93,7 +93,9 @@ x86_64 and arm64 on Linux, both architectures on macOS, x86_64 on
 Windows, each built and tested on the machine it is for.
 
 Building a client for another language? [PROTOCOL.md](docs/PROTOCOL.md) is
-the wire format and is meant to be enough on its own. Put the topic
+the wire format and is meant to be enough on its own, and
+[CONFORMANCE.md](docs/CONFORMANCE.md) is a checklist, in bytes, for
+finding out whether what you built speaks it. Put the topic
 `quantydb-sdk` on your repository and it appears on the
 [integrations page](https://quantyroot.github.io/QuantyDatabase/integrations.html)
 within a week, with no pull request and nothing to ask anybody for.

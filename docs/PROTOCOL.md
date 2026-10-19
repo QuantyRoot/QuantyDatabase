@@ -96,7 +96,15 @@ offset  size  field
 
 On acceptance both sides speak the version in bytes 1..3, which is never
 higher than the version the client asked for. On refusal the server closes
-the connection immediately after the four bytes. Refusal reasons:
+the connection immediately after the four bytes.
+
+**Bytes 1 and 2 are zero in every refusal.** They hold the version the
+two sides will speak, and a server that is refusing will speak none, so
+there is nothing to put there. They are not the version the server would
+have preferred and a client must not read them as a hint: the reason byte
+already says whether to try lower or give up.
+
+Refusal reasons:
 
 ```
 0x01  version too old, server no longer speaks it
@@ -313,15 +321,30 @@ mattered, are fixed above:
   reply.
 - The token is the printed characters, not the bytes they spell.
 
+A fourth turned up later, while writing the checklist named below and
+running it against a live server: the handshake table gave bytes 1 and 2
+one meaning and said nothing about the refusal, where that meaning does
+not apply. They are zero, and a client that reads them anyway reports a
+version the server never claimed. That is now written down above, and
+both refusal tests assert all four bytes rather than only the first.
+
 The message table now gives every body field by name and width, because
 prose like "verb plus a u64" is exactly what forces a guess.
 
-There is a conformance suite in the repository,
-`crates/quantydb-cli/tests/wire.rs`. It speaks this format by hand, with
-no access to the encoder it is testing, and covers every message type,
-every value type, both front ends, the refusals and the handshake. It is
-worth reading beside this page: where the two disagree, the test is what
-runs on every push.
+## Checking a client against this
+
+Two things in the repository exist to be run rather than read.
+
+docs/CONFORMANCE.md is a checklist of fifteen checks against a fixture
+database, stated in bytes and in no language in particular. It is the
+place to start when a client is nearly working and something is off: the
+checks are ordered so the first one that fails is the likeliest cause.
+
+`crates/quantydb-cli/tests/wire.rs` is the same ground covered in Rust
+and run on every push. It speaks this format by hand, with no access to
+the encoder it is testing, and covers every message type, every value
+type, both front ends, the refusals and the handshake. Where it and this
+page disagree, the test is what runs.
 
 ## Version history
 
