@@ -4,6 +4,13 @@ on:
   push:
     branches: [main]
   pull_request:
+  # And by hand. A run that wedges in `queued` takes a cancel without
+  # acting on it and refuses a rerun while it holds the workflow, so
+  # without this the only way to ask for another one is a commit nobody
+  # wanted. release.yml has had it for the neighbouring reason: a
+  # workflow you cannot exercise is a workflow you find out about once it
+  # matters.
+  workflow_dispatch:
 
 # The toolchain is pinned, not tracked.
 #
