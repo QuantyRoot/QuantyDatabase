@@ -588,7 +588,7 @@ pub const CRATES: usize = 14;
 /// At least this many test functions exist.
 pub const TESTS: usize = 570;
 /// At least this many decision records exist.
-pub const DECISIONS: usize = 43;
+pub const DECISIONS: usize = 44;
 /// Exactly this many packages that are not this workspace.
 pub const FOREIGN_DEPENDENCIES: usize = 0;
 
@@ -600,8 +600,6 @@ fn about() -> Result<(), Failure> {
     emit(&format!(
         "  dependencies   {FOREIGN_DEPENDENCIES}, and that is the whole list"
     ))?;
-    emit("  people         1")?;
-    emit("  funding        none")?;
     emit(&format!(
         "  crates         {CRATES}, all of them in this repository"
     ))?;
@@ -616,6 +614,7 @@ fn about() -> Result<(), Failure> {
     emit("protocol are written out here rather than pulled in. Every one of")?;
     emit("those choices is argued in docs/DECISIONS.md, cost included.")?;
     emit("")?;
+    emit("  maker    Elchi Studios")?;
     emit("  source   https://github.com/QuantyRoot/QuantyDatabase")?;
     emit("  licence  MIT")?;
     emit("  history  HUNDRED.md, for the bugs and the ideas that lost")

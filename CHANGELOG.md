@@ -15,6 +15,13 @@ wrapped.
 
 ## [Unreleased]
 
+### Changed
+
+- QuantyDB is now a product of Elchi Studios. The licence stays MIT and
+  the people working on it stay the same. `quantydb about` says so.
+- More than one node is no longer a non-goal. ADR-044 records why and
+  fixes the order: read replicas, then failover, one writer throughout.
+
 ## [0.4.0] - 2026-09-08
 
 ### Added

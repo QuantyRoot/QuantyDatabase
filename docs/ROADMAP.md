@@ -332,6 +332,25 @@ Acceptance:
 Can be pulled forward. It touches neither the pager nor the format, so it
 does not queue behind the phases that do.
 
+## Phase 11: More than one node
+
+Withdrawn from the non-goals in ADR-044, which also fixes the shape: one
+writer still, replicas first, failover second, and nothing wider until a
+deployment asks for it. A commit is already a set of pages plus a meta,
+so a replica that applies them in that order is at a commit and never
+between two.
+
+Acceptance:
+- [ ] a replica applies a stream of commits and its file is byte
+      identical to the primary's at every commit it reports
+- [ ] a replica killed at any point reopens at the last commit it
+      reported or the one after, never between them
+- [ ] traffic between nodes runs over TLS from QuantyCore, mutually
+      authenticated
+- [ ] failover: a fault injecting harness of our own (drops, delays,
+      partitions, kills) finds no acknowledged write lost and no read
+      served from a commit that was never acknowledged
+
 ## Done: the public embedded crate, and the derive that follows it
 
 The workspace layout in ARCHITECTURE.md carried two crates since the

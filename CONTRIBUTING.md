@@ -1,8 +1,7 @@
 # Contributing
 
-Thanks for looking. This is a one person project with no funding behind
-it, so the most useful thing you can do is read a little before you write
-a lot.
+Thanks for looking. QuantyDB is developed by Elchi Studios, and the most
+useful thing you can do before you write a lot is read a little.
 
 ## Before anything else: the dependency rule
 

@@ -9,7 +9,7 @@
  ╚══▀▀═╝  ╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═══╝   ╚═╝      ╚═╝
 ```
 
-**One database that reshapes itself into whatever you need :3**
+**One database that reshapes itself into whatever you need.**
 
 [![CI](https://github.com/QuantyRoot/QuantyDatabase/actions/workflows/ci.yml/badge.svg)](https://github.com/QuantyRoot/QuantyDatabase/actions/workflows/ci.yml)
 ![Status](https://img.shields.io/badge/status-alpha-orange)
@@ -29,8 +29,8 @@ caching, Elasticsearch for search, and S3 for assets. Now you run five
 systems with five configs, five backup strategies and five ways to lose
 data at 3am.
 
-Quanty is my attempt to break that arc: a single storage engine that adapts
-to the job instead of making you migrate between databases.
+QuantyDB breaks that arc: a single storage engine that adapts to the job
+instead of making you migrate between databases.
 
 - Need an embedded, zero-config, single-file db? That's the default.
 - Need a server that handles thousands of connections? Same file, same
@@ -43,12 +43,11 @@ to the job instead of making you migrate between databases.
 > where the project is going. See [ROADMAP.md](docs/ROADMAP.md) for what is
 > actually finished.
 
-**Written by one person, funded by nobody, and it depends on nothing.** The
-lock file holds this workspace and not one package besides. No company
-behind it, no sponsors, no roadmap written by someone else. If that sounds
-like a constraint, it is: the checksum, the locks, the reactor, the
-SHA-256 and the wire protocol are all written out here rather than pulled
-in, and each of those choices is argued and costed in
+**No third-party code anywhere in the engine.** The lock file holds this
+workspace and not one package besides. The checksum, the locks, the
+reactor, the SHA-256 and the wire protocol are all written here rather
+than pulled in, so every line that touches your data has one owner and
+one release schedule. Each of those choices is argued and costed in
 [DECISIONS.md](docs/DECISIONS.md).
 
 ---
@@ -230,8 +229,6 @@ the rest of that argument.
 
 Keeping this list is half the battle:
 
-- Not a distributed consensus system. No raft cluster, no multi-region
-  story. One node, done properly.
 - Not bug-for-bug SQLite or Postgres compatible. Compatibility means your
   everyday queries work, not that every edge case matches.
 - Not an ORM for every language on day one. Rust first, others when the
@@ -306,8 +303,6 @@ What that costs is measured and written down in
 | Rust, tests | 17075 lines, 580 test functions |
 | Design notes | 5191 lines, 43 decision records |
 | Dependencies | 0 |
-| People | 1 |
-| Funding | none |
 | CI per push | 14 jobs on 3 operating systems, 4 fuzzers, 2300 kill -9s |
 
 More than one line of test for every two lines of code, and every one of
@@ -373,13 +368,15 @@ know what the rules are before you open anything,
 [CONTRIBUTING.md](CONTRIBUTING.md) says both.
 
 The hundredth commit has a page of its own in [HUNDRED.md](HUNDRED.md):
-the bugs worth remembering, the ideas that lost, and what one person with
-no dependencies and no funding has to show for a hundred commits.
+the bugs worth remembering, the ideas that lost, and what a hundred commits
+without a single dependency add up to.
 
-Star the repo if you want to follow along. :3
+Star the repository to follow releases.
 
 ---
 
 ## License
 
 MIT. See [LICENSE](LICENSE).
+
+QuantyDB is a product of Elchi Studios.

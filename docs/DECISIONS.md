@@ -49,6 +49,7 @@ project.)
 - [ADR-041](#adr-041-a-signal-sets-a-flag-and-every-shutdown-stops-being-a-crash) A signal sets a flag, and every shutdown stops being a crash
 - [ADR-042](#adr-042-the-updater-installs-a-file-and-proves-it-before-it-does) The updater installs a file, and proves it before it does
 - [ADR-043](#adr-043-setup-writes-no-state-so-uninstall-needs-none-to-read) Setup writes no state, so uninstall needs none to read
+- [ADR-044](#adr-044-more-than-one-node-is-a-goal-now-and-one-writer-still-holds) More than one node is a goal now, and one writer still holds
 
 ## ADR-001: Rust
 
@@ -2219,3 +2220,44 @@ looks like. And `uninstall` shells out to `systemctl` to stop the service
 before the unit goes, since leaving systemd holding a service whose
 definition has vanished is worse than the dependency on a command that is
 already there on any machine with a unit directory.
+
+## ADR-044: More than one node is a goal now, and one writer still holds
+
+The README listed this as a non-goal from the first day: not a distributed
+consensus system, no raft cluster, no multi-region story, one node done
+properly. That line is withdrawn. Running on more than one machine turned
+out to be one of the things people ask about first, and an answer of "put
+it on one box" ends the conversation for anyone whose box can go away.
+
+**What does not change.** One writer (ADR-003, ADR-024). A second node
+first means a second copy, not a second place to write. Multi-writer MVCC
+stays where it is on the vision list, and nothing here argues it forward.
+
+**Why the format already fits.** A commit is a set of new pages and a new
+meta that points at them (ADR-002), and nothing older is touched. That is
+a log shipping unit by construction: a replica that applies the pages and
+then the meta is at exactly that commit, and one that dies in between is
+at the commit before, which is the property the crash harness already
+proves for a single file. Time travel and branches come along for free,
+because they are trees reachable from a meta.
+
+**The order, each step usable on its own:**
+
+1. Read replicas. The primary streams commits, a replica applies them and
+   answers reads at a commit it says out loud. Promotion is manual.
+2. Failover. Nodes agree on who the primary is and on which commits are
+   acknowledged, which is where a consensus protocol comes in, and it is
+   written here like everything else.
+3. Anything wider, more regions or sharding, only when a real deployment
+   needs it and not on speculation.
+
+**Traffic between nodes is encrypted.** That uses the TLS in QuantyCore
+and is one of the reasons it exists. Its status is its own: unreviewed
+until the conditions in its ADR-003 are met, and the README here says so
+as long as that is true.
+
+**The price.** A class of failure the crash harness cannot see: a network
+that drops, delays, reorders and partitions. Each step above is done when
+a fault injecting harness of its own, written here, shows no acknowledged
+write lost and no read served from a commit that was never acknowledged.
+Until then it is described as built and untested, not as replication.
