@@ -30,6 +30,7 @@ use crate::cache::PageCache;
 use crate::error::{Error, Result};
 use crate::freelist;
 use crate::meta::{self, Meta};
+use crate::node::Node;
 use crate::page::{self, PageId, PageType, DEFAULT_PAGE_SIZE};
 use crate::storage::Storage;
 
@@ -163,6 +164,7 @@ impl<S: Storage> Pager<S> {
             allow_reuse: true,
             freelist_override: None,
             savepoint: None,
+            nodes: BTreeMap::new(),
             base,
             dirty: BTreeMap::new(),
         }
@@ -207,6 +209,7 @@ impl<S: Storage> Pager<S> {
             allow_reuse: batch.allow_reuse,
             freelist_override: batch.freelist_override,
             savepoint: None,
+            nodes: batch.nodes,
         })
     }
 }
@@ -262,7 +265,18 @@ pub struct WriteBatch<'p, S: Storage> {
     /// Set while a statement runs, so that a statement which fails part
     /// way through can be undone without discarding the whole batch.
     savepoint: Option<Savepoint>,
+    /// Decoded copies of pages this batch owns, as the b-tree last wrote
+    /// them. The bytes in `dirty` stay the only truth: every path that
+    /// changes a page without going through the tree drops its entry, and
+    /// a missing entry only means decoding again.
+    nodes: BTreeMap<PageId, Node>,
 }
+
+/// How many decoded pages a batch keeps. A bulk load works on the right
+/// edge of one or two trees, so a few hundred covers it, and a bound keeps
+/// a transaction that touches a million pages from holding each of them
+/// twice.
+const NODE_CACHE_PAGES: usize = 256;
 
 /// Everything needed to put a batch back the way it was before a statement
 /// started: the scalars by value, and the pre-image of every page the
@@ -310,6 +324,11 @@ pub struct SuspendedBatch {
     touched_freelist: bool,
     allow_reuse: bool,
     freelist_override: Option<Vec<PageId>>,
+    /// Carried across with the pages they describe. A suspended batch is a
+    /// value nobody can change, so they stay exactly as true as the bytes
+    /// beside them, and an open transaction is suspended after every
+    /// statement: dropping them here would mean a bulk load never hits.
+    nodes: BTreeMap<PageId, Node>,
 }
 
 impl SuspendedBatch {
@@ -337,6 +356,7 @@ impl<S: Storage> WriteBatch<'_, S> {
             touched_freelist: self.touched_freelist,
             allow_reuse: self.allow_reuse,
             freelist_override: self.freelist_override,
+            nodes: self.nodes,
         }
     }
 
@@ -373,6 +393,7 @@ impl<S: Storage> WriteBatch<'_, S> {
             return;
         };
         for (id, before) in mark.undo {
+            self.nodes.remove(&id);
             match before {
                 Some(buf) => {
                     self.dirty.insert(id, buf);
@@ -415,7 +436,26 @@ impl<S: Storage> WriteBatch<'_, S> {
         let mut buf = vec![0u8; self.pager.page_size as usize].into_boxed_slice();
         page::init_header(&mut buf, page_type);
         self.dirty.insert(id, buf);
+        self.nodes.remove(&id);
         id
+    }
+
+    /// The decoded form of a page this batch owns, handed over and
+    /// forgotten, so that a caller which changes it has to write it back
+    /// through `keep_node` for it to be seen again.
+    pub(crate) fn take_node(&mut self, id: PageId) -> Option<Node> {
+        self.nodes.remove(&id)
+    }
+
+    /// Remember the decoded form of a page that was just encoded into it.
+    /// Only for a page this batch owns, and only right after the bytes
+    /// were written from exactly this node.
+    pub(crate) fn keep_node(&mut self, id: PageId, node: Node) {
+        debug_assert!(self.dirty.contains_key(&id), "a node for a page not owned");
+        if self.nodes.len() >= NODE_CACHE_PAGES && !self.nodes.contains_key(&id) {
+            self.nodes.clear();
+        }
+        self.nodes.insert(id, node);
     }
 
     fn take_page_id(&mut self) -> PageId {
@@ -462,6 +502,7 @@ impl<S: Storage> WriteBatch<'_, S> {
     /// pages: copy-on-write is a hard rule, not a convention.
     pub fn page_mut(&mut self, id: PageId) -> Result<&mut [u8]> {
         self.record(id);
+        self.nodes.remove(&id);
         match self.dirty.get_mut(&id) {
             Some(buf) => Ok(buf),
             None => Err(Error::PageNotWritable(id)),
@@ -682,4 +723,95 @@ fn now_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod kept_nodes {
+    //! The rule the kept nodes live by, checked where it is enforced: any
+    //! change to a page that does not come from the b-tree forgets what
+    //! the tree last wrote there. Nothing in the engine writes a tree page
+    //! that way today, which is exactly why a test has to say it, since no
+    //! other test could notice if the rule quietly went away.
+
+    use super::*;
+    use crate::storage::MemStorage;
+
+    fn pager() -> Pager<MemStorage> {
+        Pager::create(
+            MemStorage::new(),
+            PagerOptions {
+                page_size: 512,
+                cache_pages: 16,
+            },
+        )
+        .unwrap()
+    }
+
+    fn leaf() -> Node {
+        Node::Leaf {
+            entries: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_raw_write_forgets_the_node() {
+        let pager = pager();
+        let mut batch = pager.begin();
+        let id = batch.allocate(PageType::Leaf);
+        batch.keep_node(id, leaf());
+        batch.page_mut(id).unwrap();
+        assert!(batch.take_node(id).is_none());
+    }
+
+    #[test]
+    fn a_rollback_forgets_the_nodes_it_undoes() {
+        let pager = pager();
+        let mut batch = pager.begin();
+        let before = batch.allocate(PageType::Leaf);
+        batch.keep_node(before, leaf());
+        batch.savepoint();
+        batch.page_mut(before).unwrap();
+        batch.keep_node(before, leaf());
+        let during = batch.allocate(PageType::Leaf);
+        batch.keep_node(during, leaf());
+        batch.rollback_savepoint();
+        assert!(batch.take_node(before).is_none());
+        assert!(batch.take_node(during).is_none());
+    }
+
+    #[test]
+    fn allocating_a_page_starts_it_without_a_node() {
+        let pager = pager();
+        let mut batch = pager.begin();
+        let id = batch.allocate(PageType::Leaf);
+        batch.nodes.insert(id + 1, leaf());
+        let next = batch.allocate(PageType::Leaf);
+        assert_eq!(next, id + 1, "the test assumes the file grows by one");
+        assert!(batch.take_node(next).is_none());
+    }
+
+    #[test]
+    fn a_suspended_batch_keeps_its_nodes() {
+        // Not a correctness rule but a speed one, and the kind that goes
+        // missing silently: an open transaction is suspended after every
+        // statement, so a batch that forgets here never hits on a bulk load.
+        let pager = pager();
+        let mut batch = pager.begin();
+        let id = batch.allocate(PageType::Leaf);
+        batch.keep_node(id, leaf());
+        let suspended = batch.suspend();
+        let mut batch = pager.resume(suspended).unwrap();
+        assert_eq!(batch.take_node(id), Some(leaf()));
+    }
+
+    #[test]
+    fn the_bound_holds() {
+        let pager = pager();
+        let mut batch = pager.begin();
+        for _ in 0..NODE_CACHE_PAGES * 2 + 3 {
+            let id = batch.allocate(PageType::Leaf);
+            batch.keep_node(id, leaf());
+            assert!(batch.nodes.len() <= NODE_CACHE_PAGES);
+        }
+    }
 }

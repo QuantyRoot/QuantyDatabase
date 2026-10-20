@@ -187,7 +187,7 @@ pub(crate) fn put<S: Storage>(
         let node = Node::Leaf {
             entries: vec![(key.to_vec(), vref)],
         };
-        return write_node(batch, None, &node);
+        return write_node(batch, None, node);
     }
     match insert_rec(batch, root, key, vref, false)? {
         Insert::Duplicate => unreachable!("not asked for"),
@@ -197,7 +197,7 @@ pub(crate) fn put<S: Storage>(
                 first_child: left,
                 entries: vec![(sep, right)],
             };
-            write_node(batch, None, &node)
+            write_node(batch, None, node)
         }
     }
 }
@@ -244,7 +244,7 @@ pub(crate) fn put_unique<S: Storage>(
                 first_child: left,
                 entries: vec![(sep, right)],
             };
-            Ok((write_node(batch, None, &node)?, true))
+            Ok((write_node(batch, None, node)?, true))
         }
     }
 }
@@ -277,8 +277,7 @@ fn insert_rec<S: Storage>(
             Insert::Done(new_child) if new_child == child => return Ok(Insert::Done(page)),
             _ => {}
         }
-        let buf = batch.page_bytes(page)?;
-        let mut node = Node::decode(&buf, page)?;
+        let mut node = load_node(batch, page)?;
         let Node::Branch {
             first_child,
             entries,
@@ -294,7 +293,7 @@ fn insert_rec<S: Storage>(
                 } else {
                     entries[idx - 1].1 = new_child;
                 }
-                Ok(Insert::Done(write_node(batch, Some(page), &node)?))
+                Ok(Insert::Done(write_node(batch, Some(page), node)?))
             }
             Insert::Split(left, sep, right) => {
                 if idx == 0 {
@@ -309,8 +308,7 @@ fn insert_rec<S: Storage>(
         };
     }
 
-    let buf = batch.page_bytes(page)?;
-    let mut node = Node::decode(&buf, page)?;
+    let mut node = load_node(batch, page)?;
     match &mut node {
         Node::Leaf { entries } => {
             match entries.binary_search_by(|(k, _)| k.as_slice().cmp(key)) {
@@ -338,7 +336,7 @@ fn insert_rec<S: Storage>(
                     } else {
                         entries[idx - 1].1 = new_child;
                     }
-                    Ok(Insert::Done(write_node(batch, Some(page), &node)?))
+                    Ok(Insert::Done(write_node(batch, Some(page), node)?))
                 }
                 Insert::Split(left, sep, right) => {
                     if idx == 0 {
@@ -361,7 +359,7 @@ fn finish_leaf<S: Storage>(
 ) -> Result<Insert> {
     let ps = batch.page_size() as usize;
     if node.encoded_size() <= ps {
-        return Ok(Insert::Done(write_node(batch, Some(old_page), &node)?));
+        return Ok(Insert::Done(write_node(batch, Some(old_page), node)?));
     }
     let Node::Leaf { entries } = node else {
         unreachable!("finish_leaf on a branch")
@@ -385,14 +383,14 @@ fn finish_leaf<S: Storage>(
     let left = write_node(
         batch,
         Some(old_page),
-        &Node::Leaf {
+        Node::Leaf {
             entries: left_entries,
         },
     )?;
     let right = write_node(
         batch,
         None,
-        &Node::Leaf {
+        Node::Leaf {
             entries: right_entries,
         },
     )?;
@@ -406,7 +404,7 @@ fn finish_branch<S: Storage>(
 ) -> Result<Insert> {
     let ps = batch.page_size() as usize;
     if node.encoded_size() <= ps {
-        return Ok(Insert::Done(write_node(batch, Some(old_page), &node)?));
+        return Ok(Insert::Done(write_node(batch, Some(old_page), node)?));
     }
     let Node::Branch {
         first_child,
@@ -428,7 +426,7 @@ fn finish_branch<S: Storage>(
     let left = write_node(
         batch,
         Some(old_page),
-        &Node::Branch {
+        Node::Branch {
             first_child,
             entries: left_entries,
         },
@@ -436,7 +434,7 @@ fn finish_branch<S: Storage>(
     let right = write_node(
         batch,
         None,
-        &Node::Branch {
+        Node::Branch {
             first_child: right_first,
             entries: right_entries,
         },
@@ -465,8 +463,7 @@ fn delete_rec<S: Storage>(
     page: PageId,
     key: &[u8],
 ) -> Result<Delete> {
-    let buf = batch.page_bytes(page)?;
-    let mut node = Node::decode(&buf, page)?;
+    let mut node = load_node(batch, page)?;
     match &mut node {
         Node::Leaf { entries } => {
             let Ok(i) = entries.binary_search_by(|(k, _)| k.as_slice().cmp(key)) else {
@@ -476,7 +473,7 @@ fn delete_rec<S: Storage>(
             if entries.is_empty() {
                 Ok(Delete::Emptied)
             } else {
-                Ok(Delete::Updated(write_node(batch, Some(page), &node)?))
+                Ok(Delete::Updated(write_node(batch, Some(page), node)?))
             }
         }
         Node::Branch {
@@ -503,7 +500,7 @@ fn delete_rec<S: Storage>(
                         // merged down to a single child: collapse the level
                         return Ok(Delete::Updated(*first_child));
                     }
-                    Ok(Delete::Updated(write_node(batch, Some(page), &node)?))
+                    Ok(Delete::Updated(write_node(batch, Some(page), node)?))
                 }
                 Delete::Emptied => {
                     if idx == 0 {
@@ -518,7 +515,7 @@ fn delete_rec<S: Storage>(
                         // single-child branch: collapse the level entirely
                         return Ok(Delete::Updated(*first_child));
                     }
-                    Ok(Delete::Updated(write_node(batch, Some(page), &node)?))
+                    Ok(Delete::Updated(write_node(batch, Some(page), node)?))
                 }
             }
         }
@@ -605,7 +602,7 @@ fn merge_underfull_child<S: Storage>(
     if merged.encoded_size() > ps * 7 / 8 {
         return Ok(());
     }
-    let new_left = write_node(batch, Some(left_page), &merged)?;
+    let new_left = write_node(batch, Some(left_page), merged)?;
     if left_idx == 0 {
         *first_child = new_left;
     } else {
@@ -687,7 +684,7 @@ fn collect_overflow<P: ReadPages>(
 fn write_node<S: Storage>(
     batch: &mut WriteBatch<'_, S>,
     old_page: Option<PageId>,
-    node: &Node,
+    node: Node,
 ) -> Result<PageId> {
     let id = match old_page {
         Some(id) if batch.owns(id) => id,
@@ -700,7 +697,34 @@ fn write_node<S: Storage>(
     // copying it over cost an allocation, a zeroing and a full page memcpy
     // on every single insert, at every level of the tree.
     node.encode_into(batch.page_mut(id)?);
+    // Kept beside the bytes it was just encoded into, so the next insert
+    // into this page starts from the node rather than from decoding it.
+    batch.keep_node(id, node);
     Ok(id)
+}
+
+/// A page about to be changed, decoded.
+///
+/// From the batch's kept copy when it has one, which on a bulk load is
+/// nearly always: decoding a leaf allocates every key on it, and a leaf
+/// filling up would otherwise be decoded once per row it receives. Debug
+/// builds check every kept copy against the bytes, so the whole test
+/// suite stands behind the claim that the two never disagree.
+fn load_node<S: Storage>(batch: &mut WriteBatch<'_, S>, page: PageId) -> Result<Node> {
+    if let Some(node) = batch.take_node(page) {
+        #[cfg(debug_assertions)]
+        {
+            let buf = batch.page_bytes(page)?;
+            assert_eq!(
+                Node::decode(&buf, page)?,
+                node,
+                "the kept node for page {page} disagrees with its bytes"
+            );
+        }
+        return Ok(node);
+    }
+    let buf = batch.page_bytes(page)?;
+    Node::decode(&buf, page)
 }
 
 fn write_overflow<S: Storage>(batch: &mut WriteBatch<'_, S>, value: &[u8]) -> Result<ValueRef> {

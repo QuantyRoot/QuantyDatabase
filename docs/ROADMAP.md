@@ -583,6 +583,22 @@ is a change to the write path, and in a storage engine both can lose data
 in ways a test suite does not notice. Neither should start before the
 allocator work says what is left.
 
+**The first of them, built the safe way round (ADR-045).** Decoded nodes
+are kept beside the bytes they were encoded into rather than instead of
+them, so nothing that reads a page can see a stale one, and debug builds
+compare every kept node with its bytes. Measured in alternating runs on a
+shared machine:
+
+| | before | after |
+|---|---|---|
+| bulk `put` statements, 5000 per txn | 8.5 to 9.1 us/row | **3.4 to 5.0** |
+| embedded `put`, 20000 in one transaction | 13 to 15 us | **2.0 us** |
+| group commit, 512 per commit | 9.8 us | **5.1 to 6.3 us** |
+
+The ratio against sqlite has not been measured again yet. It comes from
+the benchmark job, which runs both engines on the same machine, and goes
+into the README only from there.
+
 ## Where it runs
 
 The library, the tool and the SQLite importer build and test on macOS and

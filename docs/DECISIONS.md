@@ -50,6 +50,7 @@ project.)
 - [ADR-042](#adr-042-the-updater-installs-a-file-and-proves-it-before-it-does) The updater installs a file, and proves it before it does
 - [ADR-043](#adr-043-setup-writes-no-state-so-uninstall-needs-none-to-read) Setup writes no state, so uninstall needs none to read
 - [ADR-044](#adr-044-more-than-one-node-is-a-goal-now-and-one-writer-still-holds) More than one node is a goal now, and one writer still holds
+- [ADR-045](#adr-045-a-write-batch-keeps-the-nodes-it-wrote-beside-their-bytes) A write batch keeps the nodes it wrote, beside their bytes
 
 ## ADR-001: Rust
 
@@ -2261,3 +2262,58 @@ that drops, delays, reorders and partitions. Each step above is done when
 a fault injecting harness of its own, written here, shows no acknowledged
 write lost and no read served from a commit that was never acknowledged.
 Until then it is described as built and untested, not as replication.
+
+## ADR-045: A write batch keeps the nodes it wrote, beside their bytes
+
+Every insert decoded the page it was about to change, and a leaf filling
+up during a bulk load was therefore decoded once for every row it
+received, with an allocation for every key on it each time. The roadmap
+had carried two answers for weeks, a cache of decoded nodes or editing
+the encoded page in place, and had held both back because each can lose
+data in ways a test suite does not notice.
+
+**The cache this is, and the one it is not.** The first version of the
+idea kept decoded nodes and encoded them once at commit. That is wrong
+here: a statement inside a transaction reads its own writes from the
+page bytes, and a statement that fails is undone by putting back the
+bytes its pages held before. Both would have seen stale pages.
+
+So the bytes stay the only truth and are written exactly as before, on
+every insert. Beside each page the batch owns, it keeps the node those
+bytes were just encoded from. The next insert into that page starts from
+the node instead of decoding. Encoding was never the cost; decoding and
+the allocator were.
+
+**The rule, and where it is enforced.** A kept node is only ever stored
+right after its bytes were written from it, and is forgotten by anything
+else that changes the page: a raw write through `page_mut`, a fresh
+allocation, and a statement being rolled back. A missing node only means
+decoding again, so forgetting too much is safe and forgetting too little
+is the one failure. Each of the three points has a test, and each test
+was checked by removing the line it guards.
+
+**Debug builds check every hit.** Taking a kept node decodes the bytes as
+well and asserts that the two are equal, so the whole test suite, the
+model tests and the crash harness included, stands behind the claim that
+they never disagree. Release builds skip the check.
+
+**Kept across suspension.** An open transaction is suspended after every
+statement (ADR-021). The first measurement of this change was three to
+five percent slower than before, and the reason was one hit in fifty
+thousand lookups: suspending dropped the nodes, so a bulk load never
+found one. A suspended batch is a value nobody can change, so its nodes
+stay as true as the bytes beside them, and they now travel with it.
+
+**What it bought.** On the statement path, which the server, the tool
+and QQL all use, a bulk load went from about nine microseconds a row to
+between three and a half and five. The embedded `put` went from about
+fourteen to two. Group commit at 512 per commit went from ten to five or
+six. A commit per statement did not move, because the fsync is most of
+it. Measured in alternating runs on a noisy shared machine, so the
+ranges matter more than any one number.
+
+**The price.** Up to 256 decoded pages held per open transaction on top
+of their bytes, which is the bound a bulk load needs and keeps a
+transaction touching a million pages from holding each one twice. And a
+rule that every future path writing a tree page has to respect, which
+the tests above are there to enforce rather than to remember.

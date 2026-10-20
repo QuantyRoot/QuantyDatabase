@@ -400,3 +400,60 @@ fn a_handle_that_reopens_after_the_race_works_again() {
     assert!(snap.get(&encode_key(&[Value::Int(1)])).unwrap().is_some());
     assert!(snap.get(&encode_key(&[Value::Int(2)])).unwrap().is_some());
 }
+
+/// A statement that fails is undone by putting its pages back. Whatever the
+/// batch remembers about those pages has to go back with them, or the next
+/// statement starts from a page that no longer exists and writes it over
+/// the one that does. This writes into the same leaves before, during and
+/// after a rolled back statement, which is the only order that can tell.
+#[test]
+fn a_rolled_back_statement_leaves_nothing_for_the_next_one_to_build_on() {
+    use std::collections::BTreeMap;
+
+    let db = small_db();
+    let mut model: BTreeMap<Vec<u8>, Vec<u8>> = BTreeMap::new();
+    let mut tx = db.begin();
+    let mut seed: u64 = 0x5eed;
+    let mut next = || {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        seed
+    };
+    for round in 0..300u64 {
+        let roots = tx.roots();
+        tx.savepoint();
+        let mut pending = Vec::new();
+        for _ in 0..(next() % 12 + 1) {
+            let key = format!("k{:04}", next() % 400).into_bytes();
+            let value = format!("v{round}-{}", next() % 1000).into_bytes();
+            tx.put(&key, &value).unwrap();
+            pending.push((key, value));
+        }
+        if next() % 3 == 0 {
+            tx.rollback_savepoint(roots);
+        } else {
+            tx.release_savepoint();
+            model.extend(pending);
+        }
+        // Written straight after, into the same neighbourhood, so a page
+        // remembered from the undone statement would be built upon here.
+        let key = format!("k{:04}", next() % 400).into_bytes();
+        let value = format!("after{round}").into_bytes();
+        tx.put(&key, &value).unwrap();
+        model.insert(key, value);
+
+        let seen: Vec<(Vec<u8>, Vec<u8>)> =
+            tx.scan(None, None).unwrap().map(|r| r.unwrap()).collect();
+        let expected: Vec<(Vec<u8>, Vec<u8>)> =
+            model.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+        assert_eq!(seen, expected, "round {round}");
+    }
+    tx.commit().unwrap();
+    let snap = db.snapshot();
+    let seen: Vec<(Vec<u8>, Vec<u8>)> =
+        snap.scan(None, None).unwrap().map(|r| r.unwrap()).collect();
+    let expected: Vec<(Vec<u8>, Vec<u8>)> =
+        model.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+    assert_eq!(seen, expected, "after commit");
+}

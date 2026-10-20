@@ -15,6 +15,13 @@ wrapped.
 
 ## [Unreleased]
 
+### Performance
+
+- Bulk loads are about twice as fast through statements and around six
+  times as fast through the embedded API. A write batch keeps the nodes it
+  wrote beside their bytes instead of decoding each page again for every
+  row (ADR-045).
+
 ### Changed
 
 - QuantyDB is now a product of Elchi Studios. The licence stays MIT and
