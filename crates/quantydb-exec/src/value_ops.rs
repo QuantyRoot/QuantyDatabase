@@ -283,16 +283,32 @@ pub fn type_of(v: &Value) -> &'static str {
 
 /// Render a value for query output.
 pub fn render(v: &Value) -> String {
+    let mut out = String::new();
+    render_into(v, &mut out);
+    out
+}
+
+/// The same text as [`render`], appended to `out`, for output made of
+/// many values that should not each be a string of their own.
+pub fn render_into(v: &Value, out: &mut String) {
+    use std::fmt::Write as _;
     match v {
-        Value::Null => "null".to_string(),
-        Value::Bool(true) => "true".to_string(),
-        Value::Bool(false) => "false".to_string(),
-        Value::Int(i) => i.to_string(),
-        Value::Float(f) => format!("{f:?}"),
-        Value::Text(s) => s.clone(),
+        Value::Null => out.push_str("null"),
+        Value::Bool(true) => out.push_str("true"),
+        Value::Bool(false) => out.push_str("false"),
+        Value::Int(i) => {
+            let _ = write!(out, "{i}");
+        }
+        Value::Float(f) => {
+            let _ = write!(out, "{f:?}");
+        }
+        Value::Text(s) => out.push_str(s),
         Value::Bytes(b) => {
-            let hex: String = b.iter().map(|byte| format!("{byte:02x}")).collect();
-            format!("x\"{hex}\"")
+            out.push_str("x\"");
+            for byte in b {
+                let _ = write!(out, "{byte:02x}");
+            }
+            out.push('"');
         }
     }
 }
@@ -300,6 +316,28 @@ pub fn render(v: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rendering_into_a_buffer_is_rendering() {
+        let values = [
+            Value::Null,
+            Value::Bool(true),
+            Value::Bool(false),
+            Value::Int(-42),
+            Value::Float(1.5),
+            Value::Float(-0.0),
+            Value::Text("a|b".into()),
+            Value::Bytes(vec![0, 0xab, 0xff]),
+            Value::Bytes(vec![]),
+        ];
+        for v in &values {
+            let mut out = String::from("pre");
+            render_into(v, &mut out);
+            assert_eq!(out, format!("pre{}", render(v)), "{v:?}");
+        }
+        assert_eq!(render(&Value::Bytes(vec![0, 0xab])), "x\"00ab\"");
+        assert_eq!(render(&Value::Float(2.0)), "2.0");
+    }
 
     fn v(src: &str) -> Result<Value, ExecError> {
         let stmt = quantydb_ql::parse(&format!("get t where {src}")).unwrap();

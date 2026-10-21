@@ -624,6 +624,33 @@ its cells took the median of seven runs from 813 to 764 ms. The next lever
 is appending to a leaf without re-encoding it, which is the in-place edit
 this section has been wary of, restricted to its simplest case.
 
+**Counted, not timed, from here on.** The shared machine these changes
+were made on scatters wall clock by half between identical runs, which
+hides anything under about fifteen percent. Instruction counts under
+valgrind do not move between runs, so each step below is a count, and the
+laptop confirms the wall clock afterwards.
+
+| 20000 row bulk load through statements | instructions |
+|---|---|
+| before | 726 M |
+| a new cell goes into an owned leaf in place (ADR-048) | 515 M |
+| the parser takes tokens instead of cloning them | 424 M |
+| row and index keys built from the row, not from tuples | **400 M** |
+
+Forty five percent less work for the same load. On the read side, against
+the same 20000 rows:
+
+| | before | after |
+|---|---|---|
+| 5 full scans | 581 M | **473 M** |
+| 5000 lookups through the secondary index | 629 M | **523 M** |
+
+A scan reads leaf cells in place instead of decoding the leaf and then
+copying every key and value a second time on the way out, and an answer
+is rendered into one buffer instead of a string per value, joined per
+row and joined again. What is left of a scan is half allocator: a row
+becomes a vector of values, each text value its own string.
+
 ## Where it runs
 
 The library, the tool and the SQLite importer build and test on macOS and

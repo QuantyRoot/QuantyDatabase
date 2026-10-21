@@ -18,7 +18,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use crate::error::{Error, Result};
-use crate::node::{leaf_cell_size, write_leaf_cell, Node, ValueRef};
+use crate::node::{self, leaf_cell_size, write_leaf_cell, Node, ValueRef};
 use crate::page::{page_type, PageId, PageType, NIL_PAGE, PAGE_HEADER_LEN};
 use crate::pager::{Pager, WriteBatch};
 use crate::storage::Storage;
@@ -831,8 +831,13 @@ pub struct Scan<'a, P: ReadPages> {
     /// Branches on the path with the index of the next conceptual child to
     /// descend into once the current subtree is exhausted.
     stack: Vec<(Node, usize)>,
-    leaf: Vec<(Vec<u8>, ValueRef)>,
-    leaf_idx: usize,
+    /// The current leaf, read in place rather than decoded: decoding
+    /// allocated every key and value on it only for the iterator to copy
+    /// each one again on the way out.
+    leaf: Option<(Arc<[u8]>, PageId)>,
+    /// Byte offset of the next cell, and how many cells are left.
+    leaf_at: usize,
+    leaf_left: usize,
     end: Option<Vec<u8>>,
     failed: bool,
 }
@@ -847,8 +852,9 @@ impl<'a, P: ReadPages> Scan<'a, P> {
         let mut scan = Scan {
             src,
             stack: Vec::new(),
-            leaf: Vec::new(),
-            leaf_idx: 0,
+            leaf: None,
+            leaf_at: PAGE_HEADER_LEN,
+            leaf_left: 0,
             end: end.map(<[u8]>::to_vec),
             failed: false,
         };
@@ -863,6 +869,27 @@ impl<'a, P: ReadPages> Scan<'a, P> {
     fn descend(&mut self, mut page: PageId, start: Option<&[u8]>) -> Result<()> {
         loop {
             let buf = self.src.read(page)?;
+            if page_type(&buf)? == PageType::Leaf {
+                // Checked whole on the way in, as decoding did, so a damaged
+                // leaf fails before any of its rows are handed out.
+                let count = node::check_leaf(&buf, page)?;
+                let mut at = PAGE_HEADER_LEN;
+                let mut left = count;
+                if let Some(key) = start {
+                    while left > 0 {
+                        let ((ks, ke), _, next) = node::leaf_cell_at(&buf, at, page)?;
+                        if &buf[ks..ke] >= key {
+                            break;
+                        }
+                        at = next;
+                        left -= 1;
+                    }
+                }
+                self.leaf = Some((buf, page));
+                self.leaf_at = at;
+                self.leaf_left = left;
+                return Ok(());
+            }
             match Node::decode(&buf, page)? {
                 Node::Branch {
                     first_child,
@@ -886,14 +913,7 @@ impl<'a, P: ReadPages> Scan<'a, P> {
                     ));
                     page = child;
                 }
-                Node::Leaf { entries } => {
-                    self.leaf_idx = match start {
-                        Some(key) => entries.partition_point(|(k, _)| k.as_slice() < key),
-                        None => 0,
-                    };
-                    self.leaf = entries;
-                    return Ok(());
-                }
+                Node::Leaf { .. } => unreachable!("leaves are read in place above"),
             }
         }
     }
@@ -933,7 +953,7 @@ impl<P: ReadPages> Iterator for Scan<'_, P> {
             return None;
         }
         loop {
-            if self.leaf_idx >= self.leaf.len() {
+            if self.leaf_left == 0 {
                 match self.advance_leaf() {
                     Ok(true) => continue,
                     Ok(false) => return None,
@@ -943,15 +963,31 @@ impl<P: ReadPages> Iterator for Scan<'_, P> {
                     }
                 }
             }
-            let (key, vref) = &self.leaf[self.leaf_idx];
+            let (buf, page) = self.leaf.as_ref().expect("a leaf with cells left");
+            let ((ks, ke), value, next) = match node::leaf_cell_at(buf, self.leaf_at, *page) {
+                Ok(cell) => cell,
+                Err(e) => {
+                    self.failed = true;
+                    return Some(Err(e));
+                }
+            };
+            let key = &buf[ks..ke];
             if let Some(end) = &self.end {
-                if key >= end {
+                if key >= end.as_slice() {
                     return None;
                 }
             }
-            self.leaf_idx += 1;
-            return match read_value(self.src, vref) {
-                Ok(value) => Some(Ok((key.clone(), value))),
+            let key = key.to_vec();
+            let value = match value {
+                node::CellValue::Inline(s, e) => Ok(buf[s..e].to_vec()),
+                node::CellValue::Overflow { head, len } => {
+                    read_value(self.src, &ValueRef::Overflow { head, len })
+                }
+            };
+            self.leaf_at = next;
+            self.leaf_left -= 1;
+            return match value {
+                Ok(value) => Some(Ok((key, value))),
                 Err(e) => {
                     self.failed = true;
                     Some(Err(e))

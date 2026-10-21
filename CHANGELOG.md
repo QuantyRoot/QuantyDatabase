@@ -28,6 +28,12 @@ wrapped.
 
 ### Performance
 
+- Bulk loads do 45 percent less work: a new cell goes into a leaf the
+  transaction already owns in place instead of re-encoding the leaf
+  (ADR-048), the parser no longer clones every token, and row and index
+  keys are encoded straight from the row. Full scans do 19 percent less
+  and secondary index lookups 17 percent less, by reading leaf cells in
+  place and rendering answers into one buffer.
 - Bulk loads are about twice as fast through statements and around six
   times as fast through the embedded API. A write batch keeps the nodes it
   wrote beside their bytes instead of decoding each page again for every

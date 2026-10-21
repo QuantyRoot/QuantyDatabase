@@ -140,16 +140,22 @@ impl Output {
             Output::Ok => "ok".to_string(),
             Output::Count { verb, n } => format!("{verb} {n}"),
             Output::Rows { rows, .. } => {
-                let lines: Vec<String> = rows
-                    .iter()
-                    .map(|row| {
-                        row.iter()
-                            .map(value_ops::render)
-                            .collect::<Vec<_>>()
-                            .join("|")
-                    })
-                    .collect();
-                lines.join("\n")
+                // One buffer for the whole answer. Building a string per
+                // value, joining them per row and joining the rows again
+                // was a quarter of what a full scan cost.
+                let mut out = String::with_capacity(rows.len() * 32);
+                for (i, row) in rows.iter().enumerate() {
+                    if i > 0 {
+                        out.push('\n');
+                    }
+                    for (j, value) in row.iter().enumerate() {
+                        if j > 0 {
+                            out.push('|');
+                        }
+                        value_ops::render_into(value, &mut out);
+                    }
+                }
+                out
             }
             Output::Lines(lines) => lines.join("\n"),
         }

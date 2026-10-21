@@ -211,6 +211,74 @@ impl Node {
     }
 }
 
+/// Where a leaf cell's value is, read in place.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CellValue {
+    /// Byte range of the value within the page.
+    Inline(usize, usize),
+    Overflow {
+        head: PageId,
+        len: u64,
+    },
+}
+
+/// One leaf cell at byte offset `at`: the key's byte range, where the
+/// value is, and the offset of the next cell. Exactly the checks `decode`
+/// makes for a cell, without copying anything.
+pub(crate) fn leaf_cell_at(
+    buf: &[u8],
+    at: usize,
+    id: PageId,
+) -> Result<((usize, usize), CellValue, usize)> {
+    let bad = |what: &str| Error::corrupted(id, format!("node decode: {what}"));
+    let (key, vflag, rest) = read_key_ref(&buf[at..]).ok_or_else(|| bad("truncated cell"))?;
+    let key_start = at + 3;
+    let key_end = key_start + key.len();
+    match vflag {
+        VFLAG_INLINE => {
+            let (len, rest) = read_u32(rest).ok_or_else(|| bad("truncated vlen"))?;
+            if rest.len() < len as usize {
+                return Err(bad("truncated value"));
+            }
+            let start = key_end + 4;
+            let end = start + len as usize;
+            Ok(((key_start, key_end), CellValue::Inline(start, end), end))
+        }
+        VFLAG_OVERFLOW => {
+            let (head, rest) = read_u64(rest).ok_or_else(|| bad("truncated ovf"))?;
+            let (len, _) = read_u64(rest).ok_or_else(|| bad("truncated ovf"))?;
+            Ok((
+                (key_start, key_end),
+                CellValue::Overflow { head, len },
+                key_end + 16,
+            ))
+        }
+        _ => Err(bad("bad value flag")),
+    }
+}
+
+/// Check a leaf page the way `decode` would, without building it: every
+/// cell readable and keys strictly increasing. Returns the cell count.
+pub(crate) fn check_leaf(buf: &[u8], id: PageId) -> Result<usize> {
+    let count = u16::from_le_bytes(buf[6..8].try_into().expect("hdr")) as usize;
+    let mut at = PAGE_HEADER_LEN;
+    let mut prev: Option<(usize, usize)> = None;
+    for _ in 0..count {
+        let (key, _, next) = leaf_cell_at(buf, at, id)?;
+        if let Some((s, e)) = prev {
+            if buf[s..e] >= buf[key.0..key.1] {
+                return Err(Error::corrupted(
+                    id,
+                    "node decode: leaf keys not strictly sorted",
+                ));
+            }
+        }
+        prev = Some(key);
+        at = next;
+    }
+    Ok(count)
+}
+
 /// Write one leaf cell at `at` and return where the next one starts. The
 /// encoder and the in-place insert both write cells through this, so the
 /// two cannot disagree about the layout.
