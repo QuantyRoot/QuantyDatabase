@@ -278,9 +278,10 @@ from standard input the way `shell` does.
 
 **The wire is not encrypted.** The token crosses it in the clear on every
 connection, so anyone who can watch the traffic can take one and use it.
-TLS is written here rather than pulled in, and is not written yet. Keep
-the server on loopback or a network you trust, or put wireguard, an ssh
-tunnel or a TLS proxy in front of it. The server says so every time it
+The server does not speak TLS yet; QuantyCore has it and the server is
+the next place it goes. Until then keep the server on loopback or a
+network you trust, or put wireguard, an ssh tunnel or a TLS proxy in
+front of it. The server says so every time it
 starts.
 
 `quantydb serve` runs on Linux. The tool, the library and both languages run

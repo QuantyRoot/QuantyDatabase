@@ -72,13 +72,18 @@ fn count_in_tree(matches: &dyn Fn(&Path) -> bool, needle: Option<&str>) -> usize
         .sum()
 }
 
+/// Crates written in the QuantyRoot organization, under its ADR-001. They
+/// are named one by one rather than matched by prefix, so a new one is a
+/// line someone has to add on purpose.
+const IN_HOUSE: &[&str] = &["quantycore"];
+
 /// The claim the whole project rests on, checked exactly.
 #[test]
-fn the_lock_file_holds_nothing_but_this_workspace() {
+fn the_lock_file_holds_nothing_from_outside() {
     let packages = locked_packages();
     let foreign: Vec<&String> = packages
         .iter()
-        .filter(|n| !n.starts_with("quantydb"))
+        .filter(|n| !n.starts_with("quantydb") && !IN_HOUSE.contains(&n.as_str()))
         .collect();
     assert_eq!(
         foreign.len(),
@@ -89,7 +94,13 @@ fn the_lock_file_holds_nothing_but_this_workspace() {
         !packages.is_empty(),
         "the lock file could not be read, so this test proved nothing"
     );
-    assert!(about().contains("dependencies   0"));
+    assert!(about().contains("dependencies   0 from outside Elchi Studios"));
+    for name in IN_HOUSE {
+        assert!(
+            about().contains(name),
+            "about does not name {name}, which is in the lock file"
+        );
+    }
 }
 
 #[test]

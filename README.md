@@ -43,11 +43,15 @@ instead of making you migrate between databases.
 > where the project is going. See [ROADMAP.md](docs/ROADMAP.md) for what is
 > actually finished.
 
-**No third-party code anywhere in the engine.** The lock file holds this
-workspace and not one package besides. The checksum, the locks, the
-reactor, the SHA-256 and the wire protocol are all written here rather
-than pulled in, so every line that touches your data has one owner and
-one release schedule. Each of those choices is argued and costed in
+**No third-party code anywhere in the engine.** The storage core, the
+query layer and the server depend on the standard library alone. The
+command line tool adds one crate,
+[QuantyCore](https://github.com/QuantyRoot/QuantyCore), which Elchi
+Studios writes under the same rules and uses for TLS. That TLS has not
+been reviewed by anyone outside the project yet. The checksum, the locks,
+the reactor, the SHA-256 and the wire protocol are all written here
+rather than pulled in, so every line that touches your data has one owner
+and one release schedule. Each of those choices is argued and costed in
 [DECISIONS.md](docs/DECISIONS.md).
 
 ---
@@ -288,9 +292,11 @@ run between them, and a soak
 that runs many connections against the server at once and checks the
 promises that have to hold whichever way a race went.
 
-No dependencies. Not "few": the lock file holds fourteen packages and all
-fourteen are this workspace, so `cargo build` fetches nothing, there is
-no supply chain to audit, and the minimum supported toolchain is only as
+No third-party dependencies. Not "few": the lock file holds this
+workspace's fourteen packages and QuantyCore, which is written in this
+organization, held to the same gates and the same minimum toolchain, and
+pinned to an exact version (ADR-046). There is no supply chain outside
+Elchi Studios to audit, and the minimum supported toolchain is only as
 new as the one feature that needed it (ADR-035).
 What that costs is measured and written down in
 [ADR-020](docs/DECISIONS.md) rather than waved at.
@@ -302,7 +308,7 @@ What that costs is measured and written down in
 | Rust, source | 27284 lines across 14 crates |
 | Rust, tests | 17075 lines, 580 test functions |
 | Design notes | 5191 lines, 43 decision records |
-| Dependencies | 0 |
+| Dependencies | 0 from outside Elchi Studios |
 | CI per push | 14 jobs on 3 operating systems, 4 fuzzers, 2300 kill -9s |
 
 More than one line of test for every two lines of code, and every one of

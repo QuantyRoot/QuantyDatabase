@@ -138,7 +138,8 @@ On macOS, `shasum -a 256 -c SHA256SUMS --ignore-missing`.
 
 Needs Rust 1.89 or newer and nothing else. There is no C toolchain to
 install, no system library to find, and the lock file holds this
-workspace and not one package besides.
+workspace and QuantyCore, which comes from the same organization, and not
+one package besides.
 
 ```
 git clone https://github.com/QuantyRoot/QuantyDatabase.git
@@ -151,26 +152,35 @@ The binary lands in `target/release/quantydb`.
 
 ## Updating
 
-Download the new binary and point the tool at it:
+```
+quantydb update
+```
+
+That fetches the latest release built for this machine from GitHub, over
+TLS from QuantyCore, and refuses it unless it matches the line for it in
+the release's `SHA256SUMS`. The TLS has not been reviewed by anyone
+outside the project yet, and the tool says so when it runs.
+
+A binary you already have works too:
 
 ```
-curl -LO https://github.com/QuantyRoot/QuantyDatabase/releases/latest/download/quantydb-linux-x86_64
 quantydb update --file quantydb-linux-x86_64
 ```
 
-It checks the file before it replaces anything: that the file is as long
-as its own headers say it should be, so half a download is caught rather
-than installed, and that it runs and reports a version. It prints that
-version and the checksum and asks before going ahead. The binary it
-replaces is kept next to the new one as `quantydb.old`.
+Either way it checks the file before it replaces anything: that the file
+is as long as its own headers say it should be, so half a download is
+caught rather than installed, and that it runs and reports a version. It
+prints that version and the checksum and asks before going ahead. The
+binary it replaces is kept next to the new one as `quantydb.old`.
 
-Pass `--sha256 <hex>` from the release's `SHA256SUMS` to require a
-particular file rather than merely a whole one, and `--yes` to skip the
-question.
+Pass `--sha256 <hex>` to require a particular file rather than merely a
+whole one, and `--yes` to skip the question.
 
-It does not fetch anything yet. Pulling a release off GitHub needs HTTPS,
-and this project writes what it depends on (ADR-020), so the network path
-arrives with TLS (ADR-042).
+A copy installed by apt, dnf or Homebrew refuses to update itself and
+says to use that package manager instead, since replacing a file it owns
+behind its back breaks its next upgrade. The checksum proves the file is
+the one the release published; it does not prove who published it, and
+a signature over the release that would is not there yet (ADR-046).
 
 If the tool lives somewhere this user cannot write, such as
 `/usr/local/bin`, run the update with the rights to change it. It will not

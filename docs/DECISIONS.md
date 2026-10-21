@@ -51,6 +51,7 @@ project.)
 - [ADR-043](#adr-043-setup-writes-no-state-so-uninstall-needs-none-to-read) Setup writes no state, so uninstall needs none to read
 - [ADR-044](#adr-044-more-than-one-node-is-a-goal-now-and-one-writer-still-holds) More than one node is a goal now, and one writer still holds
 - [ADR-045](#adr-045-a-write-batch-keeps-the-nodes-it-wrote-beside-their-bytes) A write batch keeps the nodes it wrote, beside their bytes
+- [ADR-046](#adr-046-update-fetches-over-quantycores-tls-and-trusts-the-checksum-for-wholeness-only) Update fetches over QuantyCore's TLS, and trusts the checksum for wholeness only
 
 ## ADR-001: Rust
 
@@ -2317,3 +2318,73 @@ of their bytes, which is the bound a bulk load needs and keeps a
 transaction touching a million pages from holding each one twice. And a
 rule that every future path writing a tree page has to respect, which
 the tests above are there to enforce rather than to remember.
+
+## ADR-046: Update fetches over QuantyCore's TLS, and trusts the checksum for wholeness only
+
+ADR-042 split `update` into a file problem and a network problem and
+solved the first. The second waited on TLS, which under ADR-020 meant
+writing it. It has been written, in QuantyCore, and `update` now uses it.
+
+**QuantyCore is not a dependency in the sense ADR-020 forbids.** Its own
+ADR-001 draws the line at the author rather than at the manifest: a crate
+from this organization brings no foreign release schedule, MSRV or
+security surface, provided it meets the same bar as the project using it.
+It does: the same formatting, lint and test gates, tests shown to fail
+against broken code, decisions written down, and MSRV 1.89. Its rules
+make two demands on this side, and both are met here. Public text says
+"no dependencies from outside Elchi Studios" rather than "no
+dependencies", because `cargo tree` shows QuantyCore and the claim has to
+survive that. And it is pinned to an exact version, `=0.1.0`, so that
+moving it is a commit and not a side effect of `cargo update`.
+
+Only the command line tool depends on it. The storage core, the query
+layer and the server still depend on the standard library alone, and the
+test that reads the lock file names QuantyCore explicitly rather than
+allowing anything with the right prefix.
+
+**What the fetch trusts, and for what.** It asks for
+`releases/latest/download/<asset>`, the same address `install.sh` uses,
+so the two cannot disagree about which release is the latest. GitHub
+answers with two redirects, the second to a storage host it names, so
+the host is not pinned; every hop must be HTTPS with a certificate that
+validates against the system bundle for that host, and a redirect to
+plain HTTP ends the fetch. The binary is then refused unless it matches
+the line for it in the same release's `SHA256SUMS`, which is not the
+`--sha256` note ADR-042 prints for a file that only proved itself whole:
+here the checksum was published.
+
+That proves the file is the one GitHub serves for the release. It does
+not prove who put it there. Anyone holding the repository can replace a
+binary and its checksum together. Closing that takes a signature over
+`SHA256SUMS` made with a key that never touches GitHub, checked against a
+public key built into the binary. QuantyCore already verifies Ed25519, so
+the missing part is a key and a step in the release workflow that uses
+it, and that is a decision about who holds the key, not about code.
+
+**What it refuses to do.** A copy under `/usr/bin` or in a Homebrew
+prefix belongs to a package manager, and replacing it would make that
+manager's next upgrade either overwrite it or fail its checksum. It says
+which manager and stops. A machine the release does not build for has no
+asset to fetch and says so, pointing at `--file`. Windows has no PEM
+bundle for `RootStore::system` to read, so there it fails with that
+reason and `--file` still works. QuantyCore 0.1.0 does not build on
+Windows either, because its AppArmor module uses Unix path types without
+a guard, so the dependency is declared for Unix only and Windows says
+plainly that fetching is not built there. Both go away together with a
+QuantyCore release that builds on Windows and a way to read the Windows
+certificate store.
+
+**Tested against a server of our own and against GitHub.** The unit tests
+run a TLS server built from QuantyCore on loopback, with a certificate
+issued by QuantyCore, and check a body through two redirects, a refused
+redirect to plain HTTP, a redirect loop, a 404, and a client that does not
+trust the server's root. Removing the HTTPS check fails the test for it.
+An ignored test fetches the real `SHA256SUMS` and binary from GitHub and
+compares them. QuantyCore's ADR-003 asks for interoperability against the
+real peer, and that test is it, run on a machine whose path to GitHub
+nobody rewrites.
+
+**The price.** The tool's size grows by QuantyCore's TLS, and its
+correctness now includes code the rest of the engine does not use. The
+TLS is unreviewed, and `update` says so every time it runs, as QuantyCore
+asks every product using it to do.

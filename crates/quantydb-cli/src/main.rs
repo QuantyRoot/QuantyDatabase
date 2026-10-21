@@ -43,7 +43,7 @@ usage:
   quantydb token <label>
   quantydb connect <addr> [statement] [--token <t>] [--sql]
   quantydb about
-  quantydb update --file <binary> [--sha256 <hex>] [--yes]
+  quantydb update [--file <binary>] [--sha256 <hex>] [--yes]
   quantydb setup [database.qdb]
   quantydb uninstall
 
@@ -67,7 +67,7 @@ usage:
   connect  talk to a running server; with a statement it runs that one,
              without it reads statements from stdin, as shell does
   about    what this is, who made it, and what it does not depend on
-  update   replace this binary with another one you already have
+  update   replace this binary with the latest release, or with --file
   setup    make a database, a token and optionally a service unit
   uninstall  take the service and this binary away, and nothing else
 
@@ -82,9 +82,8 @@ setup    --tokens   token file to write or add to
          --service  write a systemd unit; --no-service to skip the question
          --yes      take every default without asking
 
-update   --file     the binary to install. Fetching a release needs TLS,
-                    which is not written yet, so this is the way in
-         --sha256   refuse the file unless it hashes to this
+update   --file     install this binary instead of fetching the release
+         --sha256   refuse the binary unless it hashes to this
          --yes      do not ask first
 
 serve    --listen   address to bind, default 127.0.0.1:7878
@@ -94,6 +93,8 @@ serve    --listen   address to bind, default 127.0.0.1:7878
 ";
 
 mod client;
+#[cfg(unix)]
+mod fetch;
 mod setup;
 mod update;
 
@@ -303,7 +304,7 @@ fn run(args: &[String]) -> Result<(), Failure> {
         },
         "update" => match rest {
             [] => update::update(flags.file.as_deref(), flags.sha256.as_deref(), flags.yes),
-            _ => Err(usage("update takes no positional arguments; use --file")),
+            _ => Err(usage("update takes no positional arguments")),
         },
         "connect" => match rest {
             [addr] => client::connect(addr, None, flags.token.as_deref(), flags.sql),
@@ -588,8 +589,8 @@ pub const CRATES: usize = 14;
 /// At least this many test functions exist.
 pub const TESTS: usize = 570;
 /// At least this many decision records exist.
-pub const DECISIONS: usize = 44;
-/// Exactly this many packages that are not this workspace.
+pub const DECISIONS: usize = 46;
+/// Exactly this many packages from outside Elchi Studios.
 pub const FOREIGN_DEPENDENCIES: usize = 0;
 
 /// What this is, who made it, and what it does not depend on.
@@ -598,8 +599,9 @@ fn about() -> Result<(), Failure> {
     emit("one database that reshapes itself into whatever you need")?;
     emit("")?;
     emit(&format!(
-        "  dependencies   {FOREIGN_DEPENDENCIES}, and that is the whole list"
+        "  dependencies   {FOREIGN_DEPENDENCIES} from outside Elchi Studios"
     ))?;
+    emit("  in-house       quantycore, for TLS")?;
     emit(&format!(
         "  crates         {CRATES}, all of them in this repository"
     ))?;
@@ -794,13 +796,13 @@ fn serve(database: &Path, flags: &Flags) -> Result<(), Failure> {
 /// The protocol is plaintext and the token goes over it on every
 /// connection, so anyone on the path can read it and use it again. That is
 /// fine on loopback and over a private link, and it is not fine on the
-/// public internet. TLS is not written yet (ADR-020 says it would be
-/// written here rather than pulled in), so until it is, this says so every
-/// single time, and louder when the address is not a loopback one.
+/// public internet. The server does not speak TLS yet, so until it does,
+/// this says so every single time, and louder when the address is not a
+/// loopback one.
 #[cfg(target_os = "linux")]
 fn warn_about_the_wire(bound: std::net::SocketAddr, tokens: bool) -> Result<(), Failure> {
     if bound.ip().is_loopback() {
-        emit("note: the wire is not encrypted; TLS is not built yet")?;
+        emit("note: the wire is not encrypted; the server has no TLS yet")?;
         return Ok(());
     }
     emit("")?;
@@ -811,7 +813,7 @@ fn warn_about_the_wire(bound: std::net::SocketAddr, tokens: bool) -> Result<(), 
     ))?;
     emit("  protocol is plaintext. Tokens cross the wire in the clear on")?;
     emit("  every connection: anyone who can see the traffic can read one")?;
-    emit("  and use it again. TLS is a work in progress and is not here.")?;
+    emit("  and use it again. The server does not speak TLS yet.")?;
     if !tokens {
         emit("")?;
         emit("  There is also no token file, so nothing is being asked for")?;

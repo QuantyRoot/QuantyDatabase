@@ -22,6 +22,11 @@ quantydb-sqlite.workspace = true
 quantydb-auth.workspace = true
 quantydb-proto.workspace = true
 
+# TLS and HTTP/1.1 for fetching a release (ADR-046). Unix only: Windows has
+# no PEM bundle for it to trust, and quantycore 0.1.0 does not build there.
+[target.'cfg(unix)'.dependencies]
+quantycore.workspace = true
+
 [target.'cfg(target_os = "linux")'.dependencies]
 quantydb-service.workspace = true
 quantydb-server.workspace = true

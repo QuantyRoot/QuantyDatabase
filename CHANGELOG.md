@@ -15,6 +15,14 @@ wrapped.
 
 ## [Unreleased]
 
+### Added
+
+- `quantydb update` fetches the latest release for this machine from
+  GitHub, over TLS from QuantyCore, and refuses it unless it matches the
+  release's `SHA256SUMS`. `--file` still installs a binary you already
+  have. A copy installed by apt, dnf or Homebrew points at that package
+  manager instead (ADR-046).
+
 ### Performance
 
 - Bulk loads are about twice as fast through statements and around six
@@ -24,6 +32,10 @@ wrapped.
 
 ### Changed
 
+- The command line tool depends on QuantyCore, written by Elchi Studios
+  under the same rules, pinned to `=0.1.0`. Nothing from outside the
+  organization is in the lock file, and the engine itself still depends
+  on the standard library alone.
 - QuantyDB is now a product of Elchi Studios. The licence stays MIT and
   the people working on it stay the same. `quantydb about` says so.
 - More than one node is no longer a non-goal. ADR-044 records why and

@@ -3,6 +3,12 @@
 version = 4
 
 [[package]]
+name = "quantycore"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b70fd062ab9134e82985cf31f159bd5392e9e72627baffefb0a3d2f6facda940"
+
+[[package]]
 name = "quantydb"
 version = "0.4.0"
 dependencies = [
@@ -33,6 +39,7 @@ dependencies = [
 name = "quantydb-cli"
 version = "0.4.0"
 dependencies = [
+ "quantycore",
  "quantydb-auth",
  "quantydb-core",
  "quantydb-exec",

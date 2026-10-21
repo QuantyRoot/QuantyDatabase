@@ -1,14 +1,13 @@
 //! Replacing the tool with a newer copy of itself.
 //!
-//! Two halves, and only one of them is here. Getting a release is a
-//! network problem: it needs HTTPS, and this project writes what it
-//! depends on (ADR-020), so it needs TLS first. Installing one is a file
-//! problem, and that half works today.
+//! Two halves. Getting a release is a network problem, and `fetch` solves
+//! it with the TLS in QuantyCore (ADR-046). Installing one is a file
+//! problem, and that half is here.
 //!
-//! So `update --file` takes a binary that is already on the machine and
-//! puts it where the running one is. When TLS lands, fetching produces a
-//! file and hands it to exactly this code: the download changes, the
-//! install does not.
+//! `update` fetches the latest release for this machine and checks it
+//! against the release's own `SHA256SUMS`. `update --file` takes a binary
+//! that is already on the machine. Both end in the same install, so the
+//! checks below protect a download exactly as they protect a file.
 //!
 //! ## What it checks before it replaces anything
 //!
@@ -37,30 +36,115 @@ use std::process::Command;
 
 use quantydb_core::{sha256, to_hex};
 
-use crate::{emit, failed, usage, Failure};
+#[cfg(unix)]
+use crate::fetch;
+use crate::{emit, failed, Failure};
 
-/// Install `candidate` over the running binary.
+/// Install `candidate` over the running binary, or the latest release
+/// when there is no candidate.
 pub fn update(candidate: Option<&str>, expected: Option<&str>, yes: bool) -> Result<(), Failure> {
-    let Some(candidate) = candidate else {
-        return Err(usage(
-            "update needs --file <binary> for now. Fetching a release over \
-             the network needs TLS, which is written here rather than pulled \
-             in and is not written yet, so point this at a file you have \
-             already downloaded.",
-        ));
-    };
-    let candidate = Path::new(candidate);
-
     let target = env::current_exe()
         .map_err(|e| failed(format!("cannot tell where this binary lives: {e}")))?;
-    let directory = target
-        .parent()
-        .ok_or_else(|| failed(format!("{} has no directory", target.display())))?;
-
+    if let Some(manager) = packaged(&target) {
+        return Err(failed(format!(
+            "{} was installed by {manager}, and replacing it here would leave \
+             {manager} believing it installed something else. Update it with \
+             {manager} instead.",
+            target.display()
+        )));
+    }
+    let Some(candidate) = candidate else {
+        return fetch_latest(&target, expected, yes);
+    };
+    let candidate = Path::new(candidate);
     let bytes =
         fs::read(candidate).map_err(|e| failed(format!("reading {}: {e}", candidate.display())))?;
     if bytes.is_empty() {
         return Err(failed(format!("{} is empty", candidate.display())));
+    }
+    install(
+        &target,
+        &candidate.display().to_string(),
+        bytes,
+        expected,
+        yes,
+    )
+}
+
+/// Windows has no certificate bundle in a file for the TLS to trust, so
+/// there is nothing to fetch with yet. `--file` works there as it always
+/// has.
+#[cfg(not(unix))]
+fn fetch_latest(_target: &Path, _expected: Option<&str>, _yes: bool) -> Result<(), Failure> {
+    Err(failed(
+        "fetching a release is not built for Windows yet. Download the \
+         .exe from the release page and run update --file with it.",
+    ))
+}
+
+/// Fetch the release built for this machine and install it, refusing it
+/// unless it matches the line for it in the release's `SHA256SUMS`.
+#[cfg(unix)]
+fn fetch_latest(target: &Path, expected: Option<&str>, yes: bool) -> Result<(), Failure> {
+    let asset = fetch::asset_name().ok_or_else(|| {
+        failed(format!(
+            "no release is built for {} on {}, so there is nothing to fetch. \
+             Build from source, then use update --file.",
+            env::consts::OS,
+            env::consts::ARCH
+        ))
+    })?;
+    let base = format!("{}/latest/download", fetch::RELEASES);
+    emit(&format!("  fetch {base}/{asset}"))?;
+    emit("  (over TLS from QuantyCore, which has not been reviewed by")?;
+    emit("   anyone outside the project yet)")?;
+
+    let config = fetch::system_config().map_err(failed)?;
+    let sums = fetch::get(&format!("{base}/SHA256SUMS"), &config).map_err(failed)?;
+    let sums = String::from_utf8(sums).map_err(|_| failed("SHA256SUMS is not text"))?;
+    let published = fetch::digest_for(&sums, asset).map_err(failed)?;
+    if let Some(want) = expected {
+        let want = want.trim().to_ascii_lowercase();
+        if want != published {
+            return Err(failed(format!(
+                "the release publishes a different checksum than --sha256\n  \
+                 given     {want}\n  published {published}"
+            )));
+        }
+    }
+    let bytes = fetch::get(&format!("{base}/{asset}"), &config).map_err(failed)?;
+    install(target, asset, bytes, Some(&published), yes)
+}
+
+/// Where a package manager put the binary, if one did.
+///
+/// A package manager keeps a record of the files it installed and their
+/// checksums. Replacing one behind its back makes the next upgrade either
+/// overwrite this one silently or refuse, and neither is the user's idea.
+fn packaged(target: &Path) -> Option<&'static str> {
+    let path = target.to_string_lossy();
+    if path.contains("/Cellar/") || path.starts_with("/opt/homebrew/") {
+        return Some("Homebrew");
+    }
+    if path.starts_with("/usr/bin/") || path.starts_with("/usr/sbin/") {
+        return Some("the system package manager");
+    }
+    None
+}
+
+/// Install `bytes` over `target`, after the checks every candidate gets.
+fn install(
+    target: &Path,
+    source: &str,
+    bytes: Vec<u8>,
+    expected: Option<&str>,
+    yes: bool,
+) -> Result<(), Failure> {
+    let directory = target
+        .parent()
+        .ok_or_else(|| failed(format!("{} has no directory", target.display())))?;
+    if bytes.is_empty() {
+        return Err(failed(format!("{source} is empty")));
     }
     let digest = to_hex(&sha256(&bytes));
 
@@ -71,10 +155,9 @@ pub fn update(candidate: Option<&str>, expected: Option<&str>, yes: bool) -> Res
         let actual = bytes.len() as u64;
         if actual < claimed {
             return Err(failed(format!(
-                "{} is incomplete: its own headers describe {claimed} bytes \
-                 and the file is {actual}. That is what half a download \
-                 looks like; fetch it again.",
-                candidate.display()
+                "{source} is incomplete: its own headers describe {claimed} \
+                 bytes and the file is {actual}. That is what half a download \
+                 looks like; fetch it again."
             )));
         }
     }
@@ -90,8 +173,8 @@ pub fn update(candidate: Option<&str>, expected: Option<&str>, yes: bool) -> Res
 
     // Next to the target rather than in a temporary directory, because the
     // last step has to be a rename and a rename does not cross filesystems.
-    let staged = beside(&target, "new")?;
-    let previous = beside(&target, "old")?;
+    let staged = beside(target, "new")?;
+    let previous = beside(target, "old")?;
     let _ = fs::remove_file(&staged);
 
     write_program(&staged, &bytes).map_err(|e| {
@@ -132,13 +215,13 @@ pub fn update(candidate: Option<&str>, expected: Option<&str>, yes: bool) -> Res
     }
 
     let _ = fs::remove_file(&previous);
-    fs::rename(&target, &previous).map_err(|e| {
+    fs::rename(target, &previous).map_err(|e| {
         let _ = fs::remove_file(&staged);
         failed(format!("cannot move the running binary aside: {e}"))
     })?;
-    if let Err(e) = fs::rename(&staged, &target) {
+    if let Err(e) = fs::rename(&staged, target) {
         // Put it back rather than leaving nothing where the tool was.
-        let _ = fs::rename(&previous, &target);
+        let _ = fs::rename(&previous, target);
         let _ = fs::remove_file(&staged);
         return Err(failed(format!("cannot put the new binary in place: {e}")));
     }

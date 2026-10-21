@@ -5,9 +5,11 @@ useful thing you can do before you write a lot is read a little.
 
 ## Before anything else: the dependency rule
 
-**The lock file holds this workspace and nothing else, and that is not
-negotiable.** A patch that adds a package will be turned down however good
-the package is. ADR-020 explains what that costs and why it is worth
+**The lock file holds this workspace and crates written in the QuantyRoot
+organization, and nothing else, and that is not negotiable.** A patch that
+adds any other package will be turned down however good the package is.
+QuantyCore is the one such crate today, and the rules it is held to are its
+own ADR-001. ADR-020 explains what that costs and why it is worth
 paying; the short version is that a database people trust with their data
 should be auditable by one person in an afternoon.
 

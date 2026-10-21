@@ -332,13 +332,15 @@ internal crates re-exported, so no internal type reaches an embedder's
 signatures. `quantydb-derive/` sits on top of it and holds to ADR-020: it
 walks the `TokenStream` it is handed, with no `syn` and no `quote`.
 
-There is no dependency budget, because there are no dependencies. This
-section used to name crc32c, blake3 and parking_lot; ADR-020 wrote out the
-parts of them this project actually needed and the lock file has held
-nothing but this workspace since. SHA-256 for token hashing followed the
-same route later, checked against the published vectors. The core stays
-std-only and io-abstracted behind a `Storage` trait over file and memory
-backends, which is also what keeps a WASM build possible.
+There is no dependency budget, because there are no third-party
+dependencies. This section used to name crc32c, blake3 and parking_lot;
+ADR-020 wrote out the parts of them this project actually needed, and the
+lock file held nothing but this workspace until QuantyCore, written in the
+same organization, brought TLS to the command line tool (ADR-046). SHA-256
+for token hashing followed the same route later, checked against the
+published vectors. The core stays std-only and io-abstracted behind a
+`Storage` trait over file and memory backends, which is also what keeps a
+WASM build possible.
 
 ## Performance notes (for later, do not gold plate early)
 

@@ -207,19 +207,3 @@ fn a_longer_file_than_the_headers_describe_is_fine() {
     );
     assert!(still_runs(&installed));
 }
-
-#[test]
-fn without_a_file_it_says_what_it_is_waiting_for() {
-    let dir = TestDir::new();
-    let (installed, _) = staged(&dir);
-
-    let out = run_tool(Command::new(&installed).arg("update"));
-    let said = String::from_utf8_lossy(&out.stderr).to_string();
-
-    assert!(!out.status.success(), "update with no file should refuse");
-    assert!(
-        said.contains("--file"),
-        "did not point at the way in: {said}"
-    );
-    assert!(still_runs(&installed));
-}
