@@ -52,7 +52,9 @@ pub struct Spanned {
 
 pub fn lex(source: &str) -> Result<Vec<Spanned>, ParseError> {
     let bytes = source.as_bytes();
-    let mut out = Vec::new();
+    // A row of a `put` is about one token per three or four bytes, so the
+    // list is allocated once instead of doubling its way up.
+    let mut out = Vec::with_capacity(source.len() / 3 + 4);
     let mut i = 0;
 
     while i < bytes.len() {

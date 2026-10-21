@@ -12,7 +12,9 @@
 //! Tuple encoding is order preserving and prefix friendly, so table scans
 //! and index probes are plain range scans.
 
-use quantydb_core::{decode_key, encode_key, Db, GcReport, Storage, SuspendedTx, Value, WriteTx};
+use quantydb_core::{
+    decode_key, encode_key, encode_key_into, Db, GcReport, Storage, SuspendedTx, Value, WriteTx,
+};
 use quantydb_ql::ast::{AsOf, ColumnRef, Direction, Expr, Get, Statement, TypeName};
 
 use crate::catalog::{self, Table};
@@ -1796,10 +1798,19 @@ impl<S: Storage> Run<'_, S> {
 
     fn put(&mut self, table_name: &str, rows: &[Vec<(String, Expr)>]) -> Result<Output, ExecError> {
         let table = self.load_table(table_name)?;
+        let key_positions = table.key_positions();
         let mut count = 0u64;
         for row in rows {
             let values = self.build_row(&table, row)?;
-            let key = row_key(&table, &row_pk(&table, &values));
+            // The row key is the table id followed by the primary key, and
+            // an index entry ends in the same primary key bytes, so they are
+            // encoded once, straight from the row, rather than collected
+            // into a tuple of cloned values for every key that needs them.
+            let mut key = encode_key(&[Value::Int(table.id as i64)]);
+            let pk_at = key.len();
+            for &p in &key_positions {
+                encode_key_into(std::slice::from_ref(&values[p]), &mut key);
+            }
             // One descent: the insert reports the duplicate it already
             // had to look for, rather than being asked first.
             if !self.tx.put_unique(&key, &encode_key(&values))? {
@@ -1819,10 +1830,17 @@ impl<S: Storage> Run<'_, S> {
                     self.move_postings(text_id, &pk, &values[pos], true)?;
                 }
                 if let Some(index_id) = col.index_id {
-                    let entry = index_entry_key(index_id, &values[pos], &row_pk(&table, &values));
+                    let mut entry = encode_key(&[Value::Int(index_id as i64)]);
+                    encode_key_into(std::slice::from_ref(&values[pos]), &mut entry);
+                    entry.extend_from_slice(&key[pk_at..]);
+                    debug_assert_eq!(
+                        entry,
+                        index_entry_key(index_id, &values[pos], &row_pk(&table, &values))
+                    );
                     self.tx.put(&entry, &[])?;
                 }
             }
+            debug_assert_eq!(key, row_key(&table, &row_pk(&table, &values)));
             self.mutated = true;
             count += 1;
         }

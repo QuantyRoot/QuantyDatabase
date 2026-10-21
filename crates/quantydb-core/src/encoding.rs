@@ -75,10 +75,20 @@ impl Value {
 /// Encode a tuple of values into a single order-preserving key.
 pub fn encode_key(values: &[Value]) -> Vec<u8> {
     let mut out = Vec::with_capacity(values.len() * 10);
-    for v in values {
-        v.encode_into(&mut out);
-    }
+    encode_key_into(values, &mut out);
     out
+}
+
+/// Append the encoding of `values` to `out`.
+///
+/// A key is its values' encodings one after another, so a key can be built
+/// from parts that live in different places without first copying them
+/// into one tuple: `encode_key(&[a, b])` is `encode_key(&[a])` followed by
+/// `encode_key(&[b])`, byte for byte.
+pub fn encode_key_into(values: &[Value], out: &mut Vec<u8>) {
+    for v in values {
+        v.encode_into(out);
+    }
 }
 
 /// Decode a key back into its tuple. The exact inverse of [`encode_key`];
@@ -316,5 +326,32 @@ mod tests {
         let base = encode_key(&[Value::Int(42)]);
         let ext = encode_key(&[Value::Int(42), Value::Text("x".into())]);
         assert!(ext.starts_with(&base));
+    }
+}
+
+#[cfg(test)]
+mod concatenation {
+    use super::*;
+
+    /// `put` builds row keys and index entries out of parts, which is only
+    /// right if a key really is its parts one after another.
+    #[test]
+    fn a_key_is_its_values_encoded_one_after_another() {
+        let values = [
+            Value::Int(7),
+            Value::Text("a\u{0}b".into()),
+            Value::Null,
+            Value::Bytes(vec![0, 0xff, 0]),
+            Value::Float(-1.5),
+            Value::Bool(true),
+            Value::Int(-3),
+        ];
+        for split in 0..=values.len() {
+            let mut parts = encode_key(&values[..split]);
+            for v in &values[split..] {
+                encode_key_into(std::slice::from_ref(v), &mut parts);
+            }
+            assert_eq!(parts, encode_key(&values), "split at {split}");
+        }
     }
 }

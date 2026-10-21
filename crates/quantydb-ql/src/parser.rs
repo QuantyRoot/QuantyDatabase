@@ -30,12 +30,20 @@ impl Parser {
         self.tokens[self.pos].at
     }
 
+    /// Consume the current token and hand it over.
+    ///
+    /// Taken out of the list rather than cloned: nothing ever goes back,
+    /// so the slot is never read again, and a clone of every string and
+    /// every name was most of what parsing a bulk `put` allocated. The
+    /// last token, `Eof`, stays where it is so it can be seen again.
     fn bump(&mut self) -> Token {
-        let t = self.tokens[self.pos].token.clone();
         if self.pos + 1 < self.tokens.len() {
+            let t = std::mem::replace(&mut self.tokens[self.pos].token, Token::Eof);
             self.pos += 1;
+            t
+        } else {
+            self.tokens[self.pos].token.clone()
         }
-        t
     }
 
     fn eat(&mut self, token: &Token) -> bool {
@@ -98,15 +106,15 @@ impl Parser {
     }
 
     fn ident(&mut self, what: &str) -> Result<String, ParseError> {
-        match self.peek().clone() {
-            Token::Ident(w) => {
-                self.bump();
-                Ok(w)
-            }
-            other => Err(ParseError::at(
+        if !matches!(self.peek(), Token::Ident(_)) {
+            return Err(ParseError::at(
                 self.at(),
-                format!("expected {what}, found {}", show(&other)),
-            )),
+                format!("expected {what}, found {}", show(self.peek())),
+            ));
+        }
+        match self.bump() {
+            Token::Ident(w) => Ok(w),
+            _ => unreachable!("checked above"),
         }
     }
 
@@ -352,7 +360,20 @@ impl Parser {
                 }
                 let col = self.name("a column name")?;
                 self.expect(Token::Colon, "':' between column and value")?;
-                let expr = self.expr()?;
+                // A literal followed by what ends a field is the literal,
+                // which is what the eight levels of `expr` would conclude
+                // after asking each of them in turn.
+                let ends = matches!(
+                    self.tokens.get(self.pos + 1).map(|s| &s.token),
+                    Some(Token::Comma | Token::RBrace)
+                );
+                let expr = match ends {
+                    true => match self.literal_value()? {
+                        Some(v) => Expr::Literal(v),
+                        None => self.expr()?,
+                    },
+                    false => self.expr()?,
+                };
                 fields.push((col, expr));
                 self.eat(&Token::Comma);
             }
@@ -626,18 +647,23 @@ impl Parser {
     /// read here and refused as names in `names.rs`, because a column
     /// spelled like one prints back as the literal (ADR-017).
     fn literal_value(&mut self) -> Result<Option<Value>, ParseError> {
-        let v = match self.peek().clone() {
+        let literal = match self.peek() {
+            Token::Int(_) | Token::Float(_) | Token::Str(_) | Token::Hex(_) => true,
+            Token::Ident(w) => w == "true" || w == "false" || w == "null",
+            _ => false,
+        };
+        if !literal {
+            return Ok(None);
+        }
+        Ok(Some(match self.bump() {
             Token::Int(i) => Value::Int(i),
             Token::Float(f) => Value::Float(f),
             Token::Str(s) => Value::Text(s),
             Token::Hex(b) => Value::Bytes(b),
             Token::Ident(w) if w == "true" => Value::Bool(true),
             Token::Ident(w) if w == "false" => Value::Bool(false),
-            Token::Ident(w) if w == "null" => Value::Null,
-            _ => return Ok(None),
-        };
-        self.bump();
-        Ok(Some(v))
+            _ => Value::Null,
+        }))
     }
 }
 

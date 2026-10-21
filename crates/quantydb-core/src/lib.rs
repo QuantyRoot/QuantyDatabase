@@ -38,7 +38,7 @@ pub use blob::{
 pub use btree::{max_key_len, ReadPages, Scan};
 pub use commit::CommitInfo;
 pub use db::{Db, DbStats, GcReport, Snapshot, SuspendedTx, WriteTx};
-pub use encoding::{decode_key, encode_key, Value};
+pub use encoding::{decode_key, encode_key, encode_key_into, Value};
 pub use error::{Error, Result};
 pub use meta::{Meta, FORMAT_VERSION, MAGIC};
 pub use page::{
