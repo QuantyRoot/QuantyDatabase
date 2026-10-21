@@ -1043,6 +1043,14 @@ fn fetch_rows_inner<V: View>(
                 if decoded.len() < 3 {
                     return Err(ExecError::exec("index entry is too short, this is a bug"));
                 }
+                // The range holds every entry starting with the encoded
+                // value, and a longer value whose own escaped zero byte
+                // makes this one a byte prefix of it starts the same way.
+                // Only an equal value is a match; taking the others returned
+                // rows with the wrong value and let set and del change them.
+                if decoded[1] != *value {
+                    continue;
+                }
                 let pk = &decoded[2..];
                 let key = row_key(table, pk);
                 let bytes = view.view_get(&key)?.ok_or_else(|| {

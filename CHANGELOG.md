@@ -15,6 +15,13 @@ wrapped.
 
 ## [Unreleased]
 
+### Fixed
+
+- A lookup through an index on a text or bytes column also matched stored
+  values that began with the value asked for followed by a zero byte, so
+  `get` returned rows with a different value and `set` and `del` changed
+  or removed them. Present since indexes were introduced.
+
 ### Added
 
 - `quantydb update` fetches the latest release for this machine from

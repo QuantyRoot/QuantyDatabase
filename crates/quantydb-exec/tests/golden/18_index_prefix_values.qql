@@ -1,0 +1,25 @@
+# An index lookup reads every entry starting with the value it wants. A
+# value holding a zero byte is stored escaped, so a shorter value can be
+# a byte prefix of it; the lookup must still find only the equal rows.
+
+> table b { id: int @key, v: bytes @index }
+ok
+
+> put b { id: 1, v: x"616263" }, { id: 2, v: x"6162630078" }, { id: 3, v: x"61626300" }
+put 3
+
+> get b where v = x"616263"
+1|x"616263"
+
+> get b where v = x"61626300"
+3|x"61626300"
+
+> get b where v = x"6162630078"
+2|x"6162630078"
+
+> del b where v = x"616263"
+del 1
+
+> get b
+2|x"6162630078"
+3|x"61626300"
