@@ -333,50 +333,59 @@ fn insert_rec<S: Storage>(
         };
     }
 
-    let (mut node, size) = load_node_sized(batch, page)?;
+    // A leaf this batch owns and keeps decoded takes the new cell where it
+    // belongs, in the page and in the node at once, and keeps the rest.
+    // Re-encoding the whole leaf for every row added to it was most of what
+    // a bulk load spent in the tree, and taking the node out of the batch
+    // and putting it back cost a map removal and insertion per row.
+    let page_size = batch.page_size() as usize;
+    if let Some((node, used, buf)) = batch.kept_and_page_mut(page) {
+        if let Node::Leaf { entries } = &mut *node {
+            match entries.binary_search_by(|(k, _)| k.as_slice().cmp(key)) {
+                Ok(_) if unique => return Ok(Insert::Duplicate),
+                Ok(_) => {}
+                Err(i) => {
+                    let cell = leaf_cell_size(key, &value);
+                    if *used + cell <= page_size {
+                        let at = if i == entries.len() {
+                            *used
+                        } else {
+                            PAGE_HEADER_LEN
+                                + entries[..i]
+                                    .iter()
+                                    .map(|(k, v)| leaf_cell_size(k, v))
+                                    .sum::<usize>()
+                        };
+                        buf.copy_within(at..*used, at + cell);
+                        write_leaf_cell(buf, at, key, &value);
+                        let count = u16::from_le_bytes([buf[6], buf[7]]) + 1;
+                        buf[6..8].copy_from_slice(&count.to_le_bytes());
+                        entries.insert(i, (key.to_vec(), value));
+                        *used += cell;
+                        #[cfg(debug_assertions)]
+                        {
+                            let mut whole = vec![0u8; buf.len()];
+                            let size = node.encode_into(&mut whole);
+                            assert_eq!(size, *used, "the kept size of page {page} drifted");
+                            assert!(
+                                buf[..] == whole[..],
+                                "the in-place insert into page {page} differs from encoding it"
+                            );
+                        }
+                        return Ok(Insert::Done(page));
+                    }
+                }
+            }
+        }
+    }
+
+    let mut node = load_node(batch, page)?;
     match &mut node {
         Node::Leaf { entries } => {
             match entries.binary_search_by(|(k, _)| k.as_slice().cmp(key)) {
                 Ok(_) if unique => return Ok(Insert::Duplicate),
                 Ok(i) => entries[i].1 = value,
-                Err(i) => {
-                    // A page this batch owns and already knows the size of
-                    // takes the new cell where it belongs and keeps the rest.
-                    // Re-encoding the whole leaf for every row added to it
-                    // was most of what a bulk load spent in the tree.
-                    let cell = leaf_cell_size(key, &value);
-                    if let Some(used) = size {
-                        if batch.owns(page) && used + cell <= batch.page_size() as usize {
-                            let at = if i == entries.len() {
-                                used
-                            } else {
-                                PAGE_HEADER_LEN
-                                    + entries[..i]
-                                        .iter()
-                                        .map(|(k, v)| leaf_cell_size(k, v))
-                                        .sum::<usize>()
-                            };
-                            let buf = batch.page_mut(page)?;
-                            buf.copy_within(at..used, at + cell);
-                            write_leaf_cell(buf, at, key, &value);
-                            let count = u16::from_le_bytes([buf[6], buf[7]]) + 1;
-                            buf[6..8].copy_from_slice(&count.to_le_bytes());
-                            entries.insert(i, (key.to_vec(), value));
-                            #[cfg(debug_assertions)]
-                            {
-                                let mut whole = vec![0u8; buf.len()];
-                                node.encode_into(&mut whole);
-                                assert!(
-                                    buf[..] == whole[..],
-                                    "the in-place insert into page {page} differs from encoding it"
-                                );
-                            }
-                            batch.keep_node_sized(page, node, used + cell);
-                            return Ok(Insert::Done(page));
-                        }
-                    }
-                    entries.insert(i, (key.to_vec(), value));
-                }
+                Err(i) => entries.insert(i, (key.to_vec(), value)),
             }
             finish_leaf(batch, page, node)
         }
@@ -773,15 +782,7 @@ fn write_node<S: Storage>(
 /// builds check every kept copy against the bytes, so the whole test
 /// suite stands behind the claim that the two never disagree.
 fn load_node<S: Storage>(batch: &mut WriteBatch<'_, S>, page: PageId) -> Result<Node> {
-    Ok(load_node_sized(batch, page)?.0)
-}
-
-/// The same, with the encoded size when the node came from the batch.
-fn load_node_sized<S: Storage>(
-    batch: &mut WriteBatch<'_, S>,
-    page: PageId,
-) -> Result<(Node, Option<usize>)> {
-    if let Some((node, size)) = batch.take_node_sized(page) {
+    if let Some((node, _)) = batch.take_node_sized(page) {
         #[cfg(debug_assertions)]
         {
             let buf = batch.page_bytes(page)?;
@@ -791,10 +792,10 @@ fn load_node_sized<S: Storage>(
                 "the kept node for page {page} disagrees with its bytes"
             );
         }
-        return Ok((node, Some(size)));
+        return Ok(node);
     }
     let buf = batch.page_bytes(page)?;
-    Ok((Node::decode(&buf, page)?, None))
+    Node::decode(&buf, page)
 }
 
 fn write_overflow<S: Storage>(batch: &mut WriteBatch<'_, S>, value: &[u8]) -> Result<ValueRef> {

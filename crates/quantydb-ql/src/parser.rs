@@ -350,10 +350,12 @@ impl Parser {
 
     fn put(&mut self) -> Result<Statement, ParseError> {
         let table = self.name("a table name")?;
-        let mut rows = Vec::new();
+        let mut rows: Vec<Vec<(String, Expr)>> = Vec::new();
         loop {
             self.expect(Token::LBrace, "'{' to open a row")?;
-            let mut fields = Vec::new();
+            // Rows of one put usually name the same columns, so the last
+            // row's width is the best guess for this one.
+            let mut fields = Vec::with_capacity(rows.last().map_or(4, Vec::len));
             loop {
                 if self.eat(&Token::RBrace) {
                     break;

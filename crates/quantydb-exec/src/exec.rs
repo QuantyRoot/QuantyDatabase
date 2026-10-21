@@ -1812,7 +1812,8 @@ impl<S: Storage> Run<'_, S> {
             // an index entry ends in the same primary key bytes, so they are
             // encoded once, straight from the row, rather than collected
             // into a tuple of cloned values for every key that needs them.
-            let mut key = encode_key(&[Value::Int(table.id as i64)]);
+            let mut key = Vec::with_capacity(64);
+            encode_key_into(&[Value::Int(table.id as i64)], &mut key);
             let pk_at = key.len();
             for &p in &key_positions {
                 encode_key_into(std::slice::from_ref(&values[p]), &mut key);
@@ -1836,7 +1837,8 @@ impl<S: Storage> Run<'_, S> {
                     self.move_postings(text_id, &pk, &values[pos], true)?;
                 }
                 if let Some(index_id) = col.index_id {
-                    let mut entry = encode_key(&[Value::Int(index_id as i64)]);
+                    let mut entry = Vec::with_capacity(64 + key.len());
+                    encode_key_into(&[Value::Int(index_id as i64)], &mut entry);
                     encode_key_into(std::slice::from_ref(&values[pos]), &mut entry);
                     entry.extend_from_slice(&key[pk_at..]);
                     debug_assert_eq!(

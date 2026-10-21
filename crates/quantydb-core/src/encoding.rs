@@ -74,9 +74,22 @@ impl Value {
 
 /// Encode a tuple of values into a single order-preserving key.
 pub fn encode_key(values: &[Value]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(values.len() * 10);
+    let mut out = Vec::with_capacity(values.iter().map(encoded_len_hint).sum());
     encode_key_into(values, &mut out);
     out
+}
+
+/// What a value usually takes encoded, so a key is allocated once. Exact
+/// except for text and bytes containing zero bytes, which escaping makes
+/// longer and which then grow the buffer as before.
+fn encoded_len_hint(v: &Value) -> usize {
+    match v {
+        Value::Null => 1,
+        Value::Bool(_) => 2,
+        Value::Int(_) | Value::Float(_) => 9,
+        Value::Text(s) => s.len() + 3,
+        Value::Bytes(b) => b.len() + 3,
+    }
 }
 
 /// Append the encoding of `values` to `out`.

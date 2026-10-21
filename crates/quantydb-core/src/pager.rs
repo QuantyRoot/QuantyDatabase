@@ -455,6 +455,23 @@ impl<S: Storage> WriteBatch<'_, S> {
         self.nodes.remove(&id)
     }
 
+    /// The kept node of a page this batch owns, its encoded size and the
+    /// page bytes, all writable at once, for a caller that changes the page
+    /// and the node together and leaves them agreeing. Records the page
+    /// for the savepoint like any write. `None` when either is missing.
+    pub(crate) fn kept_and_page_mut(
+        &mut self,
+        id: PageId,
+    ) -> Option<(&mut Node, &mut usize, &mut [u8])> {
+        if !self.nodes.contains_key(&id) || !self.dirty.contains_key(&id) {
+            return None;
+        }
+        self.record(id);
+        let (node, size) = self.nodes.get_mut(&id)?;
+        let page = self.dirty.get_mut(&id)?;
+        Some((node, size, page))
+    }
+
     /// The decoded form of a page this batch owns, left where it is, for a
     /// caller that only reads it.
     pub(crate) fn kept_node(&self, id: PageId) -> Option<&Node> {
