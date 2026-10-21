@@ -257,6 +257,93 @@ pub(crate) fn leaf_cell_at(
     }
 }
 
+/// The value stored under `key` in a leaf page, read in place.
+///
+/// Every cell is still read and the keys checked for order, exactly as
+/// `decode` would, so a damaged leaf is an error here too rather than an
+/// answer; what is gone is building a vector with every key on the page
+/// in it to find one of them.
+pub(crate) fn find_in_leaf(buf: &[u8], id: PageId, key: &[u8]) -> Result<Option<CellValue>> {
+    let count = u16::from_le_bytes(buf[6..8].try_into().expect("hdr")) as usize;
+    let mut at = PAGE_HEADER_LEN;
+    let mut prev: Option<(usize, usize)> = None;
+    let mut found = None;
+    for _ in 0..count {
+        let ((ks, ke), value, next) = leaf_cell_at(buf, at, id)?;
+        if let Some((s, e)) = prev {
+            if buf[s..e] >= buf[ks..ke] {
+                return Err(Error::corrupted(
+                    id,
+                    "node decode: leaf keys not strictly sorted",
+                ));
+            }
+        }
+        if found.is_none() && &buf[ks..ke] == key {
+            found = Some(value);
+        }
+        prev = Some((ks, ke));
+        at = next;
+    }
+    Ok(found)
+}
+
+/// A branch page checked the way `decode` would, without building it:
+/// every cell readable, flags zero, keys strictly increasing. Returns the
+/// first child and the number of entries.
+pub(crate) fn check_branch(buf: &[u8], id: PageId) -> Result<(PageId, usize)> {
+    let bad = |what: &str| Error::corrupted(id, format!("node decode: {what}"));
+    let count = u16::from_le_bytes(buf[6..8].try_into().expect("hdr")) as usize;
+    let body = &buf[PAGE_HEADER_LEN..];
+    let (first_child, mut cur) = read_u64(body).ok_or_else(|| bad("truncated"))?;
+    let mut prev: Option<&[u8]> = None;
+    for _ in 0..count {
+        let (key, flag, rest) = read_key_ref(cur).ok_or_else(|| bad("truncated cell"))?;
+        if flag != 0 {
+            return Err(bad("bad branch flag"));
+        }
+        let (_, rest) = read_u64(rest).ok_or_else(|| bad("truncated child"))?;
+        if prev.is_some_and(|p| p >= key) {
+            return Err(bad("branch keys not strictly sorted"));
+        }
+        prev = Some(key);
+        cur = rest;
+    }
+    Ok((first_child, count))
+}
+
+/// How many entries of an already checked branch have a key not greater
+/// than `key`, which is the decoded path's `partition_point`.
+pub(crate) fn branch_rank(buf: &[u8], key: &[u8]) -> usize {
+    let count = u16::from_le_bytes(buf[6..8].try_into().expect("hdr")) as usize;
+    let mut cur = &buf[PAGE_HEADER_LEN + 8..];
+    let mut rank = 0;
+    for _ in 0..count {
+        let (cell_key, _, rest) = read_key_ref(cur).expect("checked branch");
+        if cell_key > key {
+            break;
+        }
+        rank += 1;
+        cur = &rest[8..];
+    }
+    rank
+}
+
+/// Child `idx` of an already checked branch: 0 is the first child, and
+/// `i` is the child of entry `i - 1`.
+pub(crate) fn branch_child_at(buf: &[u8], idx: usize) -> PageId {
+    let body = &buf[PAGE_HEADER_LEN..];
+    let (first_child, mut cur) = read_u64(body).expect("checked branch");
+    if idx == 0 {
+        return first_child;
+    }
+    for _ in 0..idx - 1 {
+        let (_, _, rest) = read_key_ref(cur).expect("checked branch");
+        cur = &rest[8..];
+    }
+    let (_, _, rest) = read_key_ref(cur).expect("checked branch");
+    read_u64(rest).expect("checked branch").0
+}
+
 /// Check a leaf page the way `decode` would, without building it: every
 /// cell readable and keys strictly increasing. Returns the cell count.
 pub(crate) fn check_leaf(buf: &[u8], id: PageId) -> Result<usize> {
@@ -448,5 +535,166 @@ mod tests {
         };
         let buf = arc(node.encode(512));
         assert!(Node::decode(&buf, 5).is_err());
+    }
+}
+
+#[cfg(test)]
+mod in_place {
+    //! The readers that work on page bytes answer exactly what decoding
+    //! and searching the node would, and refuse exactly the pages decoding
+    //! refuses. They replaced `decode` on every read path, so this is the
+    //! claim the read side now rests on.
+
+    use super::*;
+
+    fn rng(seed: &mut u64) -> u64 {
+        *seed ^= *seed << 13;
+        *seed ^= *seed >> 7;
+        *seed ^= *seed << 17;
+        *seed
+    }
+
+    fn page(node: &Node) -> Vec<u8> {
+        let mut buf = vec![0u8; 4096];
+        node.encode_into(&mut buf);
+        buf
+    }
+
+    fn keys(seed: &mut u64, n: usize) -> Vec<Vec<u8>> {
+        let mut ks: Vec<Vec<u8>> = (0..n)
+            .map(|_| {
+                let len = (rng(seed) % 12) as usize + 1;
+                (0..len).map(|_| (rng(seed) % 4) as u8).collect()
+            })
+            .collect();
+        ks.sort();
+        ks.dedup();
+        ks
+    }
+
+    #[test]
+    fn a_leaf_answers_as_its_decoded_node_does() {
+        let mut seed = 0x1eaf;
+        for _ in 0..300 {
+            let n = (rng(&mut seed) % 60) as usize;
+            let entries: Vec<(Vec<u8>, ValueRef)> = keys(&mut seed, n)
+                .into_iter()
+                .map(|k| {
+                    let v = if rng(&mut seed).is_multiple_of(5) {
+                        ValueRef::Overflow {
+                            head: rng(&mut seed) % 1000,
+                            len: rng(&mut seed) % 100_000,
+                        }
+                    } else {
+                        ValueRef::Inline(k.iter().rev().copied().collect())
+                    };
+                    (k, v)
+                })
+                .collect();
+            let buf = page(&Node::Leaf {
+                entries: entries.clone(),
+            });
+            assert_eq!(check_leaf(&buf, 3).unwrap(), entries.len());
+            let probes = keys(&mut seed, 20);
+            for probe in probes.iter().chain(entries.iter().map(|(k, _)| k)) {
+                let want = entries.iter().find(|(k, _)| k == probe).map(|(_, v)| v);
+                let got = find_in_leaf(&buf, 3, probe).unwrap();
+                match (want, got) {
+                    (None, None) => {}
+                    (Some(ValueRef::Inline(v)), Some(CellValue::Inline(s, e))) => {
+                        assert_eq!(&buf[s..e], &v[..])
+                    }
+                    (
+                        Some(ValueRef::Overflow { head, len }),
+                        Some(CellValue::Overflow { head: h, len: l }),
+                    ) => {
+                        assert_eq!((*head, *len), (h, l))
+                    }
+                    (w, g) => panic!("decoded {w:?}, read in place {g:?}"),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_branch_routes_as_its_decoded_node_does() {
+        let mut seed = 0xb4a7;
+        for _ in 0..300 {
+            let n = (rng(&mut seed) % 60) as usize;
+            let entries: Vec<(Vec<u8>, PageId)> = keys(&mut seed, n)
+                .into_iter()
+                .map(|k| (k, rng(&mut seed) % 10_000))
+                .collect();
+            let first_child = rng(&mut seed) % 10_000;
+            let buf = page(&Node::Branch {
+                first_child,
+                entries: entries.clone(),
+            });
+            assert_eq!(check_branch(&buf, 3).unwrap(), (first_child, entries.len()));
+            for i in 0..=entries.len() {
+                let want = if i == 0 {
+                    first_child
+                } else {
+                    entries[i - 1].1
+                };
+                assert_eq!(branch_child_at(&buf, i), want);
+            }
+            for probe in keys(&mut seed, 20)
+                .iter()
+                .chain(entries.iter().map(|(k, _)| k))
+            {
+                let want = entries.partition_point(|(k, _)| k <= probe);
+                assert_eq!(branch_rank(&buf, probe), want);
+                let child = if want == 0 {
+                    first_child
+                } else {
+                    entries[want - 1].1
+                };
+                assert_eq!(Node::branch_child(&buf, 3, probe).unwrap(), child);
+            }
+        }
+    }
+
+    #[test]
+    fn what_decode_refuses_the_readers_refuse() {
+        let leaf = page(&Node::Leaf {
+            entries: vec![
+                (b"a".to_vec(), ValueRef::Inline(b"1".to_vec())),
+                (b"b".to_vec(), ValueRef::Inline(b"2".to_vec())),
+            ],
+        });
+        // Keys out of order: swap the two one byte keys in place.
+        let mut unsorted = leaf.clone();
+        let a = unsorted.iter().position(|&b| b == b'a').unwrap();
+        let b = unsorted.iter().position(|&b| b == b'b').unwrap();
+        unsorted.swap(a, b);
+        // A value flag that means nothing.
+        let mut flagged = leaf.clone();
+        flagged[PAGE_HEADER_LEN + 2] = 9;
+        // More cells claimed than the page holds.
+        let mut overcounted = leaf.clone();
+        overcounted[6..8].copy_from_slice(&500u16.to_le_bytes());
+        for bad in [&unsorted, &flagged, &overcounted] {
+            assert!(Node::decode(bad, 3).is_err());
+            assert!(check_leaf(bad, 3).is_err());
+            assert!(find_in_leaf(bad, 3, b"zz").is_err());
+        }
+
+        let branch = page(&Node::Branch {
+            first_child: 7,
+            entries: vec![(b"a".to_vec(), 8), (b"b".to_vec(), 9)],
+        });
+        let mut unsorted = branch.clone();
+        let a = unsorted.iter().position(|&b| b == b'a').unwrap();
+        let b = unsorted.iter().position(|&b| b == b'b').unwrap();
+        unsorted.swap(a, b);
+        let mut flagged = branch.clone();
+        flagged[PAGE_HEADER_LEN + 8 + 2] = 1;
+        let mut overcounted = branch.clone();
+        overcounted[6..8].copy_from_slice(&500u16.to_le_bytes());
+        for bad in [&unsorted, &flagged, &overcounted] {
+            assert!(Node::decode(bad, 3).is_err());
+            assert!(check_branch(bad, 3).is_err());
+        }
     }
 }

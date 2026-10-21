@@ -78,15 +78,18 @@ pub(crate) fn get<P: ReadPages>(src: &P, root: PageId, key: &[u8]) -> Result<Opt
             page = Node::branch_child(&buf, page, key)?;
             continue;
         }
-        match Node::decode(&buf, page)? {
-            Node::Branch { .. } => unreachable!("checked above"),
-            Node::Leaf { entries } => {
-                return match entries.binary_search_by(|(k, _)| k.as_slice().cmp(key)) {
-                    Ok(i) => Ok(Some(read_value(src, &entries[i].1)?)),
-                    Err(_) => Ok(None),
-                };
-            }
+        if page_type(&buf)? != PageType::Leaf {
+            // What decode said about a page that is neither.
+            Node::decode(&buf, page)?;
+            unreachable!("decode refuses a page that is not a node");
         }
+        return match node::find_in_leaf(&buf, page, key)? {
+            Some(node::CellValue::Inline(s, e)) => Ok(Some(buf[s..e].to_vec())),
+            Some(node::CellValue::Overflow { head, len }) => {
+                Ok(Some(read_value(src, &ValueRef::Overflow { head, len })?))
+            }
+            None => Ok(None),
+        };
     }
 }
 
@@ -829,9 +832,10 @@ fn write_overflow<S: Storage>(batch: &mut WriteBatch<'_, S>, value: &[u8]) -> Re
 /// unbounded. Yields owned key/value pairs with overflow values resolved.
 pub struct Scan<'a, P: ReadPages> {
     src: &'a P,
-    /// Branches on the path with the index of the next conceptual child to
-    /// descend into once the current subtree is exhausted.
-    stack: Vec<(Node, usize)>,
+    /// Branches on the path, as their checked page bytes, with the index
+    /// of the next conceptual child to descend into once the current
+    /// subtree is exhausted and how many entries the branch has.
+    stack: Vec<(Arc<[u8]>, usize, usize)>,
     /// The current leaf, read in place rather than decoded: decoding
     /// allocated every key and value on it only for the iterator to copy
     /// each one again on the way out.
@@ -891,53 +895,31 @@ impl<'a, P: ReadPages> Scan<'a, P> {
                 self.leaf_left = left;
                 return Ok(());
             }
-            match Node::decode(&buf, page)? {
-                Node::Branch {
-                    first_child,
-                    entries,
-                } => {
-                    let idx = match start {
-                        Some(key) => entries.partition_point(|(k, _)| k.as_slice() <= key),
-                        None => 0,
-                    };
-                    let child = if idx == 0 {
-                        first_child
-                    } else {
-                        entries[idx - 1].1
-                    };
-                    self.stack.push((
-                        Node::Branch {
-                            first_child,
-                            entries,
-                        },
-                        idx + 1,
-                    ));
-                    page = child;
-                }
-                Node::Leaf { .. } => unreachable!("leaves are read in place above"),
+            if page_type(&buf)? != PageType::Branch {
+                Node::decode(&buf, page)?;
+                unreachable!("decode refuses a page that is not a node");
             }
+            // Followed in place, as the point lookup does: decoding a branch
+            // to pick one child allocated every key on it.
+            let (_, count) = node::check_branch(&buf, page)?;
+            let idx = match start {
+                Some(key) => node::branch_rank(&buf, key),
+                None => 0,
+            };
+            let child = node::branch_child_at(&buf, idx);
+            self.stack.push((buf, idx + 1, count));
+            page = child;
         }
     }
 
     /// Move to the next leaf, popping exhausted branches.
     fn advance_leaf(&mut self) -> Result<bool> {
-        while let Some((node, next_idx)) = self.stack.last_mut() {
-            let Node::Branch {
-                first_child,
-                entries,
-            } = node
-            else {
-                unreachable!("scan stack only holds branches")
-            };
-            if *next_idx > entries.len() {
+        while let Some((buf, next_idx, count)) = self.stack.last_mut() {
+            if *next_idx > *count {
                 self.stack.pop();
                 continue;
             }
-            let child = if *next_idx == 0 {
-                *first_child
-            } else {
-                entries[*next_idx - 1].1
-            };
+            let child = node::branch_child_at(buf, *next_idx);
             *next_idx += 1;
             self.descend(child, None)?;
             return Ok(true);
