@@ -1,0 +1,44 @@
+# a row naming every column in declaration order takes a shorter path
+# than one that does not, and the two must store and refuse the same
+
+> table t { id: int @key, name: text, score: int = 0, bio: text @null }
+ok
+
+> put t { id: 1, name: "in order", score: 5, bio: "b" }
+put 1
+
+> put t { bio: "b", score: 5, name: "shuffled", id: 2 }
+put 1
+
+> put t { id: 3, name: "in order", score: 5, bio: null }
+put 1
+
+> put t { score: 5, id: 4, bio: null, name: "shuffled" }
+put 1
+
+> get t
+1|in order|5|b
+2|shuffled|5|b
+3|in order|5|null
+4|shuffled|5|null
+
+> put t { id: 5, name: null, score: 1, bio: null }
+error: column 'name': null in a column that is not @null
+
+> put t { score: 1, bio: null, name: null, id: 5 }
+error: column 'name': null in a column that is not @null
+
+> put t { id: 5, name: "x", score: "seven", bio: null }
+error: column 'score': ...
+
+> put t { score: "seven", id: 5, name: "x", bio: null }
+error: column 'score': ...
+
+> put t { id: 1, name: "dupe", score: 1, bio: null }
+error: duplicate key (1) in table 't'
+
+> get t { id }
+1
+2
+3
+4

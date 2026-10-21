@@ -1806,13 +1806,19 @@ impl<S: Storage> Run<'_, S> {
         let table = self.load_table(table_name)?;
         let key_positions = table.key_positions();
         let mut count = 0u64;
+        // One buffer each for the row key, the encoded row and an index
+        // entry, reused for every row: the tree copies what it keeps, so a
+        // fresh allocation per row bought nothing.
+        let mut key = Vec::with_capacity(64);
+        let mut encoded = Vec::with_capacity(128);
+        let mut entry = Vec::with_capacity(128);
         for row in rows {
             let values = self.build_row(&table, row)?;
             // The row key is the table id followed by the primary key, and
             // an index entry ends in the same primary key bytes, so they are
             // encoded once, straight from the row, rather than collected
             // into a tuple of cloned values for every key that needs them.
-            let mut key = Vec::with_capacity(64);
+            key.clear();
             encode_key_into(&[Value::Int(table.id as i64)], &mut key);
             let pk_at = key.len();
             for &p in &key_positions {
@@ -1820,7 +1826,9 @@ impl<S: Storage> Run<'_, S> {
             }
             // One descent: the insert reports the duplicate it already
             // had to look for, rather than being asked first.
-            if !self.tx.put_unique(&key, &encode_key(&values))? {
+            encoded.clear();
+            encode_key_into(&values, &mut encoded);
+            if !self.tx.put_unique(&key, &encoded)? {
                 let pk = row_pk(&table, &values);
                 let rendered: Vec<String> = pk.iter().map(quantydb_ql::pretty::literal).collect();
                 return Err(ExecError::exec(format!(
@@ -1837,7 +1845,7 @@ impl<S: Storage> Run<'_, S> {
                     self.move_postings(text_id, &pk, &values[pos], true)?;
                 }
                 if let Some(index_id) = col.index_id {
-                    let mut entry = Vec::with_capacity(64 + key.len());
+                    entry.clear();
                     encode_key_into(&[Value::Int(index_id as i64)], &mut entry);
                     encode_key_into(std::slice::from_ref(&values[pos]), &mut entry);
                     entry.extend_from_slice(&key[pk_at..]);
@@ -1861,6 +1869,25 @@ impl<S: Storage> Run<'_, S> {
     /// Assemble a full row from the fields of a `put`, applying defaults
     /// and coercions, rejecting unknowns and holes.
     fn build_row(&self, table: &Table, fields: &[(String, Expr)]) -> Result<Vec<Value>, ExecError> {
+        // Every column, named in declaration order, is how almost every row
+        // arrives, and then each value goes straight to its place: no slot
+        // table to fill and drain, and no search for each column by name.
+        if fields.len() == table.columns.len()
+            && fields
+                .iter()
+                .zip(&table.columns)
+                .all(|((n, _), c)| *n == c.name)
+        {
+            let mut out = Vec::with_capacity(fields.len());
+            for ((name, expr), col) in fields.iter().zip(&table.columns) {
+                let value = value_ops::eval(expr, &NoScope)?;
+                out.push(
+                    value_ops::coerce(value, col.ty, col.nullable)
+                        .map_err(|e| ExecError::exec(format!("column '{name}': {e}")))?,
+                );
+            }
+            return Ok(out);
+        }
         let mut values: Vec<Option<Value>> = vec![None; table.columns.len()];
         for (name, expr) in fields {
             let pos = table.column_position(name).ok_or_else(|| {
