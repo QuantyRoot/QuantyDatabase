@@ -52,6 +52,7 @@ project.)
 - [ADR-044](#adr-044-more-than-one-node-is-a-goal-now-and-one-writer-still-holds) More than one node is a goal now, and one writer still holds
 - [ADR-045](#adr-045-a-write-batch-keeps-the-nodes-it-wrote-beside-their-bytes) A write batch keeps the nodes it wrote, beside their bytes
 - [ADR-046](#adr-046-update-fetches-over-quantycores-tls-and-trusts-the-checksum-for-wholeness-only) Update fetches over QuantyCore's TLS, and trusts the checksum for wholeness only
+- [ADR-047](#adr-047-releases-are-signed-and-update-trusts-nothing-unsigned) Releases are signed, and update trusts nothing unsigned
 
 ## ADR-001: Rust
 
@@ -2388,3 +2389,48 @@ nobody rewrites.
 correctness now includes code the rest of the engine does not use. The
 TLS is unreviewed, and `update` says so every time it runs, as QuantyCore
 asks every product using it to do.
+
+## ADR-047: Releases are signed, and update trusts nothing unsigned
+
+ADR-046 left one question open: the checksum proves a file is the one the
+release published, not who published it. Every release now carries
+`SHA256SUMS.sig`, an Ed25519 signature over the exact bytes of
+`SHA256SUMS`, and `quantydb update` checks it against a public key built
+into the binary before it reads a single line of the checksums.
+
+**Where the private key lives.** In a GitHub secret, `QUANTYDB_RELEASE_KEY`,
+of an environment called `release` that only the publish job uses. That is
+the convenient place and not the strongest one, and the difference should
+be stated rather than discovered. A key held on GitHub protects against a
+release asset being replaced after it was published, and against anyone
+who can push a workflow but cannot get it past the environment. It does
+not protect against the account that owns the repository, because that
+account can change the workflow to sign whatever it likes. A required
+reviewer on the environment closes most of that: nothing is signed without
+someone approving that run. A key that never leaves one machine, used by
+hand for each release, would close the rest, at the price of a manual step
+in every release.
+
+**An unsigned release is not a release.** The signing step fails when the
+secret is missing, rather than warning the way the package signing does.
+A missing package signature makes apt complain; a missing release
+signature would make every `update` refuse, which is worse than a release
+that did not happen.
+
+**A build without a key refuses to fetch.** `RELEASE_KEY` is `None` until
+the public half is filled in, and then `update` says it cannot tell a real
+release from a replaced one and points at `--file`. Falling back to the
+unsigned checksum would make the signature decorative. Releases before
+0.5.0 are unsigned, so `update` fetches only 0.5.0 and later; reaching an
+older one is what `--file` is for.
+
+**The tool.** `quantydb-release-key` in the bench crate makes a key pair
+(`new`, written once with mode 600 and never overwritten), prints the
+public half of one (`public`), and signs (`sign`, with the private key from
+the environment so it is never written to the runner's disk). It verifies
+its own signature before writing it, since a signature that does not
+verify is the one way this step could break every update at once.
+
+**The price.** One secret whose loss means a new key and a release whose
+binary carries it, so every copy older than that release can no longer
+update by itself. And a key on GitHub, with the limits above.

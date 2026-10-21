@@ -178,9 +178,10 @@ whole one, and `--yes` to skip the question.
 
 A copy installed by apt, dnf or Homebrew refuses to update itself and
 says to use that package manager instead, since replacing a file it owns
-behind its back breaks its next upgrade. The checksum proves the file is
-the one the release published; it does not prove who published it, and
-a signature over the release that would is not there yet (ADR-046).
+behind its back breaks its next upgrade. The checksum file is signed
+with the release key, and nothing is installed unless the signature
+checks (ADR-047). Releases before 0.5.0 are not signed, so reaching one
+of those takes `--file`.
 
 If the tool lives somewhere this user cannot write, such as
 `/usr/local/bin`, run the update with the rights to change it. It will not

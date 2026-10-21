@@ -11,10 +11,10 @@
 //! certificate bundle. That proves the bytes came from GitHub. The release
 //! publishes `SHA256SUMS`, and the binary is refused unless its digest
 //! matches the line for it, which proves the file is the one that was
-//! published and not a cut or damaged copy. Neither proves who published
-//! it: someone holding the repository could replace both. A signature
-//! over the checksums with a key that is not on GitHub is what closes
-//! that, and it is not here yet (ADR-046 says what it needs).
+//! published and not a cut or damaged copy. `SHA256SUMS.sig` proves who
+//! published it: an Ed25519 signature over the checksum file, checked
+//! against [`RELEASE_KEY`], which is built into this binary (ADR-047).
+//! Nothing from the release is trusted before that check passes.
 //!
 //! The TLS is unreviewed, which QuantyCore's own ADR-003 asks every
 //! product using it to say, and `update` says so when it runs.
@@ -39,6 +39,35 @@ use quantycore::tls::{ClientConfig, ClientConnection, Stream};
 /// Where releases come from. The `latest` form is the one `install.sh`
 /// uses, so the two always agree on what "the newest release" means.
 pub const RELEASES: &str = "https://github.com/QuantyRoot/QuantyDatabase/releases";
+
+/// The public half of the key that signs releases. `None` in a build made
+/// before the key existed, and then fetching refuses rather than trusting
+/// a checksum file anyone holding the repository could have written.
+pub const RELEASE_KEY: Option<[u8; 32]> = None;
+
+/// Check `sig`, the text of `SHA256SUMS.sig`, over `sums`, the exact bytes
+/// of `SHA256SUMS`, against `key`.
+pub fn verify_sums(sums: &[u8], sig: &str, key: &[u8; 32]) -> Result<(), String> {
+    let sig = sig.trim();
+    if sig.len() != 128 || !sig.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err("SHA256SUMS.sig is not a signature".into());
+    }
+    let mut bytes = [0u8; 64];
+    for (i, byte) in bytes.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&sig[2 * i..2 * i + 2], 16)
+            .map_err(|_| "SHA256SUMS.sig is not a signature")?;
+    }
+    if quantycore::tls::crypto::ed25519::verify(key, sums, &bytes) {
+        Ok(())
+    } else {
+        Err(
+            "SHA256SUMS is not signed by the release key. It may have been \
+             changed after it was published; nothing from this release is \
+             installed."
+                .into(),
+        )
+    }
+}
 
 /// The largest response read into memory. Release binaries are about two
 /// megabytes; this leaves room to grow without letting a misbehaving
@@ -398,6 +427,56 @@ AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA *quantydb-windo
             quantydb_core::to_hex(&quantydb_core::sha256(&binary)),
             digest
         );
+    }
+
+    mod signature {
+        use super::super::verify_sums;
+        use quantycore::tls::crypto::ed25519::SigningKey;
+
+        const SUMS: &[u8] = b"1111  quantydb-linux-x86_64\n";
+
+        fn hex(bytes: &[u8]) -> String {
+            bytes.iter().map(|b| format!("{b:02x}")).collect()
+        }
+
+        fn signed(seed: u8, message: &[u8]) -> ([u8; 32], String) {
+            let key = SigningKey::from_seed(&[seed; 32]);
+            (key.public_key(), hex(&key.sign(message)))
+        }
+
+        #[test]
+        fn a_signature_by_the_key_is_accepted() {
+            let (public, sig) = signed(1, SUMS);
+            verify_sums(SUMS, &format!("{sig}\n"), &public).unwrap();
+        }
+
+        #[test]
+        fn one_changed_byte_in_the_checksums_is_refused() {
+            let (public, sig) = signed(1, SUMS);
+            let mut changed = SUMS.to_vec();
+            changed[0] = b'2';
+            assert!(verify_sums(&changed, &sig, &public).is_err());
+        }
+
+        #[test]
+        fn a_signature_by_another_key_is_refused() {
+            let (public, _) = signed(1, SUMS);
+            let (_, other) = signed(2, SUMS);
+            assert!(verify_sums(SUMS, &other, &public).is_err());
+        }
+
+        #[test]
+        fn something_that_is_not_a_signature_is_refused() {
+            let (public, sig) = signed(1, SUMS);
+            assert!(verify_sums(SUMS, "", &public).is_err());
+            assert!(verify_sums(SUMS, &sig[..126], &public).is_err());
+            assert!(verify_sums(
+                SUMS,
+                &sig.replace(|c: char| c.is_ascii_digit(), "g"),
+                &public
+            )
+            .is_err());
+        }
     }
 
     #[test]

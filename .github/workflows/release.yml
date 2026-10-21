@@ -148,6 +148,10 @@ jobs:
     needs: build
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
+    # The release key is a secret of this environment rather than of the
+    # repository, so a required reviewer on it means nothing is signed
+    # without someone saying yes to this run (ADR-047).
+    environment: release
     permissions:
       contents: write
     steps:
@@ -164,6 +168,17 @@ jobs:
           cat *.sha256 > SHA256SUMS
           rm -f ./*.sha256
           ls -l
+
+      # Every release is signed or there is no release: `quantydb update`
+      # refuses a checksum file without a valid signature, so an unsigned
+      # one would break every update rather than weaken it.
+      - name: sign the checksums
+        env:
+          QUANTYDB_RELEASE_KEY: ${{ secrets.QUANTYDB_RELEASE_KEY }}
+        run: |
+          cargo run --quiet --release -p quantydb-bench \
+            --bin quantydb-release-key -- sign dist/SHA256SUMS
+          ls -l dist/SHA256SUMS.sig
 
       - name: the version, without the v
         id: version

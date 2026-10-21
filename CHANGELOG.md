@@ -22,6 +22,9 @@ wrapped.
   release's `SHA256SUMS`. `--file` still installs a binary you already
   have. A copy installed by apt, dnf or Homebrew points at that package
   manager instead (ADR-046).
+- Releases are signed: `SHA256SUMS.sig` is an Ed25519 signature over the
+  checksums, and `update` installs nothing it cannot verify against the
+  key built into the tool (ADR-047).
 
 ### Performance
 

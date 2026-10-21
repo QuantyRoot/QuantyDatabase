@@ -383,6 +383,9 @@ Star the repository to follow releases.
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE). The QuantyCore code inside the command line
+tool is used under MIT as well, by an exception that covers QuantyCore as
+part of QuantyDB; see QuantyCore's
+[LICENSE-QUANTYDB-EXCEPTION](https://github.com/QuantyRoot/QuantyCore/blob/main/LICENSE-QUANTYDB-EXCEPTION).
 
 QuantyDB is a product of Elchi Studios.

@@ -99,8 +99,24 @@ fn fetch_latest(target: &Path, expected: Option<&str>, yes: bool) -> Result<(), 
     emit("  (over TLS from QuantyCore, which has not been reviewed by")?;
     emit("   anyone outside the project yet)")?;
 
+    let key = fetch::RELEASE_KEY.ok_or_else(|| {
+        failed(
+            "this build carries no release key, so it cannot tell a real \
+             release from a replaced one. Use update --file with a binary \
+             you have checked yourself.",
+        )
+    })?;
     let config = fetch::system_config().map_err(failed)?;
     let sums = fetch::get(&format!("{base}/SHA256SUMS"), &config).map_err(failed)?;
+    let sig = fetch::get(&format!("{base}/SHA256SUMS.sig"), &config).map_err(|e| {
+        failed(format!(
+            "the release has no signature ({e}). Releases before 0.5.0 were \
+             not signed; use update --file for those."
+        ))
+    })?;
+    let sig = String::from_utf8(sig).map_err(|_| failed("SHA256SUMS.sig is not text"))?;
+    fetch::verify_sums(&sums, &sig, &key).map_err(failed)?;
+    emit("  signed by the release key")?;
     let sums = String::from_utf8(sums).map_err(|_| failed("SHA256SUMS is not text"))?;
     let published = fetch::digest_for(&sums, asset).map_err(failed)?;
     if let Some(want) = expected {

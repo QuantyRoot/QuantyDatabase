@@ -30,6 +30,7 @@ dependencies = [
 name = "quantydb-bench"
 version = "0.4.0"
 dependencies = [
+ "quantycore",
  "quantydb-core",
  "quantydb-exec",
  "quantydb-proto",

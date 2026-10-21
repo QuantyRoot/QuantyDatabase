@@ -19,7 +19,15 @@ path = "src/bin/acceptance.rs"
 name = "quantydb-commit-cost"
 path = "src/bin/commit_cost.rs"
 
+[[bin]]
+name = "quantydb-release-key"
+path = "src/bin/release_key.rs"
+
 [dependencies]
 quantydb-core.workspace = true
 quantydb-exec.workspace = true
 quantydb-proto.workspace = true
+
+# Ed25519 for signing releases (ADR-047), on the Linux release runner.
+[target.'cfg(unix)'.dependencies]
+quantycore.workspace = true

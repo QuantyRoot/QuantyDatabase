@@ -589,7 +589,7 @@ pub const CRATES: usize = 14;
 /// At least this many test functions exist.
 pub const TESTS: usize = 570;
 /// At least this many decision records exist.
-pub const DECISIONS: usize = 46;
+pub const DECISIONS: usize = 47;
 /// Exactly this many packages from outside Elchi Studios.
 pub const FOREIGN_DEPENDENCIES: usize = 0;
 
