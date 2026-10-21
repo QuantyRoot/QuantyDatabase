@@ -529,15 +529,47 @@ impl<S: Storage> Session<S> {
 ///
 /// Scans collect eagerly: the two underlying iterator types differ, and
 /// every result set passes through sorting and projection anyway.
+/// What a lending scan hands each key and value to.
+type Visitor<'a> = dyn FnMut(&[u8], &[u8]) -> Result<(), ExecError> + 'a;
+
 trait View {
     fn view_get(&self, key: &[u8]) -> quantydb_core::Result<Option<Vec<u8>>>;
     fn view_scan(&self, start: Option<&[u8]>, end: Option<&[u8]>) -> Result<RawRows, ExecError>;
+    /// The same range, each pair lent to `f` rather than collected, for a
+    /// caller that turns the bytes into something else straight away.
+    fn view_visit(
+        &self,
+        start: Option<&[u8]>,
+        end: Option<&[u8]>,
+        f: &mut Visitor<'_>,
+    ) -> Result<(), ExecError>;
     fn view_catalog_get(&self, key: &[u8]) -> quantydb_core::Result<Option<Vec<u8>>>;
+}
+
+/// Lend every pair of a scan to `f`.
+fn visit_scan<P: quantydb_core::ReadPages>(
+    mut scan: quantydb_core::Scan<'_, P>,
+    f: &mut Visitor<'_>,
+) -> Result<(), ExecError> {
+    let mut scratch = Vec::new();
+    while let Some(item) = scan.next_ref(&mut scratch) {
+        let (key, value) = item?;
+        f(key, value)?;
+    }
+    Ok(())
 }
 
 impl<S: Storage> View for WriteTx<'_, S> {
     fn view_get(&self, key: &[u8]) -> quantydb_core::Result<Option<Vec<u8>>> {
         self.get(key)
+    }
+    fn view_visit(
+        &self,
+        start: Option<&[u8]>,
+        end: Option<&[u8]>,
+        f: &mut Visitor<'_>,
+    ) -> Result<(), ExecError> {
+        visit_scan(self.scan(start, end)?, f)
     }
     fn view_scan(&self, start: Option<&[u8]>, end: Option<&[u8]>) -> Result<RawRows, ExecError> {
         let mut out = Vec::new();
@@ -554,6 +586,14 @@ impl<S: Storage> View for WriteTx<'_, S> {
 impl<S: Storage> View for Snapshot<'_, S> {
     fn view_get(&self, key: &[u8]) -> quantydb_core::Result<Option<Vec<u8>>> {
         self.get(key)
+    }
+    fn view_visit(
+        &self,
+        start: Option<&[u8]>,
+        end: Option<&[u8]>,
+        f: &mut Visitor<'_>,
+    ) -> Result<(), ExecError> {
+        visit_scan(self.scan(start, end)?, f)
     }
     fn view_scan(&self, start: Option<&[u8]>, end: Option<&[u8]>) -> Result<RawRows, ExecError> {
         let mut out = Vec::new();
@@ -1036,23 +1076,33 @@ fn fetch_rows_inner<V: View>(
                 encode_key(&parts)
             };
             let end = key_successor(&prefix);
-            for (entry_key, _) in view.view_scan(Some(&prefix), end.as_deref())? {
-                let decoded = decode_key(&entry_key)
-                    .map_err(|_| ExecError::exec("index entry does not decode"))?;
-                // (index_id, value, pk...)
-                if decoded.len() < 3 {
-                    return Err(ExecError::exec("index entry is too short, this is a bug"));
+            // An entry is (index_id, value, pk...), and every entry in this
+            // range starts with exactly `prefix`, so the primary key is the
+            // rest of the entry, already encoded. The row key is the table
+            // id followed by those same bytes, with nothing to decode.
+            let table_part = table_prefix(table.id);
+            let mut keys = Vec::new();
+            view.view_visit(Some(&prefix), end.as_deref(), &mut |entry, _| {
+                let pk = entry
+                    .get(prefix.len()..)
+                    .filter(|pk| !pk.is_empty())
+                    .ok_or_else(|| ExecError::exec("index entry is too short, this is a bug"))?;
+                // Every encoding after the value starts with a type tag, and
+                // no tag is 0xFF. An entry that continues with 0xFF holds a
+                // longer value: one whose own escaped zero byte made the
+                // value asked for a byte prefix of it. That is not a match,
+                // and taking it for one returned rows with the wrong value,
+                // and let set and del change them.
+                if pk[0] == 0xFF {
+                    return Ok(());
                 }
-                // The range holds every entry starting with the encoded
-                // value, and a longer value whose own escaped zero byte
-                // makes this one a byte prefix of it starts the same way.
-                // Only an equal value is a match; taking the others returned
-                // rows with the wrong value and let set and del change them.
-                if decoded[1] != *value {
-                    continue;
-                }
-                let pk = &decoded[2..];
-                let key = row_key(table, pk);
+                let mut key = Vec::with_capacity(table_part.len() + pk.len());
+                key.extend_from_slice(&table_part);
+                key.extend_from_slice(pk);
+                keys.push(key);
+                Ok(())
+            })?;
+            for key in keys {
                 let bytes = view.view_get(&key)?.ok_or_else(|| {
                     ExecError::exec("index points at a missing row, this is a bug")
                 })?;
@@ -1062,9 +1112,10 @@ fn fetch_rows_inner<V: View>(
         Access::SeqScan => {
             let prefix = table_prefix(table.id);
             let end = key_successor(&prefix);
-            for (key, bytes) in view.view_scan(Some(&prefix), end.as_deref())? {
-                out.push((key, decode_row(table, &bytes)?));
-            }
+            view.view_visit(Some(&prefix), end.as_deref(), &mut |key, bytes| {
+                out.push((key.to_vec(), decode_row(table, bytes)?));
+                Ok(())
+            })?;
         }
     }
     Ok(out)

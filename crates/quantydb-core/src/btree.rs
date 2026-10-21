@@ -929,10 +929,17 @@ impl<'a, P: ReadPages> Scan<'a, P> {
     }
 }
 
-impl<P: ReadPages> Iterator for Scan<'_, P> {
-    type Item = Result<(Vec<u8>, Vec<u8>)>;
-
-    fn next(&mut self) -> Option<Self::Item> {
+impl<P: ReadPages> Scan<'_, P> {
+    /// The next pair, lent rather than copied: the key, and the value from
+    /// the page when it is stored inline or from `scratch` when it lives in
+    /// an overflow chain. Valid until the next call.
+    ///
+    /// A caller that decodes a row straight from its bytes has no use for
+    /// two fresh vectors per row, which is what the iterator hands out.
+    pub fn next_ref<'s>(
+        &'s mut self,
+        scratch: &'s mut Vec<u8>,
+    ) -> Option<Result<(&'s [u8], &'s [u8])>> {
         if self.failed {
             return None;
         }
@@ -947,36 +954,50 @@ impl<P: ReadPages> Iterator for Scan<'_, P> {
                     }
                 }
             }
-            let (buf, page) = self.leaf.as_ref().expect("a leaf with cells left");
-            let ((ks, ke), value, next) = match node::leaf_cell_at(buf, self.leaf_at, *page) {
-                Ok(cell) => cell,
-                Err(e) => {
-                    self.failed = true;
-                    return Some(Err(e));
-                }
-            };
-            let key = &buf[ks..ke];
-            if let Some(end) = &self.end {
-                if key >= end.as_slice() {
-                    return None;
+            break;
+        }
+        let (buf, page) = self.leaf.as_ref().expect("a leaf with cells left");
+        let ((ks, ke), value, next) = match node::leaf_cell_at(buf, self.leaf_at, *page) {
+            Ok(cell) => cell,
+            Err(e) => {
+                self.failed = true;
+                return Some(Err(e));
+            }
+        };
+        if let Some(end) = &self.end {
+            if &buf[ks..ke] >= end.as_slice() {
+                return None;
+            }
+        }
+        self.leaf_at = next;
+        self.leaf_left -= 1;
+        let (buf, _) = self.leaf.as_ref().expect("still the same leaf");
+        match value {
+            node::CellValue::Inline(s, e) => Some(Ok((&buf[ks..ke], &buf[s..e]))),
+            node::CellValue::Overflow { head, len } => {
+                match read_value(self.src, &ValueRef::Overflow { head, len }) {
+                    Ok(v) => {
+                        *scratch = v;
+                        Some(Ok((&buf[ks..ke], &scratch[..])))
+                    }
+                    Err(e) => {
+                        self.failed = true;
+                        Some(Err(e))
+                    }
                 }
             }
-            let key = key.to_vec();
-            let value = match value {
-                node::CellValue::Inline(s, e) => Ok(buf[s..e].to_vec()),
-                node::CellValue::Overflow { head, len } => {
-                    read_value(self.src, &ValueRef::Overflow { head, len })
-                }
-            };
-            self.leaf_at = next;
-            self.leaf_left -= 1;
-            return match value {
-                Ok(value) => Some(Ok((key, value))),
-                Err(e) => {
-                    self.failed = true;
-                    Some(Err(e))
-                }
-            };
         }
+    }
+}
+
+impl<P: ReadPages> Iterator for Scan<'_, P> {
+    type Item = Result<(Vec<u8>, Vec<u8>)>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let mut scratch = Vec::new();
+        Some(match self.next_ref(&mut scratch)? {
+            Ok((k, v)) => Ok((k.to_vec(), v.to_vec())),
+            Err(e) => Err(e),
+        })
     }
 }
