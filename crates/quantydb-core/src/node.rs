@@ -259,32 +259,23 @@ pub(crate) fn leaf_cell_at(
 
 /// The value stored under `key` in a leaf page, read in place.
 ///
-/// Every cell is still read and the keys checked for order, exactly as
-/// `decode` would, so a damaged leaf is an error here too rather than an
-/// answer; what is gone is building a vector with every key on the page
-/// in it to find one of them.
+/// The page has been checked already, by the pager when it came off the
+/// disk or by construction when this write batch made it, so the search
+/// stops at the first key past the one it wants. Every cell it reads is
+/// still bounds checked, so even a page that slipped past would be an
+/// error and not a panic.
 pub(crate) fn find_in_leaf(buf: &[u8], id: PageId, key: &[u8]) -> Result<Option<CellValue>> {
     let count = u16::from_le_bytes(buf[6..8].try_into().expect("hdr")) as usize;
     let mut at = PAGE_HEADER_LEN;
-    let mut prev: Option<(usize, usize)> = None;
-    let mut found = None;
     for _ in 0..count {
         let ((ks, ke), value, next) = leaf_cell_at(buf, at, id)?;
-        if let Some((s, e)) = prev {
-            if buf[s..e] >= buf[ks..ke] {
-                return Err(Error::corrupted(
-                    id,
-                    "node decode: leaf keys not strictly sorted",
-                ));
-            }
+        match buf[ks..ke].cmp(key) {
+            std::cmp::Ordering::Less => at = next,
+            std::cmp::Ordering::Equal => return Ok(Some(value)),
+            std::cmp::Ordering::Greater => return Ok(None),
         }
-        if found.is_none() && &buf[ks..ke] == key {
-            found = Some(value);
-        }
-        prev = Some((ks, ke));
-        at = next;
     }
-    Ok(found)
+    Ok(None)
 }
 
 /// A branch page checked the way `decode` would, without building it:
@@ -677,8 +668,12 @@ mod in_place {
         for bad in [&unsorted, &flagged, &overcounted] {
             assert!(Node::decode(bad, 3).is_err());
             assert!(check_leaf(bad, 3).is_err());
-            assert!(find_in_leaf(bad, 3, b"zz").is_err());
         }
+        // The search trusts a checked page, but a count claiming more cells
+        // than could fit still ends in an error rather than a read past it.
+        let mut runaway = leaf.clone();
+        runaway[6..8].copy_from_slice(&u16::MAX.to_le_bytes());
+        assert!(find_in_leaf(&runaway, 3, b"zz").is_err());
 
         let branch = page(&Node::Branch {
             first_child: 7,

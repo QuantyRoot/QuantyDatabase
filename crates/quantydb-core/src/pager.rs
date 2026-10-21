@@ -139,6 +139,20 @@ impl<S: Storage> Pager<S> {
         let mut buf = vec![0u8; self.page_size as usize];
         self.storage.read_at(id * self.page_size as u64, &mut buf)?;
         page::verify(&buf, id)?;
+        // A committed page never changes, so its structure is checked once,
+        // here, as it enters the cache, and not again on every read. The
+        // checksum catches a damaged disk; this catches a page that is
+        // whole and still wrong, a crafted file or a bug, and turns it into
+        // an error before any reader sees it (ADR-049).
+        match page::page_type(&buf) {
+            Ok(PageType::Leaf) => {
+                crate::node::check_leaf(&buf, id)?;
+            }
+            Ok(PageType::Branch) => {
+                crate::node::check_branch(&buf, id)?;
+            }
+            _ => {}
+        }
         let buf: Arc<[u8]> = Arc::from(buf.into_boxed_slice());
         self.cache.insert(id, Arc::clone(&buf));
         Ok(buf)

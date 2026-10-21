@@ -875,9 +875,9 @@ impl<'a, P: ReadPages> Scan<'a, P> {
         loop {
             let buf = self.src.read(page)?;
             if page_type(&buf)? == PageType::Leaf {
-                // Checked whole on the way in, as decoding did, so a damaged
-                // leaf fails before any of its rows are handed out.
-                let count = node::check_leaf(&buf, page)?;
+                // Checked when the pager loaded it (ADR-049), so a damaged
+                // leaf failed before any of its rows could be handed out.
+                let count = u16::from_le_bytes([buf[6], buf[7]]) as usize;
                 let mut at = PAGE_HEADER_LEN;
                 let mut left = count;
                 if let Some(key) = start {
@@ -900,8 +900,9 @@ impl<'a, P: ReadPages> Scan<'a, P> {
                 unreachable!("decode refuses a page that is not a node");
             }
             // Followed in place, as the point lookup does: decoding a branch
-            // to pick one child allocated every key on it.
-            let (_, count) = node::check_branch(&buf, page)?;
+            // to pick one child allocated every key on it. Checked when the
+            // pager loaded it (ADR-049).
+            let count = u16::from_le_bytes([buf[6], buf[7]]) as usize;
             let idx = match start {
                 Some(key) => node::branch_rank(&buf, key),
                 None => 0,

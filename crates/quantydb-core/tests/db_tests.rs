@@ -457,3 +457,91 @@ fn a_rolled_back_statement_leaves_nothing_for_the_next_one_to_build_on() {
         model.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
     assert_eq!(seen, expected, "after commit");
 }
+
+/// A leaf whose checksum is right and whose keys are out of order is the
+/// one corruption a checksum cannot see: a crafted file, or a bug that
+/// wrote a whole page wrongly. The pager checks a node's structure when it
+/// loads the page, and readers trust that, so this proves the check is
+/// there for both ways of reading: a point lookup and a scan.
+#[test]
+fn a_leaf_out_of_order_with_a_valid_checksum_is_an_error_on_every_read() {
+    use quantydb_core::page::{lsn, seal};
+
+    let dir = TestDir::new();
+    let path = dir.path().join("crafted.qdb");
+    {
+        let db = Db::create(
+            FileStorage::create(&path).unwrap(),
+            PagerOptions {
+                page_size: 512,
+                cache_pages: 32,
+            },
+        )
+        .unwrap();
+        let mut tx = db.begin();
+        for i in 0..40u32 {
+            let key = format!("k{i:03}");
+            tx.put(key.as_bytes(), b"v").unwrap();
+        }
+        tx.commit().unwrap();
+    }
+
+    // Find a leaf with two neighbouring keys of the same length and swap
+    // them, then seal the page again so its checksum is valid.
+    let mut file = std::fs::read(&path).unwrap();
+    let header = quantydb_core::PAGE_HEADER_LEN;
+    let mut crafted = false;
+    for page in file.chunks_mut(512).skip(2) {
+        if page[4] != quantydb_core::PageType::Leaf as u8 {
+            continue;
+        }
+        let count = u16::from_le_bytes([page[6], page[7]]);
+        if count < 2 {
+            continue;
+        }
+        let k1 = u16::from_le_bytes([page[header], page[header + 1]]) as usize;
+        let v1 = u32::from_le_bytes(page[header + 3 + k1..header + 7 + k1].try_into().unwrap());
+        let second = header + 3 + k1 + 4 + v1 as usize;
+        let k2 = u16::from_le_bytes([page[second], page[second + 1]]) as usize;
+        if k1 != k2 {
+            continue;
+        }
+        let first: Vec<u8> = page[header + 3..header + 3 + k1].to_vec();
+        let other: Vec<u8> = page[second + 3..second + 3 + k2].to_vec();
+        page[header + 3..header + 3 + k1].copy_from_slice(&other);
+        page[second + 3..second + 3 + k2].copy_from_slice(&first);
+        let txid = lsn(page);
+        seal(page, txid);
+        crafted = true;
+        break;
+    }
+    assert!(crafted, "no leaf to craft; the test proved nothing");
+    std::fs::write(&path, &file).unwrap();
+
+    let db = Db::open(
+        FileStorage::open(&path).unwrap(),
+        PagerOptions {
+            page_size: 512,
+            cache_pages: 32,
+        },
+    )
+    .unwrap();
+    let snap = db.snapshot();
+    let mut errors = 0;
+    for i in 0..40u32 {
+        if snap.get(format!("k{i:03}").as_bytes()).is_err() {
+            errors += 1;
+        }
+    }
+    assert!(errors > 0, "every point lookup succeeded on a crafted leaf");
+    // A scan descends to its first leaf when it is made, so the error may
+    // come from making it or from a row; either is a refusal.
+    let scan_refused = match snap.scan(None, None) {
+        Err(_) => true,
+        Ok(mut rows) => rows.any(|r| r.is_err()),
+    };
+    assert!(
+        scan_refused,
+        "a full scan read a crafted leaf without an error"
+    );
+}

@@ -54,6 +54,7 @@ project.)
 - [ADR-046](#adr-046-update-fetches-over-quantycores-tls-and-trusts-the-checksum-for-wholeness-only) Update fetches over QuantyCore's TLS, and trusts the checksum for wholeness only
 - [ADR-047](#adr-047-releases-are-signed-and-update-trusts-nothing-unsigned) Releases are signed, and update trusts nothing unsigned
 - [ADR-048](#adr-048-a-new-cell-goes-into-an-owned-leaf-in-place) A new cell goes into an owned leaf in place
+- [ADR-049](#adr-049-a-nodes-structure-is-checked-once-when-it-leaves-the-disk) A node's structure is checked once, when it leaves the disk
 
 ## ADR-001: Rust
 
@@ -2489,3 +2490,43 @@ bulk load through statements went from 726 to 515 million instructions,
 the rule that it must only ever produce what the encoder would. The debug
 comparison is that rule, and it costs a full encode per insert in every
 debug test run.
+
+## ADR-049: A node's structure is checked once, when it leaves the disk
+
+Every read used to decode the node it touched, and decoding checked the
+node: every cell inside the page, branch flags zero, keys strictly
+increasing. Reading in place kept those checks and dropped the decoding,
+and the profile then showed the checks themselves as the largest cost of
+an index lookup, a quarter of it, comparing every pair of neighbouring
+keys on every page on every access.
+
+A committed page never changes; that is what copy-on-write means here.
+So its structure only needs checking once, and the pager now does it as
+the page enters the cache, right after the checksum. The checksum catches
+a damaged disk. This catches a page that is whole and still wrong, a
+crafted file or a bug that wrote a bad node, and turns it into an error
+before any reader can see the page. Readers then trust what they are
+given: a leaf search stops at the first key past the one it wants, and
+nothing compares neighbours again.
+
+**What it does not weaken.** A page reaches a reader by one of three
+routes: loaded from the file, which is now checked; written by this
+transaction, which comes from the encoder or the in-place insert, both
+held byte for byte against the encoder in debug builds; or put into the
+cache at commit, which is the same pages again. And every cell a reader
+touches is still bounds checked, so even a page that slipped past would
+end in an error and not in a read past its end.
+
+**Proved where it matters.** A test writes a database, swaps two keys in
+one of its leaves, seals the page again so its checksum is valid, and
+reopens it: point lookups and a full scan both fail. Taking the check out
+of the pager makes that test fail.
+
+**What it bought.** Against 20000 rows, under valgrind: 5000 lookups
+through a secondary index 247 to 189 million instructions, 5000 lookups
+by key 138 to 125.
+
+**The price.** The pager now knows two page types well enough to check
+them, which is the first thing it knows about what a page holds beyond
+its header. That is a layer leaking upward, accepted because the
+alternative is checking the same immutable bytes on every read.
