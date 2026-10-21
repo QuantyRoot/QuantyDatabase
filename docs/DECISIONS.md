@@ -2399,7 +2399,7 @@ release published, not who published it. Every release now carries
 into the binary before it reads a single line of the checksums.
 
 **Where the private key lives.** In a GitHub secret, `QUANTYDB_RELEASE_KEY`,
-of an environment called `release` that only the publish job uses. That is
+of an environment called `releases` that only the publish job uses. That is
 the convenient place and not the strongest one, and the difference should
 be stated rather than discovered. A key held on GitHub protects against a
 release asset being replaced after it was published, and against anyone
@@ -2417,9 +2417,12 @@ A missing package signature makes apt complain; a missing release
 signature would make every `update` refuse, which is worse than a release
 that did not happen.
 
-**A build without a key refuses to fetch.** `RELEASE_KEY` is `None` until
-the public half is filled in, and then `update` says it cannot tell a real
-release from a replaced one and points at `--file`. Falling back to the
+**A build without a key refuses to fetch.** `RELEASE_KEY` is an `Option`,
+and without the public half `update` says it cannot tell a real release
+from a replaced one and points at `--file`. A test compares the key in the
+source with the hex the tool printed when it was made, so the array cannot
+drift from the key and no build ships without one. The key is
+`b318c211e09be6d89f3aaaa6b4a1f518cb35c4d4a198d3f444c0b4041431a87d`. Falling back to the
 unsigned checksum would make the signature decorative. Releases before
 0.5.0 are unsigned, so `update` fetches only 0.5.0 and later; reaching an
 older one is what `--file` is for.

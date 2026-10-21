@@ -151,7 +151,7 @@ jobs:
     # The release key is a secret of this environment rather than of the
     # repository, so a required reviewer on it means nothing is signed
     # without someone saying yes to this run (ADR-047).
-    environment: release
+    environment: releases
     permissions:
       contents: write
     steps:

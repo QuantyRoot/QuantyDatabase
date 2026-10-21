@@ -40,10 +40,17 @@ use quantycore::tls::{ClientConfig, ClientConnection, Stream};
 /// uses, so the two always agree on what "the newest release" means.
 pub const RELEASES: &str = "https://github.com/QuantyRoot/QuantyDatabase/releases";
 
-/// The public half of the key that signs releases. `None` in a build made
-/// before the key existed, and then fetching refuses rather than trusting
-/// a checksum file anyone holding the repository could have written.
-pub const RELEASE_KEY: Option<[u8; 32]> = None;
+/// The public half of the key that signs releases, as
+/// `quantydb-release-key public` prints it:
+/// b318c211e09be6d89f3aaaa6b4a1f518cb35c4d4a198d3f444c0b4041431a87d
+///
+/// An `Option` so that a build without a key refuses to fetch rather than
+/// trusting a checksum file anyone holding the repository could have
+/// written. A test holds every build to having one.
+pub const RELEASE_KEY: Option<[u8; 32]> = Some([
+    0xb3, 0x18, 0xc2, 0x11, 0xe0, 0x9b, 0xe6, 0xd8, 0x9f, 0x3a, 0xaa, 0xa6, 0xb4, 0xa1, 0xf5, 0x18,
+    0xcb, 0x35, 0xc4, 0xd4, 0xa1, 0x98, 0xd3, 0xf4, 0x44, 0xc0, 0xb4, 0x04, 0x14, 0x31, 0xa8, 0x7d,
+]);
 
 /// Check `sig`, the text of `SHA256SUMS.sig`, over `sums`, the exact bytes
 /// of `SHA256SUMS`, against `key`.
@@ -477,6 +484,16 @@ AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA *quantydb-windo
             )
             .is_err());
         }
+    }
+
+    #[test]
+    fn this_build_carries_the_release_key() {
+        // The key as the tool printed it, compared byte for byte, so a
+        // typo in the array above cannot pass for the real key.
+        let printed = "b318c211e09be6d89f3aaaa6b4a1f518cb35c4d4a198d3f444c0b4041431a87d";
+        let key = RELEASE_KEY.expect("a release build without a key cannot update");
+        let hex: String = key.iter().map(|b| format!("{b:02x}")).collect();
+        assert_eq!(hex, printed);
     }
 
     #[test]
