@@ -18,7 +18,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use crate::error::{Error, Result};
-use crate::node::{leaf_cell_size, Node, ValueRef};
+use crate::node::{leaf_cell_size, write_leaf_cell, Node, ValueRef};
 use crate::page::{page_type, PageId, PageType, NIL_PAGE, PAGE_HEADER_LEN};
 use crate::pager::{Pager, WriteBatch};
 use crate::storage::Storage;
@@ -333,13 +333,50 @@ fn insert_rec<S: Storage>(
         };
     }
 
-    let mut node = load_node(batch, page)?;
+    let (mut node, size) = load_node_sized(batch, page)?;
     match &mut node {
         Node::Leaf { entries } => {
             match entries.binary_search_by(|(k, _)| k.as_slice().cmp(key)) {
                 Ok(_) if unique => return Ok(Insert::Duplicate),
                 Ok(i) => entries[i].1 = value,
-                Err(i) => entries.insert(i, (key.to_vec(), value)),
+                Err(i) => {
+                    // A page this batch owns and already knows the size of
+                    // takes the new cell where it belongs and keeps the rest.
+                    // Re-encoding the whole leaf for every row added to it
+                    // was most of what a bulk load spent in the tree.
+                    let cell = leaf_cell_size(key, &value);
+                    if let Some(used) = size {
+                        if batch.owns(page) && used + cell <= batch.page_size() as usize {
+                            let at = if i == entries.len() {
+                                used
+                            } else {
+                                PAGE_HEADER_LEN
+                                    + entries[..i]
+                                        .iter()
+                                        .map(|(k, v)| leaf_cell_size(k, v))
+                                        .sum::<usize>()
+                            };
+                            let buf = batch.page_mut(page)?;
+                            buf.copy_within(at..used, at + cell);
+                            write_leaf_cell(buf, at, key, &value);
+                            let count = u16::from_le_bytes([buf[6], buf[7]]) + 1;
+                            buf[6..8].copy_from_slice(&count.to_le_bytes());
+                            entries.insert(i, (key.to_vec(), value));
+                            #[cfg(debug_assertions)]
+                            {
+                                let mut whole = vec![0u8; buf.len()];
+                                node.encode_into(&mut whole);
+                                assert!(
+                                    buf[..] == whole[..],
+                                    "the in-place insert into page {page} differs from encoding it"
+                                );
+                            }
+                            batch.keep_node_sized(page, node, used + cell);
+                            return Ok(Insert::Done(page));
+                        }
+                    }
+                    entries.insert(i, (key.to_vec(), value));
+                }
             }
             finish_leaf(batch, page, node)
         }
@@ -721,10 +758,10 @@ fn write_node<S: Storage>(
     // Straight into the page. Encoding into a fresh page-sized buffer and
     // copying it over cost an allocation, a zeroing and a full page memcpy
     // on every single insert, at every level of the tree.
-    node.encode_into(batch.page_mut(id)?);
+    let size = node.encode_into(batch.page_mut(id)?);
     // Kept beside the bytes it was just encoded into, so the next insert
     // into this page starts from the node rather than from decoding it.
-    batch.keep_node(id, node);
+    batch.keep_node_sized(id, node, size);
     Ok(id)
 }
 
@@ -736,7 +773,15 @@ fn write_node<S: Storage>(
 /// builds check every kept copy against the bytes, so the whole test
 /// suite stands behind the claim that the two never disagree.
 fn load_node<S: Storage>(batch: &mut WriteBatch<'_, S>, page: PageId) -> Result<Node> {
-    if let Some(node) = batch.take_node(page) {
+    Ok(load_node_sized(batch, page)?.0)
+}
+
+/// The same, with the encoded size when the node came from the batch.
+fn load_node_sized<S: Storage>(
+    batch: &mut WriteBatch<'_, S>,
+    page: PageId,
+) -> Result<(Node, Option<usize>)> {
+    if let Some((node, size)) = batch.take_node_sized(page) {
         #[cfg(debug_assertions)]
         {
             let buf = batch.page_bytes(page)?;
@@ -746,10 +791,10 @@ fn load_node<S: Storage>(batch: &mut WriteBatch<'_, S>, page: PageId) -> Result<
                 "the kept node for page {page} disagrees with its bytes"
             );
         }
-        return Ok(node);
+        return Ok((node, Some(size)));
     }
     let buf = batch.page_bytes(page)?;
-    Node::decode(&buf, page)
+    Ok((Node::decode(&buf, page)?, None))
 }
 
 fn write_overflow<S: Storage>(batch: &mut WriteBatch<'_, S>, value: &[u8]) -> Result<ValueRef> {

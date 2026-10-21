@@ -4,6 +4,10 @@
 //! re-encoded onto fresh pages. That trades some CPU against a lot of
 //! slotted-page complexity, which is the right trade while correctness is
 //! being established (phase 1). See docs/FORMAT.md for the byte layout.
+//!
+//! The one exception is a new cell in a leaf the write batch already
+//! owns, which goes straight into the page through [`write_leaf_cell`],
+//! the same function the encoder uses (ADR-048).
 
 use crate::error::{Error, Result};
 use crate::page::{self, PageId, PageType, PAGE_HEADER_LEN};
@@ -153,7 +157,8 @@ impl Node {
         Ok(child)
     }
 
-    pub(crate) fn encode_into(&self, buf: &mut [u8]) {
+    /// Returns the number of bytes the encoding uses, header included.
+    pub(crate) fn encode_into(&self, buf: &mut [u8]) -> usize {
         let page_size = buf.len();
         let (ptype, count) = match self {
             Node::Leaf { entries } => (PageType::Leaf, entries.len()),
@@ -170,25 +175,7 @@ impl Node {
         match self {
             Node::Leaf { entries } => {
                 for (key, value) in entries {
-                    let vflag = match value {
-                        ValueRef::Inline(_) => VFLAG_INLINE,
-                        ValueRef::Overflow { .. } => VFLAG_OVERFLOW,
-                    };
-                    at = write_key(buf, at, key, vflag);
-                    match value {
-                        ValueRef::Inline(v) => {
-                            let len = u32::try_from(v.len()).expect("inline value length");
-                            buf[at..at + 4].copy_from_slice(&len.to_le_bytes());
-                            at += 4;
-                            buf[at..at + v.len()].copy_from_slice(v);
-                            at += v.len();
-                        }
-                        ValueRef::Overflow { head, len } => {
-                            buf[at..at + 8].copy_from_slice(&head.to_le_bytes());
-                            buf[at + 8..at + 16].copy_from_slice(&len.to_le_bytes());
-                            at += 16;
-                        }
-                    }
+                    at = write_leaf_cell(buf, at, key, value);
                 }
             }
             Node::Branch {
@@ -206,6 +193,7 @@ impl Node {
         }
         debug_assert!(at <= page_size, "node encode overran the page");
         buf[at..].fill(0);
+        at
     }
 
     /// Exact number of bytes [`Node::encode`] will use.
@@ -221,6 +209,32 @@ impl Node {
                 }
             }
     }
+}
+
+/// Write one leaf cell at `at` and return where the next one starts. The
+/// encoder and the in-place insert both write cells through this, so the
+/// two cannot disagree about the layout.
+pub(crate) fn write_leaf_cell(buf: &mut [u8], at: usize, key: &[u8], value: &ValueRef) -> usize {
+    let vflag = match value {
+        ValueRef::Inline(_) => VFLAG_INLINE,
+        ValueRef::Overflow { .. } => VFLAG_OVERFLOW,
+    };
+    let mut at = write_key(buf, at, key, vflag);
+    match value {
+        ValueRef::Inline(v) => {
+            let len = u32::try_from(v.len()).expect("inline value length");
+            buf[at..at + 4].copy_from_slice(&len.to_le_bytes());
+            at += 4;
+            buf[at..at + v.len()].copy_from_slice(v);
+            at += v.len();
+        }
+        ValueRef::Overflow { head, len } => {
+            buf[at..at + 8].copy_from_slice(&head.to_le_bytes());
+            buf[at + 8..at + 16].copy_from_slice(&len.to_le_bytes());
+            at += 16;
+        }
+    }
+    at
 }
 
 pub(crate) fn leaf_cell_size(key: &[u8], value: &ValueRef) -> usize {

@@ -53,6 +53,7 @@ project.)
 - [ADR-045](#adr-045-a-write-batch-keeps-the-nodes-it-wrote-beside-their-bytes) A write batch keeps the nodes it wrote, beside their bytes
 - [ADR-046](#adr-046-update-fetches-over-quantycores-tls-and-trusts-the-checksum-for-wholeness-only) Update fetches over QuantyCore's TLS, and trusts the checksum for wholeness only
 - [ADR-047](#adr-047-releases-are-signed-and-update-trusts-nothing-unsigned) Releases are signed, and update trusts nothing unsigned
+- [ADR-048](#adr-048-a-new-cell-goes-into-an-owned-leaf-in-place) A new cell goes into an owned leaf in place
 
 ## ADR-001: Rust
 
@@ -2443,3 +2444,48 @@ verify is the one way this step could break every update at once.
 **The price.** One secret whose loss means a new key and a release whose
 binary carries it, so every copy older than that release can no longer
 update by itself. And a key on GitHub, with the limits above.
+
+## ADR-048: A new cell goes into an owned leaf in place
+
+After ADR-045 the insert path no longer decoded a leaf for every row, but
+it still encoded the whole leaf for every row, and before that it summed
+the size of every cell to see whether the leaf still fit. A leaf of a
+hundred and fifty cells was written a hundred and fifty times while it
+filled. The profile put that at the top: `memmove` at fourteen percent,
+most of it copying cells that had not changed.
+
+The roadmap had held this back as "editing the encoded page in place",
+which is the change that can lose data without a test noticing. This is
+the narrowest version of it.
+
+**What it does.** When a key is inserted into a leaf that the write batch
+already owns, whose node and encoded size the batch kept (ADR-045), and
+the cell fits, the cells after the insertion point move up by one cell
+with a single `copy_within`, the new cell is written into the gap, and
+the entry count in the page header goes up by one. Nothing else in the
+page changes. Every other case, an overwrite, a split, a page the batch
+does not own yet, a node it does not have, takes the old path and
+encodes the whole node.
+
+**Why it cannot drift from the encoder.** The cell is written by
+`write_leaf_cell`, which is now also what the full encoder calls for each
+cell, so there is one definition of a cell's bytes. Debug builds encode
+the whole node after every in-place insert and require the page to be
+identical to it, byte for byte, so every test, model test and crash
+harness run checks the claim. The encoded size kept beside the node is
+checked against a recount in debug builds as well.
+
+**Tested against its own bugs.** Three deliberate mistakes, each in a
+release build where the byte comparison is compiled out: the count not
+raised, the tail not moved, and the kept size not grown. The ordinary
+tests fail on each one.
+
+**What it bought.** Counted rather than timed, because the shared machine
+it was measured on scatters wall clock by a factor of 1.5: a 20000 row
+bulk load through statements went from 726 to 515 million instructions,
+29 percent fewer.
+
+**The price.** A second way for a leaf's bytes to come about, and with it
+the rule that it must only ever produce what the encoder would. The debug
+comparison is that rule, and it costs a full encode per insert in every
+debug test run.

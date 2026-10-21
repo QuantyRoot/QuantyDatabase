@@ -268,8 +268,10 @@ pub struct WriteBatch<'p, S: Storage> {
     /// Decoded copies of pages this batch owns, as the b-tree last wrote
     /// them. The bytes in `dirty` stay the only truth: every path that
     /// changes a page without going through the tree drops its entry, and
-    /// a missing entry only means decoding again.
-    nodes: BTreeMap<PageId, Node>,
+    /// a missing entry only means decoding again. Beside each node, the
+    /// number of bytes its encoding uses, so an insert can tell where the
+    /// cells end without adding them up.
+    nodes: BTreeMap<PageId, (Node, usize)>,
 }
 
 /// How many decoded pages a batch keeps. A bulk load works on the right
@@ -328,7 +330,7 @@ pub struct SuspendedBatch {
     /// value nobody can change, so they stay exactly as true as the bytes
     /// beside them, and an open transaction is suspended after every
     /// statement: dropping them here would mean a bulk load never hits.
-    nodes: BTreeMap<PageId, Node>,
+    nodes: BTreeMap<PageId, (Node, usize)>,
 }
 
 impl SuspendedBatch {
@@ -443,25 +445,44 @@ impl<S: Storage> WriteBatch<'_, S> {
     /// The decoded form of a page this batch owns, handed over and
     /// forgotten, so that a caller which changes it has to write it back
     /// through `keep_node` for it to be seen again.
+    #[cfg(test)]
     pub(crate) fn take_node(&mut self, id: PageId) -> Option<Node> {
+        self.nodes.remove(&id).map(|(node, _)| node)
+    }
+
+    /// The same, with the number of bytes its encoding uses.
+    pub(crate) fn take_node_sized(&mut self, id: PageId) -> Option<(Node, usize)> {
         self.nodes.remove(&id)
     }
 
     /// The decoded form of a page this batch owns, left where it is, for a
     /// caller that only reads it.
     pub(crate) fn kept_node(&self, id: PageId) -> Option<&Node> {
-        self.nodes.get(&id)
+        self.nodes.get(&id).map(|(node, _)| node)
     }
 
     /// Remember the decoded form of a page that was just encoded into it.
     /// Only for a page this batch owns, and only right after the bytes
     /// were written from exactly this node.
+    #[cfg(test)]
     pub(crate) fn keep_node(&mut self, id: PageId, node: Node) {
+        let size = node.encoded_size();
+        self.keep_node_sized(id, node, size);
+    }
+
+    /// The same, for a caller that already knows how many bytes the
+    /// encoding used, because it just wrote them.
+    pub(crate) fn keep_node_sized(&mut self, id: PageId, node: Node, size: usize) {
         debug_assert!(self.dirty.contains_key(&id), "a node for a page not owned");
+        debug_assert_eq!(
+            size,
+            node.encoded_size(),
+            "a kept size that is not the node's"
+        );
         if self.nodes.len() >= NODE_CACHE_PAGES && !self.nodes.contains_key(&id) {
             self.nodes.clear();
         }
-        self.nodes.insert(id, node);
+        self.nodes.insert(id, (node, size));
     }
 
     fn take_page_id(&mut self) -> PageId {
@@ -790,7 +811,7 @@ mod kept_nodes {
         let pager = pager();
         let mut batch = pager.begin();
         let id = batch.allocate(PageType::Leaf);
-        batch.nodes.insert(id + 1, leaf());
+        batch.nodes.insert(id + 1, (leaf(), page::PAGE_HEADER_LEN));
         let next = batch.allocate(PageType::Leaf);
         assert_eq!(next, id + 1, "the test assumes the file grows by one");
         assert!(batch.take_node(next).is_none());
