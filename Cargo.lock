@@ -4,9 +4,9 @@ version = 4
 
 [[package]]
 name = "quantycore"
-version = "0.1.0"
+version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b70fd062ab9134e82985cf31f159bd5392e9e72627baffefb0a3d2f6facda940"
+checksum = "1fccc6df4c52fa67be34970e4270332f03843301ac581bd52df81e3d375a0999"
 
 [[package]]
 name = "quantydb"

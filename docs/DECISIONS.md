@@ -2335,7 +2335,7 @@ against broken code, decisions written down, and MSRV 1.89. Its rules
 make two demands on this side, and both are met here. Public text says
 "no dependencies from outside Elchi Studios" rather than "no
 dependencies", because `cargo tree` shows QuantyCore and the claim has to
-survive that. And it is pinned to an exact version, `=0.1.0`, so that
+survive that. And it is pinned to an exact version, `=0.1.2`, so that
 moving it is a commit and not a side effect of `cargo update`.
 
 Only the command line tool depends on it. The storage core, the query
@@ -2368,12 +2368,18 @@ manager's next upgrade either overwrite it or fail its checksum. It says
 which manager and stops. A machine the release does not build for has no
 asset to fetch and says so, pointing at `--file`. Windows has no PEM
 bundle for `RootStore::system` to read, so there it fails with that
-reason and `--file` still works. QuantyCore 0.1.0 does not build on
-Windows either, because its AppArmor module uses Unix path types without
-a guard, so the dependency is declared for Unix only and Windows says
-plainly that fetching is not built there. Both go away together with a
-QuantyCore release that builds on Windows and a way to read the Windows
-certificate store.
+reason and `--file` still works. QuantyCore 0.1.0 did not build on
+Windows at all; 0.1.2 does, but its randomness there reports
+unsupported, since asking Windows for random bytes needs `unsafe` that
+QuantyCore does not allow. So the dependency stays declared for Unix
+only, and Windows says plainly that fetching is not built there. Both
+limits go away together with a boundary crate in QuantyCore for the
+Windows randomness and a way to read the Windows certificate store, and
+neither is worth it before someone asks.
+
+0.1.2 is the version pinned because it is the first that carries
+`LICENSE-QUANTYDB-EXCEPTION`, under which the QuantyCore code inside
+QuantyDB's binaries is used under MIT like the rest of them.
 
 **Tested against a server of our own and against GitHub.** The unit tests
 run a TLS server built from QuantyCore on loopback, with a certificate

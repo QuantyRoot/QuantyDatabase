@@ -45,7 +45,7 @@ quantydb-cli = { path = "crates/quantydb-cli", version = "0.4.0" }
 quantydb-bench = { path = "crates/quantydb-bench", version = "0.4.0" }
 # Written in this organization, so not a dependency in the sense ADR-020
 # forbids (QuantyCore ADR-001). Pinned exactly: moving it is a decision.
-quantycore = "=0.1.0"
+quantycore = "=0.1.2"
 
 [profile.release]
 lto = "thin"

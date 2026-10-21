@@ -36,7 +36,8 @@ wrapped.
 ### Changed
 
 - The command line tool depends on QuantyCore, written by Elchi Studios
-  under the same rules, pinned to `=0.1.0`. Nothing from outside the
+  under the same rules, pinned to `=0.1.2`, the first version carrying
+  its licence exception for QuantyDB. Nothing from outside the
   organization is in the lock file, and the engine itself still depends
   on the standard library alone.
 - QuantyDB is now a product of Elchi Studios. The licence stays MIT and
