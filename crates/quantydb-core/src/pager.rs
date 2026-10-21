@@ -447,6 +447,12 @@ impl<S: Storage> WriteBatch<'_, S> {
         self.nodes.remove(&id)
     }
 
+    /// The decoded form of a page this batch owns, left where it is, for a
+    /// caller that only reads it.
+    pub(crate) fn kept_node(&self, id: PageId) -> Option<&Node> {
+        self.nodes.get(&id)
+    }
+
     /// Remember the decoded form of a page that was just encoded into it.
     /// Only for a page this batch owns, and only right after the bytes
     /// were written from exactly this node.

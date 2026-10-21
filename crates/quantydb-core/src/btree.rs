@@ -261,7 +261,32 @@ fn insert_rec<S: Storage>(
     // level, on every row. The branch is only decoded when the recursion
     // comes back with something that changes it, which in a bulk load it
     // usually does not: a leaf keeps its page after the first touch.
-    let child = {
+    //
+    // A branch this batch already wrote is kept decoded, and then the child
+    // is a binary search over it rather than a scan of the cells. On a bulk
+    // load that is every branch on the right edge of the tree.
+    let child = if let Some(Node::Branch {
+        first_child,
+        entries,
+    }) = batch.kept_node(page)
+    {
+        let idx = entries.partition_point(|(k, _)| k.as_slice() <= key);
+        let child = if idx == 0 {
+            *first_child
+        } else {
+            entries[idx - 1].1
+        };
+        #[cfg(debug_assertions)]
+        {
+            let buf = batch.page_bytes(page)?;
+            assert_eq!(
+                Node::branch_child(&buf, page, key)?,
+                child,
+                "the kept branch {page} routes differently from its bytes"
+            );
+        }
+        Some(child)
+    } else {
         let buf = batch.page_bytes(page)?;
         if page_type(&buf)? == PageType::Branch {
             Some(Node::branch_child(&buf, page, key)?)

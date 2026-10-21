@@ -595,9 +595,34 @@ shared machine:
 | embedded `put`, 20000 in one transaction | 13 to 15 us | **2.0 us** |
 | group commit, 512 per commit | 9.8 us | **5.1 to 6.3 us** |
 
-The ratio against sqlite has not been measured again yet. It comes from
-the benchmark job, which runs both engines on the same machine, and goes
-into the README only from there.
+**Against sqlite the answer depends on the machine, by a factor of two.**
+The CI runner, with sqlite 3.45, put bulk insert at 1.97x. A six core Zen 6
+laptop, sqlite 3.53, performance profile, pinned to one core, three runs:
+
+| | run 1 | run 2 | run 3 |
+|---|---|---|---|
+| bulk insert, 5000 rows in one transaction | 4.13x | 4.19x | 4.12x |
+| durable insert, one commit per batch | 3.61x | 3.42x | 3.27x |
+| 5000 lookups by key | 0.73x | 0.72x | 0.73x |
+| 20 full scans of 5000 rows | 1.23x | 1.29x | 1.27x |
+| 5000 lookups through a secondary index | 1.38x | 1.38x | 1.38x |
+
+The laptop is the number to quote, because it is the steadier one and the
+less flattering. Our bulk load took 17 ms there and
+sqlite's took 4: a fast core helps sqlite more than it helps us, which
+says the gap is per row CPU work and not the disk. On that laptop a
+durable load costs us the same 17 ms as a bulk one, so the fsync is
+nearly free there and the durable gap is the same per row work again.
+
+**Profiled after the kept nodes, statement path, 100000 rows.** What is
+left is spread out rather than concentrated: `memmove` 12%, of which two
+thirds is re-encoding a whole leaf for every row appended to it; `memcmp`
+11%, mostly the linear scan through branch cells; node encoding 6%; the
+allocator about 15% across `malloc`, `free` and consolidation; the parser
+3.5%. Routing through a kept branch by binary search instead of scanning
+its cells took the median of seven runs from 813 to 764 ms. The next lever
+is appending to a leaf without re-encoding it, which is the in-place edit
+this section has been wary of, restricted to its simplest case.
 
 ## Where it runs
 
